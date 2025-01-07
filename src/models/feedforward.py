@@ -62,11 +62,12 @@ class HyperbolicAE(pl.LightningModule):
     def hyperbolic_distance_matrix(self, z: torch.Tensor) -> torch.Tensor:
         """Compute pairwise hyperbolic distances between embeddings."""
         n = z.size(0)
-        dists = torch.zeros((n, n), device=z.device)
-        for i in range(n):
-            for j in range(i+1, n):
-                dist = self.manifold.dist(z[i:i+1], z[j:j+1], self.c)
-                dists[i,j] = dists[j,i] = dist.item()
+        # Create matrices of all pairs
+        z_i = z.unsqueeze(1).expand(-1, n, -1)  # Shape: (n, n, dim)
+        z_j = z.unsqueeze(0).expand(n, -1, -1)  # Shape: (n, n, dim)
+        
+        # Compute all pairwise distances at once
+        dists = self.manifold.dist(z_i, z_j, self.c)
         return dists
 
     def triplet_loss(self, z: torch.Tensor, similarities: torch.Tensor) -> torch.Tensor:
