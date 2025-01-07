@@ -1,0 +1,9 @@
+torch
+lightning
+torchvision
+scikit-learn
+hydra-core
+omegaconf
+rich
+scikit-learn-extra
+wandb

@@ -1,0 +1,52 @@
+# Training parameters
+pretrain_epochs: 250
+clustering_epochs: 400
+seed: 400
+batch_size: 256
+embedding_dim: 10
+n_clusters: 10
+# Learning rates
+pretrain_lr: 1e-3
+clustering_lr: 1e-3
+
+dc_algorithm: 'dec'
+augmentation_invariance: true
+cluster_loss_weight: 0.025
+num_workers: 4
+overwrite_ae: false
+
+# brb
+brb:
+  enabled: false
+  reset_interval: 20
+  reset_weights: true
+  reset_momentum: true
+  reset_momentum_counts: false
+  recluster: true
+  recalculate_centers: false
+  reset_interpolation_factor: 0.9
+  reset_batchnorm: false
+  clustering_method: "kmeans"
+  subsample_size: 10000
+
+# Logging
+log_interval: 5
+wandb:
+  enabled: true
+  project: 'brb_new'
+  entity: 'kevin-sidak-team'
+  save_dir: './logs'
+
+hydra:
+  run:
+    dir: ${wandb.save_dir}/hydra/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: ${wandb.save_dir}/hydra/${now:%Y-%m-%d_%H-%M-%S}
+  output_subdir: null
+  job:
+    chdir: false
+    
+defaults:
+  - _self_
+  - dataset: ${oc.select:dataset,mnist}
+

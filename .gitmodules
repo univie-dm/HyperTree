@@ -1,0 +1,3 @@
+[submodule "hyperbolic-math"]
+	path = hyperbolic-math
+	url = git@github.com:univie-dm/hyperbolic-math.git
