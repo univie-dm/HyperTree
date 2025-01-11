@@ -55,12 +55,17 @@ def main(cfg: DictConfig) -> None:
 
     model = HyperbolicAE(
         input_dim=28*28,
-        hidden_dims=[512, 256, 64],
-        latent_dim=10
+        hidden_dims=[512, 256, 128, 64],
+        latent_dim=10,
+        learning_rate=1e-3,
+        triplet_weight=1.0,
+        magnitude_curvature=1.0,
+        is_image=True,
+        log_interval=2,
     )
 
     trainer = pl.Trainer(logger=logger,
-                         max_epochs=10,
+                         max_epochs=100,
                          devices='auto',
                          accelerator='auto',
                          deterministic=True,
