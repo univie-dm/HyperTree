@@ -1,10 +1,13 @@
 # Training parameters
-pretrain_epochs: 250
-clustering_epochs: 400
 seed: 400
-batch_size: 256
+epochs: 100
 embedding_dim: 10
-n_clusters: 10
+
+# Model architecture
+hidden_dims: [512, 256, 128, 64]
+learning_rate: 1e-3
+triplet_weight: 1.0
+magnitude_curvature: 1.0
 # Learning rates
 pretrain_lr: 1e-3
 clustering_lr: 1e-3

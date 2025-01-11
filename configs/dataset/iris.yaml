@@ -1,0 +1,7 @@
+name: 'iris'
+type: 'tabular'
+input_dim: 4
+n_clusters: 3
+batch_size: 32
+train_ratio: 0.8
+aug_noise_std: 0.1

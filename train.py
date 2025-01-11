@@ -37,31 +37,40 @@ def main(cfg: DictConfig) -> None:
         logger = CSVLogger(save_dir=cfg.wandb.save_dir, name=cfg.wandb.project)
    
 
-    datamodule = GrayScaleDataModule(
-        dataset_name='mnist',
-        batch_size=512,
-        data_dir='data',
-        num_workers=16,
-    )
+    # Determine dataset type and create appropriate datamodule
+    if hasattr(cfg.dataset, 'type') and cfg.dataset.type == 'tabular':
+        datamodule = TabularDataModule(
+            dataset_name=cfg.dataset.name,
+            batch_size=cfg.dataset.batch_size,
+            num_workers=cfg.num_workers,
+            train_ratio=cfg.dataset.train_ratio,
+            aug_noise_std=cfg.dataset.aug_noise_std
+        )
+        input_dim = cfg.dataset.input_dim
+        is_image = False
+    else:
+        # Default to image dataset
+        datamodule = GrayScaleDataModule(
+            dataset_name=cfg.dataset.name,
+            batch_size=cfg.batch_size,
+            data_dir=cfg.dataset.data_dir,
+            resize=cfg.dataset.resize,
+            num_workers=cfg.num_workers,
+        )
+        input_dim = cfg.dataset.resize * cfg.dataset.resize * cfg.dataset.channels
+        is_image = True
+
     datamodule.setup()
 
-    '''
-    datamodule = TabularDataModule(
-        dataset_name='iris',
-        batch_size=32,
-        num_workers=16,
-    )
-    '''
-
     model = HyperbolicAE(
-        input_dim=28*28,
-        hidden_dims=[512, 256, 128, 64],
-        latent_dim=10,
-        learning_rate=1e-3,
-        triplet_weight=1.0,
-        magnitude_curvature=1.0,
-        is_image=True,
-        log_interval=2,
+        input_dim=input_dim,
+        hidden_dims=cfg.hidden_dims,
+        latent_dim=cfg.embedding_dim,
+        learning_rate=cfg.learning_rate,
+        triplet_weight=cfg.triplet_weight,
+        magnitude_curvature=cfg.magnitude_curvature,
+        is_image=is_image,
+        log_interval=cfg.log_interval,
     )
 
     trainer = pl.Trainer(logger=logger,
