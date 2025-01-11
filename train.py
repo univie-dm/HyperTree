@@ -18,34 +18,11 @@ from threadpoolctl import threadpool_limits
 @threadpool_limits.wrap(limits=1, user_api="blas")
 def main(cfg: DictConfig) -> None:
     print(cfg, flush=True)
-    cluster_init_seed = None
     if cfg.seed >= 0:
         seed_everything(cfg.seed)   
     else:
         print("Warning: Running without setting seed!")
     torch.set_float32_matmul_precision('medium')
-    if cfg.dataset.channels == 1:
-        datamodule = GrayScaleDataModule(
-            cfg.dataset.name,
-            batch_size=cfg.batch_size,
-            resize=cfg.dataset.resize,
-            subset=cfg.dataset.subset,
-            data_dir=cfg.dataset.data_dir,
-            num_workers=cfg.num_workers,
-        )
-    elif cfg.dataset.channels == 3:
-        datamodule = ColorDataModule(
-            cfg.dataset.name,
-            batch_size=cfg.batch_size,
-            resize=cfg.dataset.resize,
-            subset=cfg.dataset.subset,
-            data_dir=cfg.dataset.data_dir,
-            num_workers=cfg.num_workers,
-        )
-    else:
-        raise ValueError(f"Unknown number of channels {cfg.dataset.channels}")
-    
-    datamodule.setup()
     
     if cfg.wandb.enabled:
         logger = WandbLogger(
@@ -66,6 +43,7 @@ def main(cfg: DictConfig) -> None:
         data_dir='data',
         num_workers=16,
     )
+    datamodule.setup()
 
     '''
     datamodule = TabularDataModule(
@@ -75,7 +53,6 @@ def main(cfg: DictConfig) -> None:
     )
     '''
 
-    # Use with model
     model = HyperbolicAE(
         input_dim=28*28,
         hidden_dims=[512, 256, 64],
@@ -88,7 +65,7 @@ def main(cfg: DictConfig) -> None:
                          accelerator='auto',
                          deterministic=True,
                          enable_checkpointing=False,
-                         log_every_n_steps=-1)
+                         )
 
     trainer.fit(model, datamodule)
     wandb.finish()
