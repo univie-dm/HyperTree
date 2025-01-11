@@ -4,7 +4,11 @@ from torchvision import transforms, datasets
 import torch
 from typing import Literal, Optional, Union
 import torch
-import src.datasets.optdigits as optdigits
+from sklearn.datasets import load_iris
+from sklearn.preprocessing import StandardScaler
+import numpy as np
+import pytorch_lightning as pl
+from torch.utils.data import DataLoader, random_split, TensorDataset
 
 
 class MultiViewDataset(torch.utils.data.Dataset):
@@ -15,7 +19,17 @@ class MultiViewDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         img, label = self.dataset[idx]
-        return self.aug_transform(img), self.base_transform(img), label
+        # Apply transforms
+        aug_img = self.aug_transform(img)
+        base_img = self.base_transform(img)
+        
+        # Flatten the images if they're not already flat
+        if len(aug_img.shape) > 1:  # If image is 2D or 3D
+            aug_img = aug_img.view(-1)
+        if len(base_img.shape) > 1:
+            base_img = base_img.view(-1)
+            
+        return aug_img, base_img, label
 
     def __len__(self):
         return len(self.dataset)
@@ -152,7 +166,6 @@ class ColorDataModule(pl.LightningDataModule):
                          18, 1, 2, 15, 6, 0, 17, 8, 14, 13]
         return _coarse_labels[fine_label]
 
-
 class GrayScaleDataModule(pl.LightningDataModule):
     @staticmethod
     def get_normalize_fn(data: torch.Tensor):
@@ -185,7 +198,6 @@ class GrayScaleDataModule(pl.LightningDataModule):
             "fmnist": datasets.FashionMNIST,
             "kmnist": datasets.KMNIST,
             "usps": datasets.USPS,
-            "optdigits": optdigits.Optdigits
 
         }
 
@@ -233,3 +245,152 @@ class GrayScaleDataModule(pl.LightningDataModule):
     def test_dataloader(self):
         return DataLoader(self.test_dataset, batch_size=self.batch_size,
                          num_workers=self.num_workers)
+
+
+
+
+
+
+
+
+class TabularMultiViewDataset(torch.utils.data.Dataset):
+    def __init__(self, data, targets, transform=None, aug_transform=None):
+        self.data = torch.FloatTensor(data)
+        self.targets = torch.LongTensor(targets)
+        self.transform = transform
+        self.aug_transform = aug_transform if aug_transform is not None else transform
+
+    def __getitem__(self, idx):
+        x = self.data[idx]
+        y = self.targets[idx]
+        
+        # Apply basic transform
+        if self.transform:
+            x_base = self.transform(x)
+        else:
+            x_base = x
+            
+        # Apply augmentation transform
+        if self.aug_transform:
+            x_aug = self.aug_transform(x)
+        else:
+            x_aug = x_base
+            
+        return x_aug, x_base, y
+
+    def __len__(self):
+        return len(self.data)
+
+class TabularTransform:
+    """Basic transform for tabular data"""
+    def __init__(self, noise_std=0.0):
+        self.noise_std = noise_std
+        
+    def __call__(self, x):
+        if self.noise_std > 0:
+            noise = torch.randn_like(x) * self.noise_std
+            return x + noise
+        return x
+
+class TabularDataModule(pl.LightningDataModule):
+    def __init__(
+        self,
+        dataset_name: Literal["iris"] = "iris",
+        batch_size: int = 32,
+        subset: str = 'train',
+        num_workers: int = 1,
+        train_ratio: float = 0.8,
+        aug_noise_std: float = 0.1
+    ):
+        super().__init__()
+        self.dataset_name = dataset_name
+        self.batch_size = batch_size
+        self.subset = subset
+        self.num_workers = num_workers
+        self.train_ratio = train_ratio
+        self.aug_noise_std = aug_noise_std
+        
+        self.train_dataset = None
+        self.test_dataset = None
+        self.full_dataset = None
+        self.ground_truth_labels = None
+        self.input_dim = None
+        
+        # Map dataset names to loading functions
+        self.dataset_map = {
+            "iris": load_iris
+        }
+
+    def prepare_data(self):
+        # Download datasets if needed (not needed for iris)
+        pass
+
+    def setup(self, stage: str = None):
+        # Load dataset
+        dataset_fn = self.dataset_map[self.dataset_name]
+        dataset = dataset_fn()
+        
+        # Standardize features
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(dataset.data)
+        
+        # Split into train/test
+        num_samples = len(dataset.data)
+        num_train = int(num_samples * self.train_ratio)
+        indices = np.random.permutation(num_samples)
+        train_idx, test_idx = indices[:num_train], indices[num_train:]
+        
+        # Create transforms
+        base_transform = TabularTransform(noise_std=0.0)
+        aug_transform = TabularTransform(noise_std=self.aug_noise_std)
+        
+        # Create train/test datasets
+        if self.subset == 'all':
+            self.train_dataset = TabularMultiViewDataset(
+                X_scaled[train_idx], 
+                dataset.target[train_idx],
+                transform=base_transform,
+                aug_transform=base_transform
+            )
+            self.test_dataset = TabularMultiViewDataset(
+                X_scaled[test_idx], 
+                dataset.target[test_idx],
+                transform=base_transform,
+                aug_transform=base_transform
+            )
+        else:
+            self.train_dataset = TabularMultiViewDataset(
+                X_scaled[train_idx], 
+                dataset.target[train_idx],
+                transform=base_transform,
+                aug_transform=aug_transform
+            )
+            self.test_dataset = TabularMultiViewDataset(
+                X_scaled[test_idx], 
+                dataset.target[test_idx],
+                transform=base_transform,
+                aug_transform=base_transform
+            )
+            
+        self.full_dataset = torch.utils.data.ConcatDataset([self.train_dataset, self.test_dataset])
+        self.ground_truth_labels = dataset.target
+        self.input_dim = dataset.data.shape[1]  # Number of features
+
+    def train_dataloader(self):
+        if self.subset == 'all':
+            dataset = self.full_dataset
+        else:
+            dataset = self.train_dataset
+        return DataLoader(
+            dataset, 
+            batch_size=self.batch_size, 
+            shuffle=True,
+            num_workers=self.num_workers
+        )
+
+    def test_dataloader(self):
+        return DataLoader(
+            self.test_dataset, 
+            batch_size=self.batch_size,
+            num_workers=self.num_workers
+        )

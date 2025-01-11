@@ -33,7 +33,7 @@ brb:
 log_interval: 5
 wandb:
   enabled: true
-  project: 'brb_new'
+  project: 'hyper_clustering'
   entity: 'kevin-sidak-team'
   save_dir: './logs'
 
