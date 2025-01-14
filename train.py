@@ -67,14 +67,16 @@ def main(cfg: DictConfig) -> None:
         hidden_dims=cfg.hidden_dims,
         latent_dim=cfg.embedding_dim,
         learning_rate=cfg.learning_rate,
-        triplet_weight=cfg.triplet_weight,
+        hyphc_weight=cfg.triplet_loss_weight,
         magnitude_curvature=cfg.magnitude_curvature,
         is_image=is_image,
         log_interval=cfg.log_interval,
+        pretrain_epochs=cfg.pretrain_epochs,
+        wandb_enabled=cfg.wandb.enabled,
     )
 
     trainer = pl.Trainer(logger=logger,
-                         max_epochs=100,
+                         max_epochs=cfg.pretrain_epochs+cfg.clustering_epochs,
                          devices='auto',
                          accelerator='auto',
                          deterministic=True,

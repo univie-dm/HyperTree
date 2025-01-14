@@ -1,5 +1,0 @@
-name: 'optdigits'
-subset: 'all'
-data_dir: './data'
-resize: 28
-channels: 1
