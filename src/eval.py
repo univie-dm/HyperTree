@@ -68,7 +68,7 @@ def compute_dendrogram_purity(
     
     return np.mean(purities) if purities else 0.0
 
-def plot_embeddings(self, all_embeddings_np, all_labels_np, class_names=None):
+def plot_embeddings(all_embeddings_np, all_labels_np, class_names=None):
     """
     Plot embeddings with proper class labels in legend.
     
@@ -87,8 +87,9 @@ def plot_embeddings(self, all_embeddings_np, all_labels_np, class_names=None):
     twoD_embeddings = twoD_embeddings / np.maximum(norms[:, None], 1)
 
     # Create figure
-    plt.figure(figsize=(10, 10))
+    plt.figure(figsize=(12, 8))
     ax = plt.gca()
+    
 
     # Draw boundary circle
     circle = plt.Circle((0, 0), 1, fill=False, color='black', alpha=0.5)
@@ -102,11 +103,9 @@ def plot_embeddings(self, all_embeddings_np, all_labels_np, class_names=None):
     colors = cmap(np.linspace(0, 1, len(unique_labels)))
     
     # Plot each class separately to create legend
-    if class_names is None:
-        class_names = {label: f"Class {label}" for label in unique_labels}
     for i, label in enumerate(unique_labels):
         mask = all_labels_np == label
-        label_name = class_names[label] if class_names else f"Class {label}"
+        label_name = class_names[label] if class_names else f"{label}"
         
         plt.scatter(twoD_embeddings[mask, 0], 
                    twoD_embeddings[mask, 1],

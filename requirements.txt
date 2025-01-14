@@ -7,3 +7,4 @@ omegaconf
 rich
 scikit-learn-extra
 wandb
+pandas
