@@ -2,6 +2,7 @@ import omegaconf
 import torch
 import wandb
 from src.models.feedforward import HyperbolicAE
+from src.models.resnet18 import HyperbolicResNet
 
 import hydra
 from omegaconf import DictConfig
@@ -48,8 +49,7 @@ def main(cfg: DictConfig) -> None:
         )
         input_dim = cfg.dataset.input_dim
         is_image = False
-    else:
-        # Default to image dataset
+    elif hasattr(cfg.dataset, 'channels') and cfg.dataset.channels == 1:
         datamodule = GrayScaleDataModule(
             dataset_name=cfg.dataset.name,
             batch_size=cfg.batch_size,
@@ -59,21 +59,54 @@ def main(cfg: DictConfig) -> None:
         )
         input_dim = cfg.dataset.resize * cfg.dataset.resize * cfg.dataset.channels
         is_image = True
+    elif hasattr(cfg.dataset, 'channels') and cfg.dataset.channels == 3:
+        datamodule = ColorDataModule(
+            dataset_name=cfg.dataset.name,
+            batch_size=cfg.batch_size,
+            data_dir=cfg.dataset.data_dir,
+            resize=cfg.dataset.resize,
+            num_workers=cfg.num_workers,
+        )
+        input_dim = cfg.dataset.resize * cfg.dataset.resize * cfg.dataset.channels
+        is_image = True
+    else:
+        raise ValueError("Invalid dataset configuration")
 
     datamodule.setup()
 
-    model = HyperbolicAE(
-        input_dim=input_dim,
-        hidden_dims=cfg.hidden_dims,
-        latent_dim=cfg.embedding_dim,
-        learning_rate=cfg.learning_rate,
-        hyphc_weight=cfg.triplet_loss_weight,
-        magnitude_curvature=cfg.magnitude_curvature,
-        is_image=is_image,
-        log_interval=cfg.log_interval,
-        pretrain_epochs=cfg.pretrain_epochs,
-        wandb_enabled=cfg.wandb.enabled,
-    )
+    if cfg.ae_type == 'feedforward':
+        model = HyperbolicAE(
+            input_dim=input_dim,
+            hidden_dims=cfg.hidden_dims,
+            latent_dim=cfg.embedding_dim,
+            learning_rate=cfg.learning_rate,
+            hyphc_weight=cfg.triplet_loss_weight,
+            magnitude_curvature=cfg.magnitude_curvature,
+            is_image=is_image,
+            log_interval=cfg.log_interval,
+            pretrain_epochs=cfg.pretrain_epochs,
+            wandb_enabled=cfg.wandb.enabled,
+            plot_label_type=cfg.wandb.plot_label_type,
+        )
+    elif cfg.ae_type == 'convolutional':
+        raise NotImplementedError("Convolutional autoencoder not implemented yet")
+    elif cfg.ae_type == 'variational':
+        raise NotImplementedError("Variational autoencoder not implemented yet")
+    elif cfg.ae_type == 'resnet18' or cfg.ae_type == 'resnet':
+        model = HyperbolicResNet(
+            input_dim=input_dim,
+            latent_dim=cfg.embedding_dim,
+            learning_rate=cfg.learning_rate,
+            hyphc_weight=cfg.triplet_loss_weight,
+            magnitude_curvature=cfg.magnitude_curvature,
+            is_image=is_image,
+            log_interval=cfg.log_interval,
+            pretrain_epochs=cfg.pretrain_epochs,
+            wandb_enabled=cfg.wandb.enabled,
+            plot_label_type=cfg.wandb.plot_label_type,
+        )
+    else:
+        raise ValueError("Invalid autoencoder type")
 
     trainer = pl.Trainer(logger=logger,
                          max_epochs=cfg.pretrain_epochs+cfg.clustering_epochs,

@@ -22,12 +22,6 @@ class MultiViewDataset(torch.utils.data.Dataset):
         # Apply transforms
         aug_img = self.aug_transform(img)
         base_img = self.base_transform(img)
-        
-        # Flatten the images if they're not already flat
-        if len(aug_img.shape) > 1:  # If image is 2D or 3D
-            aug_img = aug_img.view(-1)
-        if len(base_img.shape) > 1:
-            base_img = base_img.view(-1)
             
         return aug_img, base_img, label
 
@@ -87,7 +81,7 @@ class ColorDataModule(pl.LightningDataModule):
                                       download=True)
         else:
             temp_dataset = dataset_class(self.data_dir, train=True,
-                                       transform=transforms.Compose(base_transforms))
+                                       transform=transforms.Compose(base_transforms,), download=True)
         temp_loader = DataLoader(temp_dataset, batch_size=1000, num_workers=self.num_workers)
         normalize_fn = self.get_normalize_fn(next(iter(temp_loader))[0])
         
@@ -165,6 +159,52 @@ class ColorDataModule(pl.LightningDataModule):
                          16, 19, 2, 4, 6, 19, 5, 5, 8, 19,
                          18, 1, 2, 15, 6, 0, 17, 8, 14, 13]
         return _coarse_labels[fine_label]
+    
+
+    def get_class_names(self):
+        # For CIFAR10:
+        if self.dataset_name == "cifar10":
+            fine_labels = datasets.CIFAR10(self.data_dir, train=False).classes
+            return {i: (fine_labels[i], None) for i in range(len(fine_labels))}
+        # For CIFAR100:
+        elif self.dataset_name == "cifar100":
+            fine_labels = datasets.CIFAR100(self.data_dir, train=False).classes
+            
+            # CIFAR100 superclass mapping
+            coarse_labels = [
+                'aquatic mammals', 'fish', 'flowers', 'food containers', 'fruit and vegetables',
+                'household electrical devices', 'household furniture', 'insects', 'large carnivores',
+                'large man-made outdoor things', 'large natural outdoor scenes', 'large omnivores and herbivores',
+                'medium-sized mammals', 'non-insect invertebrates', 'people', 'reptiles', 'small mammals',
+                'trees', 'vehicles 1', 'vehicles 2'
+            ]
+            
+            # Mapping of fine classes to their superclasses (index corresponds to coarse_labels)
+            fine_to_coarse = {
+                'beaver': 0, 'dolphin': 0, 'otter': 0, 'seal': 0, 'whale': 0,
+                'aquarium_fish': 1, 'flatfish': 1, 'ray': 1, 'shark': 1, 'trout': 1,
+                'orchid': 2, 'poppy': 2, 'rose': 2, 'sunflower': 2, 'tulip': 2,
+                'bottle': 3, 'bowl': 3, 'can': 3, 'cup': 3, 'plate': 3,
+                'apple': 4, 'mushroom': 4, 'orange': 4, 'pear': 4, 'sweet_pepper': 4,
+                'clock': 5, 'keyboard': 5, 'lamp': 5, 'telephone': 5, 'television': 5,
+                'bed': 6, 'chair': 6, 'couch': 6, 'table': 6, 'wardrobe': 6,
+                'bee': 7, 'beetle': 7, 'butterfly': 7, 'caterpillar': 7, 'cockroach': 7,
+                'bear': 8, 'leopard': 8, 'lion': 8, 'tiger': 8, 'wolf': 8,
+                'bridge': 9, 'castle': 9, 'house': 9, 'road': 9, 'skyscraper': 9,
+                'cloud': 10, 'forest': 10, 'mountain': 10, 'plain': 10, 'sea': 10,
+                'camel': 11, 'cattle': 11, 'chimpanzee': 11, 'elephant': 11, 'kangaroo': 11,
+                'fox': 12, 'porcupine': 12, 'possum': 12, 'raccoon': 12, 'skunk': 12,
+                'crab': 13, 'lobster': 13, 'snail': 13, 'spider': 13, 'worm': 13,
+                'baby': 14, 'boy': 14, 'girl': 14, 'man': 14, 'woman': 14,
+                'crocodile': 15, 'dinosaur': 15, 'lizard': 15, 'snake': 15, 'turtle': 15,
+                'hamster': 16, 'mouse': 16, 'rabbit': 16, 'shrew': 16, 'squirrel': 16,
+                'maple_tree': 17, 'oak_tree': 17, 'palm_tree': 17, 'pine_tree': 17, 'willow_tree': 17,
+                'bicycle': 18, 'bus': 18, 'motorcycle': 18, 'pickup_truck': 18, 'train': 18,
+                'lawn_mower': 19, 'rocket': 19, 'streetcar': 19, 'tank': 19, 'tractor': 19
+            }
+            
+            return {i: (fine_labels[i], coarse_labels[fine_to_coarse[fine_labels[i]]]) 
+                    for i in range(len(fine_labels))}
 
 class GrayScaleDataModule(pl.LightningDataModule):
     @staticmethod
@@ -410,3 +450,10 @@ class TabularDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers
         )
+    
+    def get_class_names(self):
+        return {
+            0: "Setosa",
+            1: "Versicolour",
+            2: "Virginica"
+        }

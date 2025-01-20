@@ -5,21 +5,23 @@ clustering_epochs: 20
 embedding_dim: 10
 
 # Model architecture
-hidden_dims: [512, 256, 128, 64]
+ae_type: 'feedfoward'
+hidden_dims: [512, 256, 128, 64, 32]
 learning_rate: 1e-3
 triplet_loss_weight: 1.0
 magnitude_curvature: 1.0
 
 num_workers: 4
-batch_size: 512
+batch_size: 128
 
 # Logging
-log_interval: 1
+log_interval: 2
 wandb:
   enabled: true
   project: 'hyper_clustering'
   entity: 'kevin-sidak-team'
   save_dir: './logs'
+  plot_label_type: 'class'
 
 hydra:
   run:

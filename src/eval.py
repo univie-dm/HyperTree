@@ -68,15 +68,20 @@ def compute_dendrogram_purity(
     
     return np.mean(purities) if purities else 0.0
 
-def plot_embeddings(all_embeddings_np, all_labels_np, class_names=None):
+
+def plot_embeddings(all_embeddings_np, all_labels_np, class_names=None, label_type='class'):
     """
     Plot embeddings with proper class labels in legend.
     
     Args:
         all_embeddings_np: numpy array of embeddings
         all_labels_np: numpy array of label indices
-        class_names: dictionary mapping label indices to actual class names
+        class_names: dictionary mapping label indices to tuples of (class_name, superclass_name)
                     or list where index corresponds to label
+        label_type: string indicating what to show in legend:
+                   'class' - only class name
+                   'super' - only superclass name
+                   'both' - both class and superclass names
     """
     # PCA projection
     pca = PCA(n_components=2)
@@ -89,28 +94,48 @@ def plot_embeddings(all_embeddings_np, all_labels_np, class_names=None):
     # Create figure
     plt.figure(figsize=(12, 8))
     ax = plt.gca()
-    
 
     # Draw boundary circle
     circle = plt.Circle((0, 0), 1, fill=False, color='black', alpha=0.5)
     ax.add_artist(circle)
 
-    # Get unique labels
-    unique_labels = np.unique(all_labels_np)
-    
-    # Create color map
-    cmap = plt.cm.tab10
-    colors = cmap(np.linspace(0, 1, len(unique_labels)))
-    
-    # Plot each class separately to create legend
-    for i, label in enumerate(unique_labels):
-        mask = all_labels_np == label
-        label_name = class_names[label] if class_names else f"{label}"
+    # Create label mappings
+    if class_names and isinstance(class_names[0], tuple):
+        label_mapping = {}
+        superclass_mapping = {}
+        for label in np.unique(all_labels_np):
+            class_name, superclass = class_names[label]
+            superclass_mapping[label] = superclass if superclass else class_name
+            
+            if label_type == 'super':
+                label_mapping[label] = superclass
+            elif label_type == 'class':
+                label_mapping[label] = class_name
+            elif label_type == 'both':
+                label_mapping[label] = f"{class_name} ({superclass})"
+    else:
+        label_mapping = {label: str(label) for label in np.unique(all_labels_np)}
+
+    # Get unique display labels and map to colors
+    unique_display_labels = sorted(set(label_mapping.values()))
+    if len(unique_display_labels) <= 10:
+        cmap = plt.cm.tab10
+    else:
+        cmap = plt.cm.tab20
+    colors = cmap(np.linspace(0, 1, len(unique_display_labels)))
+    color_map = dict(zip(unique_display_labels, colors))
+
+    # Plot points grouped by display labels
+    for display_label in unique_display_labels:
+        # Find all labels that map to this display label
+        matching_labels = [label for label, mapped_label in label_mapping.items() 
+                         if mapped_label == display_label]
+        mask = np.isin(all_labels_np, matching_labels)
         
         plt.scatter(twoD_embeddings[mask, 0], 
                    twoD_embeddings[mask, 1],
-                   c=[colors[i]],
-                   label=label_name,
+                   c=[color_map[display_label]],
+                   label=display_label,
                    alpha=0.6)
 
     # Add legend outside of the circle

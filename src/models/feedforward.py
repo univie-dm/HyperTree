@@ -30,6 +30,7 @@ class HyperbolicAE(pl.LightningModule):
         log_interval: int = 5,
         pretrain_epochs: int = 100,
         wandb_enabled: bool = False,
+        plot_label_type: str = 'class',
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -41,6 +42,7 @@ class HyperbolicAE(pl.LightningModule):
         self.log_interval = log_interval
         self.pretrain_epochs = pretrain_epochs
         self.wandb_enabled = wandb_enabled
+        self.plot_label_type = plot_label_type
         
         # Initialize Poincare ball manifold
         self.manifold = PoincareBall()
@@ -178,38 +180,47 @@ class HyperbolicAE(pl.LightningModule):
     def compute_hyphc_loss(self, embeddings: torch.Tensor, distances: torch.Tensor):
         """Compute HypHC loss with debugging."""
         n = embeddings.size(0)
-        num_triplets = n * 2
+        sampled_n = n^2
         device = embeddings.device
         eps = 1e-6
-        
+        distances += 1
+        distances /= 1
         distances = distances.clamp(min=eps, max=1e6)
+        lcas = torch.zeros((n, n), device=device)
         triplet_terms = []
-        
-        debug_interval = num_triplets // 4  # Print every 25% of triplets
-        
-        for idx in range(num_triplets):
-            i, j, k = torch.randperm(n, device=device)[:3]
-            
+        all_triplets = [(i, j, k) for i in range(n) for j in range(n) for k in range(n) if i != j and j != k and i != k]
+        sampled_triplets = random.sample(all_triplets, min(sampled_n, n))
+
+        for i,j,k in sampled_triplets:
+
             w_ij = distances[i, j]
             w_ik = distances[i, k]
             w_jk = distances[j, k]
             
             # Debug every few triplets
-            debug = (idx % debug_interval == 0)
             debug = False
             if debug:
-                print(f"\nTriplet {idx}:")
                 print(f"Distances - w_ij: {w_ij.item():.4f}, w_ik: {w_ik.item():.4f}, w_jk: {w_jk.item():.4f}")
             
             try:
-                d_ij = self.compute_lca_depth(embeddings[i], embeddings[j], debug=debug)
-                d_ik = self.compute_lca_depth(embeddings[i], embeddings[k], debug=debug)
-                d_jk = self.compute_lca_depth(embeddings[j], embeddings[k], debug=debug)
+                if lcas[i, j] == 0 or lcas[j, i] == 0:
+                    lcas[i, j] = self.compute_lca_depth(embeddings[i], embeddings[j], debug=debug)
+                    lcas[j, i] = lcas[i, j]
+                if lcas[i, k] == 0 or lcas[k, i] == 0:
+                    lcas[i, k] = self.compute_lca_depth(embeddings[i], embeddings[k], debug=debug)
+                    lcas[k, i] = lcas[i, k]
+                if lcas[j, k] == 0 or lcas[k, j] == 0:
+                    lcas[j, k] = self.compute_lca_depth(embeddings[j], embeddings[k], debug=debug)
+                    lcas[k, j] = lcas[j, k]
+
+                d_ij = lcas[i, j]
+                d_ik = lcas[i, k]
+                d_jk = lcas[j, k]
                 
                 if debug:
                     print(f"LCA depths - d_ij: {d_ij.item():.4f}, d_ik: {d_ik.item():.4f}, d_jk: {d_jk.item():.4f}")
                 
-                sim_weights = torch.stack([-w_ij, -w_ik, -w_jk])
+                sim_weights = torch.stack([w_ij, w_ik, w_jk])
                 weights = torch.stack([w_ij, w_ik, w_jk])
                 
                 max_sim = torch.max(sim_weights)
@@ -230,12 +241,15 @@ class HyperbolicAE(pl.LightningModule):
                     
             except RuntimeError as e:
                 if debug:
-                    print(f"Error in triplet {idx}: {str(e)}")
+                    print(f"Error in triplet {i}, {j}, {k}: {str(e)}")
                 continue
         
         if len(triplet_terms) > 0:
-            triplet_loss = torch.stack(triplet_terms).mean()
-            constant_term = 2 * distances.sum()/ distances.max() # / distances.max() not in paper
+            #triplet_loss = torch.stack(triplet_terms).mean()
+            triplet_loss = torch.stack(triplet_terms).sum()
+            constant_term = 2 * distances.sum() # / distances.max() not in paper
+            self.log('train/constant_term', constant_term.detach())
+            self.log('train/triplet_loss', triplet_loss.detach())
             total_loss = triplet_loss + constant_term
             if debug:
                 print(f"\nFinal stats:")
@@ -317,7 +331,7 @@ class HyperbolicAE(pl.LightningModule):
                     all_labels_np = all_labels.cpu().numpy()
                     if self.wandb_enabled:
                         class_names = self.trainer.datamodule.get_class_names()
-                        fig = plot_embeddings(all_embeddings_np, all_labels_np, class_names)
+                        fig = plot_embeddings(all_embeddings_np, all_labels_np, class_names, label_type=self.plot_label_type)
 
                         # Log and cleanup
                         self.logger.experiment.log({"Hyperbolic Embedding":[wandb.Image(fig, caption="Hyperbolic Embedding")]})
@@ -351,3 +365,4 @@ class HyperbolicAE(pl.LightningModule):
                 except RuntimeError as e:
                     print(f"Error during computation: {str(e)}")
                     return
+                    
