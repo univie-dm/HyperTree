@@ -12,6 +12,56 @@ from matplotlib import pyplot as plt
 
 from ..hyperbolic_math.src.utils.math_utils import arcosh
 
+def resize_conv3x3(in_planes, out_planes, scale=1):
+    """upsample + 3x3 convolution with padding to avoid checkerboard artifact."""
+    if scale == 1:
+        return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=1, padding=1, bias=False)
+    return nn.Sequential(
+        nn.Upsample(scale_factor=scale, mode='nearest'),
+        nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=1, padding=1, bias=False)
+    )
+
+def resize_conv1x1(in_planes, out_planes, scale=1):
+    """upsample + 1x1 convolution to avoid checkerboard artifact."""
+    if scale == 1:
+        return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=1, bias=False)
+    return nn.Sequential(
+        nn.Upsample(scale_factor=scale, mode='nearest'),
+        nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=1, bias=False)
+    )
+
+class DecoderBlock(nn.Module):
+    """ResNet block with resize convolutions for decoder."""
+    
+    expansion = 1
+    
+    def __init__(self, inplanes, planes, scale=1, upsample=None):
+        super().__init__()
+        self.conv1 = resize_conv3x3(inplanes, inplanes)
+        self.bn1 = nn.BatchNorm2d(inplanes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = resize_conv3x3(inplanes, planes, scale)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.upsample = upsample
+        
+    def forward(self, x):
+        identity = x
+        
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        
+        out = self.conv2(out)
+        out = self.bn2(out)
+        
+        if self.upsample is not None:
+            identity = self.upsample(x)
+            
+        out += identity
+        out = self.relu(out)
+        
+        return out
+
 from ..hyperbolic_math.src.manifolds import PoincareBall
 from ..eval import compute_dendrogram_purity, plot_embeddings
 
@@ -57,34 +107,37 @@ class HyperbolicResNet(pl.LightningModule):
             nn.Linear(256, latent_dim)
         )
         
-        # Decoder using ResNet-style blocks
-        self.decoder_fc = nn.Sequential(
-            nn.Linear(latent_dim, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Linear(256, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(),
-        )
+        # Initialize decoder layers
+        self.expansion = 1
+        self.inplanes = 512 * self.expansion
         
-        # Transposed convolution layers for upsampling
-        self.decoder_conv = nn.Sequential(
-            # 512 -> 256 channels, 4x4
-            nn.ConvTranspose2d(512, 256, kernel_size=4, stride=1, padding=0),
-            nn.BatchNorm2d(256),
-            nn.ReLU(),
-            # 256 -> 128 channels, 8x8
-            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            # 128 -> 64 channels, 16x16
-            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            # 64 -> 3 channels, 32x32
-            nn.ConvTranspose2d(64, 3, kernel_size=4, stride=2, padding=1),
-            nn.Tanh()
-        )
+        # Project latent vector to starting feature map
+        self.linear = nn.Linear(latent_dim, self.inplanes * 4 * 4)
+        
+        # Decoder ResNet blocks with upsampling
+        self.layer1 = self._make_decoder_layer(256, 2, scale=2)  # 8x8
+        self.layer2 = self._make_decoder_layer(128, 2, scale=2)  # 16x16
+        self.layer3 = self._make_decoder_layer(64, 2, scale=2)   # 32x32
+        
+        # Final convolution to get to 3 channels
+        self.conv1 = nn.Conv2d(64, 3, kernel_size=3, stride=1, padding=1, bias=False)
+        self.tanh = nn.Tanh()
+        
+    def _make_decoder_layer(self, planes, blocks, scale=1):
+        upsample = None
+        if scale != 1 or self.inplanes != planes:
+            upsample = nn.Sequential(
+                resize_conv1x1(self.inplanes, planes, scale),
+                nn.BatchNorm2d(planes)
+            )
+            
+        layers = []
+        layers.append(DecoderBlock(self.inplanes, planes, scale, upsample))
+        self.inplanes = planes
+        for _ in range(1, blocks):
+            layers.append(DecoderBlock(self.inplanes, planes))
+            
+        return nn.Sequential(*layers)
 
     def compute_distance_matrix(self, z: torch.Tensor, batch_size: int = 1024) -> torch.Tensor:
         """
@@ -104,13 +157,20 @@ class HyperbolicResNet(pl.LightningModule):
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         tangent_vecs = self.manifold.logmap_0(z, self.c)
-        # Pass through fully connected layers
-        h = self.decoder_fc(tangent_vecs)
-        # Reshape for convolutional layers
-        h = h.view(-1, 512, 1, 1)
-        # Pass through transposed convolution layers
-        x_recon = self.decoder_conv(h)
-        return x_recon
+        # Project to initial feature map
+        x = self.linear(tangent_vecs)
+        x = x.view(-1, 512 * self.expansion, 4, 4)
+        
+        # Pass through decoder layers
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        
+        # Final convolution and activation
+        x = self.conv1(x)
+        x = self.tanh(x)
+        
+        return x
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         z, tangent_vecs = self.encode(x)
