@@ -140,15 +140,17 @@ class HyperbolicResNet(pl.LightningModule):
         return nn.Sequential(*layers)
 
     def compute_distance_matrix(self, z: torch.Tensor, batch_size: int = 1024) -> torch.Tensor:
-        """
-        Compute pairwise hyperbolic distances between inputs after encoding in batches.
-        Returns raw distances since for HypHC:
-        - Higher distance means less similar points
-        - Less similar points should merge higher in tree (smaller LCA depth)
-        """
-        manifold_min_enorm = self.manifold.min_enorm
-        distances = compute_strided_pairwise_distances(z, z.size(0), manifold_min_enorm, self.c, batch_size)
-        return distances
+            """
+            Compute pairwise hyperbolic distances between inputs after encoding in batches.
+            Returns raw distances since for HypHC:
+            - Higher distance means less similar points
+            - Less similar points should merge higher in tree (smaller LCA depth)
+            """
+            n = z.size(0)
+            manifold_min_enorm = self.manifold.min_enorm
+            with torch.no_grad():
+                new_dist = compute_strided_pairwise_distances(z, n, manifold_min_enorm, self.c, batch_size)
+            return new_dist
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         tangent_vecs = self.encoder(x)
@@ -289,24 +291,32 @@ class HyperbolicResNet(pl.LightningModule):
                     print(f"Error in triplet {i}, {j}, {k}: {str(e)}")
                 continue
         
-        if len(triplet_terms) > 0:
-            triplet_loss = torch.stack(triplet_terms).sum()
-            constant_term = 2*distances.sum()
-            if 'train/constant_term' not in self.metrics:
-                self.metrics['train/constant_term'] = []
-                self.metrics['train/triplet_loss'] = []
-            self.metrics['train/constant_term'].append(constant_term.detach())
-            self.metrics['train/triplet_loss'].append(triplet_loss.detach())
-            total_loss = triplet_loss + constant_term
-            if debug:
-                print(f"\nFinal stats:")
-                print(f"Triplet loss mean: {triplet_loss.item():.4f}")
-                print(f"Constant term: {constant_term.item():.4f}")
-                print(f"Total loss: {total_loss.item():.4f}")
+    
+        triplet_loss = torch.stack(triplet_terms).sum()
+        
+        # Get unique elements from triplets
+        unique_elements = list(set([i for triplet in sampled_triplets for i in triplet]))
+    
+        # Sum distances between all unique pairs
+        sum_dists = 0
+        for i in range(len(unique_elements)):
+            for j in range(i+1, len(unique_elements)):
+                idx1, idx2 = unique_elements[i], unique_elements[j]
+                sum_dists += distances[idx1, idx2]
             
-            return total_loss
-        else:
-            return torch.tensor(0.0, device=device, requires_grad=True)
+        if 'train/sum_dists' not in self.metrics:
+            self.metrics['train/sum_dists'] = []
+            self.metrics['train/triplet_loss'] = []
+        self.metrics['train/sum_dists'].append(sum_dists.detach())
+        self.metrics['train/triplet_loss'].append(triplet_loss.detach())
+        total_loss = triplet_loss + sum_dists*2
+        if debug:
+            print(f"\nFinal stats:")
+            print(f"Triplet loss mean: {triplet_loss.item():.4f}")
+            print(f"Constant term: {sum_dists.item():.4f}")
+            print(f"Total loss: {total_loss.item():.4f}")
+        
+        return total_loss
 
     def training_step(self, batch, batch_idx):
         x_aug, x, y = batch
