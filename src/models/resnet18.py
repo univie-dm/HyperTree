@@ -57,15 +57,33 @@ class HyperbolicResNet(pl.LightningModule):
             nn.Linear(256, latent_dim)
         )
         
-        # Decoder (mirror of modified ResNet structure)
-        self.decoder = nn.Sequential(
+        # Decoder using ResNet-style blocks
+        self.decoder_fc = nn.Sequential(
             nn.Linear(latent_dim, 256),
             nn.BatchNorm1d(256),
             nn.ReLU(),
             nn.Linear(256, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(),
-            nn.Linear(512, 3 * 32 * 32)  # Assuming 32x32 input images
+        )
+        
+        # Transposed convolution layers for upsampling
+        self.decoder_conv = nn.Sequential(
+            # 512 -> 256 channels, 4x4
+            nn.ConvTranspose2d(512, 256, kernel_size=4, stride=1, padding=0),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            # 256 -> 128 channels, 8x8
+            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            # 128 -> 64 channels, 16x16
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            # 64 -> 3 channels, 32x32
+            nn.ConvTranspose2d(64, 3, kernel_size=4, stride=2, padding=1),
+            nn.Tanh()
         )
 
     def compute_distance_matrix(self, z: torch.Tensor, batch_size: int = 1024) -> torch.Tensor:
@@ -86,13 +104,17 @@ class HyperbolicResNet(pl.LightningModule):
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         tangent_vecs = self.manifold.logmap_0(z, self.c)
-        x_recon = self.decoder(tangent_vecs)
+        # Pass through fully connected layers
+        h = self.decoder_fc(tangent_vecs)
+        # Reshape for convolutional layers
+        h = h.view(-1, 512, 1, 1)
+        # Pass through transposed convolution layers
+        x_recon = self.decoder_conv(h)
         return x_recon
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         z, tangent_vecs = self.encode(x)
         x_recon = self.decode(z)
-        x_recon = x_recon.view(-1, 3, 32, 32)
         return x_recon, z, tangent_vecs
 
     def configure_optimizers(self):
