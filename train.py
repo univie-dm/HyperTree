@@ -1,3 +1,4 @@
+import warnings
 import omegaconf
 import torch
 import wandb
@@ -14,6 +15,7 @@ from lightning.pytorch import seed_everything
 from threadpoolctl import threadpool_limits
 
 
+
 @hydra.main(version_base=None, config_path="configs", config_name="config")
 @threadpool_limits.wrap(limits=45, user_api="openmp")
 @threadpool_limits.wrap(limits=1, user_api="blas")
@@ -24,6 +26,8 @@ def main(cfg: DictConfig) -> None:
     else:
         print("Warning: Running without setting seed!")
     torch.set_float32_matmul_precision('medium')
+
+    warnings.filterwarnings("ignore", ".*is smaller than the logging interval Trainer.*")
     
     if cfg.wandb.enabled:
         logger = WandbLogger(
@@ -66,6 +70,7 @@ def main(cfg: DictConfig) -> None:
             data_dir=cfg.dataset.data_dir,
             resize=cfg.dataset.resize,
             num_workers=cfg.num_workers,
+            subset=cfg.dataset.subset,
         )
         input_dim = cfg.dataset.resize * cfg.dataset.resize * cfg.dataset.channels
         is_image = True

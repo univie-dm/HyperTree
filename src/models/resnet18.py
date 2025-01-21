@@ -1,4 +1,6 @@
 import random
+import time
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,6 +9,8 @@ from torchvision.models import resnet18
 from typing import List, Tuple
 import wandb
 from matplotlib import pyplot as plt
+
+from ..hyperbolic_math.src.utils.math_utils import arcosh
 
 from ..hyperbolic_math.src.manifolds import PoincareBall
 from ..eval import compute_dendrogram_purity, plot_embeddings
@@ -37,6 +41,7 @@ class HyperbolicResNet(pl.LightningModule):
         self.pretrain_epochs = pretrain_epochs
         self.wandb_enabled = wandb_enabled
         self.plot_label_type = plot_label_type
+        self.metrics = {}
         
         # Initialize Poincare ball manifold
         self.manifold = PoincareBall()
@@ -70,30 +75,9 @@ class HyperbolicResNet(pl.LightningModule):
         - Higher distance means less similar points
         - Less similar points should merge higher in tree (smaller LCA depth)
         """
-        n = z.size(0)
-        distance_matrix = torch.zeros((n, n), device=z.device)
-        
-        with torch.no_grad():
-            for i in range(0, n, batch_size):
-                end_i = min(i + batch_size, n)
-                for j in range(0, n, batch_size):
-                    end_j = min(j + batch_size, n)
-                    
-                    distances = self.manifold.dist(
-                        z[i:end_i].unsqueeze(1), 
-                        z[j:end_j].unsqueeze(0),
-                        self.c
-                    )
-                    
-                    distances = distances.squeeze()
-                    distance_matrix[i:end_i, j:end_j] = distances
-                    
-                    if i != j:
-                        distance_matrix[j:end_j, i:end_i] = distance_matrix[i:end_i, j:end_j].t()
-                
-            # Set diagonal to 0 (self-distance)
-            distance_matrix.fill_diagonal_(0.0)
-            return distance_matrix
+        manifold_min_enorm = self.manifold.min_enorm
+        distances = compute_strided_pairwise_distances(z, z.size(0), manifold_min_enorm, self.c, batch_size)
+        return distances
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         tangent_vecs = self.encoder(x)
@@ -166,8 +150,7 @@ class HyperbolicResNet(pl.LightningModule):
         device = embeddings.device
         eps = 1e-6
         distances += 1
-        distances /= 1
-        distances = distances.clamp(min=eps, max=1e6)
+        distances = distances.clamp(min=eps, max=1e8)
         lcas = torch.zeros((n, n), device=device)
         triplet_terms = []
         all_triplets = [(i, j, k) for i in range(n) for j in range(n) for k in range(n) if i != j and j != k and i != k]
@@ -226,9 +209,12 @@ class HyperbolicResNet(pl.LightningModule):
         
         if len(triplet_terms) > 0:
             triplet_loss = torch.stack(triplet_terms).sum()
-            constant_term = 2 * distances.sum()
-            self.log('train/constant_term', constant_term.detach())
-            self.log('train/triplet_loss', triplet_loss.detach())
+            constant_term = 2*distances.sum()
+            if 'train/constant_term' not in self.metrics:
+                self.metrics['train/constant_term'] = []
+                self.metrics['train/triplet_loss'] = []
+            self.metrics['train/constant_term'].append(constant_term.detach())
+            self.metrics['train/triplet_loss'].append(triplet_loss.detach())
             total_loss = triplet_loss + constant_term
             if debug:
                 print(f"\nFinal stats:")
@@ -248,17 +234,25 @@ class HyperbolicResNet(pl.LightningModule):
 
         recon_loss = F.mse_loss(x_recon, x)
             
-        self.log('train/recon_loss', recon_loss.detach())
+        if 'train/recon_loss' not in self.metrics:
+            self.metrics['train/recon_loss'] = []
+            
+        self.metrics['train/recon_loss'].append(recon_loss.detach())
         
         hyphc_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
 
         if self.current_epoch >= self.pretrain_epochs:
-            distances = self.compute_distance_matrix(z)
+            distances = self.compute_distance_matrix(z, batch_size=int(1e3))
             hyphc_loss = self.compute_hyphc_loss(z, distances)
-            self.log('train/hyphc_loss', hyphc_loss.detach())
+            if 'train/hyphc_loss' not in self.metrics:
+                self.metrics['train/hyphc_loss'] = []
+            self.metrics['train/hyphc_loss'].append(hyphc_loss.detach())
         
         loss = recon_loss + self.hyphc_weight * hyphc_loss
-        self.log('train/total_loss', loss.detach(), on_epoch=True, prog_bar=True)
+        if 'train/total_loss' not in self.metrics:
+            self.metrics['train/total_loss'] = []
+
+        self.metrics['train/total_loss'].append(loss.detach())
         
         return loss
     
@@ -307,7 +301,7 @@ class HyperbolicResNet(pl.LightningModule):
                         fig = plot_embeddings(all_embeddings_np, all_labels_np, class_names, label_type=self.plot_label_type)
 
                         # Log and cleanup
-                        self.logger.experiment.log({"Hyperbolic Embedding":[wandb.Image(fig, caption="Hyperbolic Embedding")]})
+                        self.metrics["eval/Hyperbolic Embedding"] = wandb.Image(fig, caption="Hyperbolic Embeddings Epoch {}".format(self.current_epoch))
                         plt.close()
                     
                     # Free memory
@@ -315,7 +309,7 @@ class HyperbolicResNet(pl.LightningModule):
                     torch.cuda.empty_cache()
                     similarities = self.compute_distance_matrix(
                         all_embeddings.to(self.device), 
-                        batch_size=256  # Smaller batch size for distance computation
+                        batch_size=int(1e3)  # Smaller batch size for distance computation
                     )
                     
                     # Move to CPU for dendrogram purity computation
@@ -333,8 +327,57 @@ class HyperbolicResNet(pl.LightningModule):
                     )
                     
                     # Log the metric
-                    self.log('metrics/dendrogram_purity', dp_score, on_epoch=True, prog_bar=True)
-                    
+                    self.metrics['eval/dendrogram_purity'] = dp_score
+
                 except RuntimeError as e:
                     print(f"Error during computation: {str(e)}")
                     return
+
+        for key, value in self.metrics.items():
+            if isinstance(value, list):
+                self.metrics[key] = torch.mean(torch.stack(value)).item()
+        self.metrics['epoch'] = self.current_epoch
+        if isinstance(self.logger, pl.loggers.WandbLogger):
+            self.logger.experiment.log(self.metrics, step=self.current_epoch)
+        self.metrics = {}
+
+@torch.jit.script
+def compute_strided_pairwise_distances(z: torch.Tensor, n: int, manifold_min_enorm: float, c: torch.Tensor, batch_size: int) -> torch.Tensor:
+    
+    z_sqnorm = z.pow(2).sum(dim=-1)
+    distances = torch.zeros((n, n), device=z.device)
+    
+    for i in range(0, n, batch_size):
+        end_i = min(i + batch_size, n)
+        for j in range(i + 1, n, batch_size):
+            end_j = min(j + batch_size, n)
+            
+            # Get blocks of points
+            x = z[i:end_i]  # Shape: (batch_i, d)
+            y = z[j:end_j]  # Shape: (batch_j, d)
+            
+            # Get corresponding squared norms and reshape for broadcasting
+            x_sqnorm = z_sqnorm[i:end_i].view(-1, 1)      # Shape: (batch_i, 1)
+            y_sqnorm = z_sqnorm[j:end_j].view(1, -1)      # Shape: (1, batch_j)
+            
+            # Compute block distances
+            xy_diff = x.unsqueeze(1) - y.unsqueeze(0)     # Shape: (batch_i, batch_j, d)
+            xy_diff_sqnorm = xy_diff.pow(2).sum(dim=-1)   # Shape: (batch_i, batch_j)
+            
+            # Compute denominator terms ensuring correct broadcasting
+            denom1 = (1 - c * x_sqnorm)                   # Shape: (batch_i, 1)
+            denom2 = (1 - c * y_sqnorm)                   # Shape: (1, batch_j)
+            denominator = denom1 * denom2                  # Shape: (batch_i, batch_j)
+            
+            # Compute final result
+            res = 1 + 2 * c * xy_diff_sqnorm / denominator
+            condition = res < 1 + manifold_min_enorm
+            block_distances = torch.where(condition,
+                                        torch.zeros_like(res),
+                                        torch.arccosh(res) / c.sqrt())
+            
+            # Fill distance matrix
+            distances[i:end_i, j:end_j] = block_distances
+            distances[j:end_j, i:end_i] = block_distances.t()
+    
+    return distances

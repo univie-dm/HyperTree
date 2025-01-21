@@ -1,27 +1,27 @@
 # Training parameters
 seed: 400
-pretrain_epochs: 10
-clustering_epochs: 20
-embedding_dim: 10
+pretrain_epochs: 200
+clustering_epochs: 200
+embedding_dim: 100
 
 # Model architecture
-ae_type: 'feedfoward'
+ae_type: 'resnet'
 hidden_dims: [512, 256, 128, 64, 32]
 learning_rate: 1e-3
 triplet_loss_weight: 1.0
 magnitude_curvature: 1.0
 
-num_workers: 4
-batch_size: 128
+num_workers: 8
+batch_size: 256
 
 # Logging
-log_interval: 2
+log_interval: 5
 wandb:
   enabled: true
   project: 'hyper_clustering'
   entity: 'kevin-sidak-team'
   save_dir: './logs'
-  plot_label_type: 'class'
+  plot_label_type: 'super'
 
 hydra:
   run:

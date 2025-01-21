@@ -135,6 +135,8 @@ class ColorDataModule(pl.LightningDataModule):
     def train_dataloader(self):
         if self.subset == 'all':
             dataset = self.full_dataset
+        elif self.subset == 'smallest':
+            dataset = self.test_dataset
         else:
             dataset = self.train_dataset
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True,
