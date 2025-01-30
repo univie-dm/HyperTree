@@ -1,16 +1,20 @@
 import random
 import time
 import numpy as np
+from sklearn.manifold import TSNE
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from torchvision.models import resnet18
 from typing import List, Tuple
+from tqdm import tqdm
 import wandb
 from matplotlib import pyplot as plt
 
-from ..hyperbolic_math.src.utils.math_utils import arcosh
+import warnings
+warnings.filterwarnings("ignore", ".*'n_iter' was renamed to 'max_iter'.*")
+
 
 def resize_conv3x3(in_planes, out_planes, scale=1):
     """upsample + 3x3 convolution with padding to avoid checkerboard artifact."""
@@ -227,20 +231,22 @@ class HyperbolicResNet(pl.LightningModule):
             
         return depth
 
-    def compute_hyphc_loss(self, embeddings: torch.Tensor, distances: torch.Tensor):
+    def compute_hyphc_loss(self, embeddings: torch.Tensor, distances: torch.Tensor, sampled_n: int = 1e6) -> torch.Tensor:
         """Compute HypHC loss with debugging."""
         n = embeddings.size(0)
-        sampled_n = n^2
         device = embeddings.device
-        eps = 1e-6
-        distances += 1
-        distances = distances.clamp(min=eps, max=1e8)
+        # invert distances
+        distances = torch.reciprocal(1+distances)
+
         lcas = torch.zeros((n, n), device=device)
         triplet_terms = []
         all_triplets = [(i, j, k) for i in range(n) for j in range(n) for k in range(n) if i != j and j != k and i != k]
-        sampled_triplets = random.sample(all_triplets, min(sampled_n, n))
+        if sampled_n > 0:
+            sampled_triplets = random.sample(all_triplets, min(sampled_n, n))
+        else:
+            sampled_triplets = all_triplets
 
-        for i,j,k in sampled_triplets:
+        for i,j,k in tqdm(sampled_triplets):
             w_ij = distances[i, j]
             w_ik = distances[i, k]
             w_jk = distances[j, k]
@@ -272,7 +278,7 @@ class HyperbolicResNet(pl.LightningModule):
                 
                 max_sim = torch.max(sim_weights)
                 exp_sims = torch.exp((sim_weights - max_sim) / self.temperature)
-                softmax_denom = exp_sims.sum().clamp(min=eps)
+                softmax_denom = exp_sims.sum()
                 softmax = exp_sims / softmax_denom
                 
                 if debug:
@@ -303,20 +309,14 @@ class HyperbolicResNet(pl.LightningModule):
             for j in range(i+1, len(unique_elements)):
                 idx1, idx2 = unique_elements[i], unique_elements[j]
                 sum_dists += distances[idx1, idx2]
-            
-        if 'train/sum_dists' not in self.metrics:
-            self.metrics['train/sum_dists'] = []
-            self.metrics['train/triplet_loss'] = []
-        self.metrics['train/sum_dists'].append(sum_dists.detach())
-        self.metrics['train/triplet_loss'].append(triplet_loss.detach())
-        total_loss = triplet_loss + sum_dists*2
+        total_loss = triplet_loss+sum_dists*2
         if debug:
             print(f"\nFinal stats:")
             print(f"Triplet loss mean: {triplet_loss.item():.4f}")
             print(f"Constant term: {sum_dists.item():.4f}")
             print(f"Total loss: {total_loss.item():.4f}")
         
-        return total_loss
+        return total_loss, triplet_loss, sum_dists
 
     def training_step(self, batch, batch_idx):
         x_aug, x, y = batch
@@ -335,10 +335,16 @@ class HyperbolicResNet(pl.LightningModule):
 
         if self.current_epoch >= self.pretrain_epochs:
             distances = self.compute_distance_matrix(z, batch_size=int(1e3))
-            hyphc_loss = self.compute_hyphc_loss(z, distances)
+            samples = x.size(0)**2
+            hyphc_loss, triplet_loss, sum_dists = self.compute_hyphc_loss(z, distances, sampled_n=samples)
             if 'train/hyphc_loss' not in self.metrics:
                 self.metrics['train/hyphc_loss'] = []
             self.metrics['train/hyphc_loss'].append(hyphc_loss.detach())
+            if 'train/sum_dists' not in self.metrics:
+                self.metrics['train/sum_dists'] = []
+                self.metrics['train/triplet_loss'] = []
+            self.metrics['train/sum_dists'].append(sum_dists.detach())
+            self.metrics['train/triplet_loss'].append(triplet_loss.detach())
         
         loss = recon_loss + self.hyphc_weight * hyphc_loss
         if 'train/total_loss' not in self.metrics:
@@ -389,16 +395,28 @@ class HyperbolicResNet(pl.LightningModule):
                     all_embeddings_np = all_embeddings.cpu().numpy()
                     all_labels_np = all_labels.cpu().numpy()
                     if self.wandb_enabled:
+                        
+                        print("Computing dendrogram purity and embeddings for logging")
                         class_names = self.trainer.datamodule.get_class_names()
                         fig = plot_embeddings(all_embeddings_np, all_labels_np, class_names, label_type=self.plot_label_type)
 
                         # Log and cleanup
                         self.metrics["eval/Hyperbolic Embedding"] = wandb.Image(fig, caption="Hyperbolic Embeddings Epoch {}".format(self.current_epoch))
                         plt.close()
-                    
+                        
+                        print("Computing T-SNE embeddings for logging")
+                        tsne = TSNE(n_components=2, perplexity=30, n_iter=300)
+                        embeddings = tsne.fit_transform(all_embeddings_np)
+                        fig = plot_embeddings(embeddings, all_labels_np, class_names, label_type=self.plot_label_type)
+
+                        # Log and cleanup
+                        self.metrics["eval/T-SNE Embedding"] = wandb.Image(fig, caption="T-SNE Embeddings Epoch {}".format(self.current_epoch))
+                        plt.close()
+
                     # Free memory
                     del embeddings, labels
                     torch.cuda.empty_cache()
+                    print("Computing similarity matrix")
                     similarities = self.compute_distance_matrix(
                         all_embeddings.to(self.device), 
                         batch_size=int(1e3)  # Smaller batch size for distance computation
@@ -411,6 +429,7 @@ class HyperbolicResNet(pl.LightningModule):
                     # Free GPU memory
                     torch.cuda.empty_cache()
                     
+                    print("Computing dendrogram purity")
                     # Compute dendrogram purity
                     dp_score = compute_dendrogram_purity(
                         similarities,
@@ -421,6 +440,12 @@ class HyperbolicResNet(pl.LightningModule):
                     # Log the metric
                     self.metrics['eval/dendrogram_purity'] = dp_score
 
+                    print("Computing HypHC loss")
+                    hyhc_loss, triplet_loss, sum_dists = self.compute_hyphc_loss(all_embeddings, similarities, sampled_n=(x.size(0)**2))
+                    self.metrics['eval/hyphc_loss'] = hyhc_loss.item()
+                    self.metrics['eval/triplet_loss'] = triplet_loss.item()
+                    self.metrics['eval/sum_dists'] = sum_dists.item()
+
                 except RuntimeError as e:
                     print(f"Error during computation: {str(e)}")
                     return
@@ -430,7 +455,7 @@ class HyperbolicResNet(pl.LightningModule):
                 self.metrics[key] = torch.mean(torch.stack(value)).item()
         self.metrics['epoch'] = self.current_epoch
         if isinstance(self.logger, pl.loggers.WandbLogger):
-            self.logger.experiment.log(self.metrics, step=self.current_epoch)
+            self.logger.experiment.log(self.metrics, step=self.current_epoch+1)
         self.metrics = {}
 
 @torch.jit.script

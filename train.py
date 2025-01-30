@@ -36,6 +36,7 @@ def main(cfg: DictConfig) -> None:
             save_dir=cfg.wandb.save_dir,
             dir=cfg.wandb.save_dir,
             config=omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
+            tags=cfg.wandb.tags,
         )
 
     else:
