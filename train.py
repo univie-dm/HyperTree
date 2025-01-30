@@ -110,6 +110,8 @@ def main(cfg: DictConfig) -> None:
             pretrain_epochs=cfg.pretrain_epochs,
             wandb_enabled=cfg.wandb.enabled,
             plot_label_type=cfg.wandb.plot_label_type,
+            triplet_sampled_n=cfg.triplet_sampled_n,
+            loss_batch_size=cfg.loss_batch_size,
         )
     else:
         raise ValueError("Invalid autoencoder type")

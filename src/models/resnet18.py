@@ -1,3 +1,4 @@
+import math
 import random
 import time
 import numpy as np
@@ -8,11 +9,13 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 from torchvision.models import resnet18
 from typing import List, Tuple
-from tqdm import tqdm
+from tqdm import tqdm, trange
 import wandb
 from matplotlib import pyplot as plt
 
 import warnings
+
+from ..hyperbolic_math.src.utils.math_utils import arcosh
 warnings.filterwarnings("ignore", ".*'n_iter' was renamed to 'max_iter'.*")
 
 
@@ -83,6 +86,8 @@ class HyperbolicResNet(pl.LightningModule):
         pretrain_epochs: int = 100,
         wandb_enabled: bool = False,
         plot_label_type: str = 'class',
+        triplet_sampled_n: int = 1e6,
+        loss_batch_size: int = 1000,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -95,6 +100,8 @@ class HyperbolicResNet(pl.LightningModule):
         self.pretrain_epochs = pretrain_epochs
         self.wandb_enabled = wandb_enabled
         self.plot_label_type = plot_label_type
+        self.triplet_sampled_n = find_n_for_combinations(triplet_sampled_n, 3)
+        self.loss_batch_size = int(loss_batch_size)
         self.metrics = {}
         
         # Initialize Poincare ball manifold
@@ -231,91 +238,78 @@ class HyperbolicResNet(pl.LightningModule):
             
         return depth
 
-    def compute_hyphc_loss(self, embeddings: torch.Tensor, distances: torch.Tensor, sampled_n: int = 1e6) -> torch.Tensor:
-        """Compute HypHC loss with debugging."""
+    def compute_hyphc_loss(self, embeddings: torch.Tensor, distances: torch.Tensor, sampled_n: int = 1e6, batch_size: int = 1000) -> torch.Tensor:
         n = embeddings.size(0)
         device = embeddings.device
-        # invert distances
-        distances = torch.reciprocal(1+distances)
+        distances = torch.reciprocal(1 + distances)
 
-        lcas = torch.zeros((n, n), device=device)
-        triplet_terms = []
-        all_triplets = [(i, j, k) for i in range(n) for j in range(n) for k in range(n) if i != j and j != k and i != k]
+        '''# Generate all possible triplets efficiently
+        i_idx = torch.arange(n, device=device).repeat(n * n)
+        j_idx = torch.arange(n, device=device).repeat_interleave(n).repeat(n)
+        k_idx = torch.arange(n, device=device).repeat_interleave(n * n)
+        
+        # Filter valid triplets
+        mask = (i_idx != j_idx) & (j_idx != k_idx) & (i_idx != k_idx)
+        i_idx, j_idx, k_idx = i_idx[mask], j_idx[mask], k_idx[mask]
+
+        # Sample if requested
         if sampled_n > 0:
-            sampled_triplets = random.sample(all_triplets, min(sampled_n, n))
-        else:
-            sampled_triplets = all_triplets
+            num_triplets = len(i_idx)
+            if sampled_n < num_triplets:
+                perm = torch.randperm(num_triplets, device=device)[:int(sampled_n)]
+                i_idx, j_idx, k_idx = i_idx[perm], j_idx[perm], k_idx[perm]
+        '''
+        sampled_idx = torch.randint(0, n, (min(sampled_n, n),))
+        sampled_triplets = torch.combinations(sampled_idx, r=3).to(device)
+        # Process in batches to manage memory
+        num_batches = (len(sampled_triplets) + batch_size - 1) // batch_size
+        triplet_terms = []
+        lcas = torch.zeros((n, n), device=device)
 
-        for i,j,k in tqdm(sampled_triplets):
-            w_ij = distances[i, j]
-            w_ik = distances[i, k]
-            w_jk = distances[j, k]
+        for b in range(num_batches):
+            start_idx = b * batch_size
+            end_idx = min((b + 1) * batch_size, len(sampled_triplets))
             
-            debug = False
-            if debug:
-                print(f"Distances - w_ij: {w_ij.item():.4f}, w_ik: {w_ik.item():.4f}, w_jk: {w_jk.item():.4f}")
-            
-            try:
-                if lcas[i, j] == 0 or lcas[j, i] == 0:
-                    lcas[i, j] = self.compute_lca_depth(embeddings[i], embeddings[j], debug=debug)
+            batch_i, batch_j, batch_k = sampled_triplets[start_idx:end_idx].unbind(1)
+
+            # Get weights for the batch
+            w_ij = distances[batch_i, batch_j]
+            w_ik = distances[batch_i, batch_k]
+            w_jk = distances[batch_j, batch_k]
+
+            # Compute LCAs for new pairs
+            for i, j in zip(batch_i, batch_j):
+                if lcas[i, j] == 0:
+                    lcas[i, j] = self.compute_lca_depth(embeddings[i], embeddings[j])
                     lcas[j, i] = lcas[i, j]
-                if lcas[i, k] == 0 or lcas[k, i] == 0:
-                    lcas[i, k] = self.compute_lca_depth(embeddings[i], embeddings[k], debug=debug)
+            for i, k in zip(batch_i, batch_k):
+                if lcas[i, k] == 0:
+                    lcas[i, k] = self.compute_lca_depth(embeddings[i], embeddings[k])
                     lcas[k, i] = lcas[i, k]
-                if lcas[j, k] == 0 or lcas[k, j] == 0:
-                    lcas[j, k] = self.compute_lca_depth(embeddings[j], embeddings[k], debug=debug)
+            for j, k in zip(batch_j, batch_k):
+                if lcas[j, k] == 0:
+                    lcas[j, k] = self.compute_lca_depth(embeddings[j], embeddings[k])
                     lcas[k, j] = lcas[j, k]
 
-                d_ij = lcas[i, j]
-                d_ik = lcas[i, k]
-                d_jk = lcas[j, k]
-                
-                if debug:
-                    print(f"LCA depths - d_ij: {d_ij.item():.4f}, d_ik: {d_ik.item():.4f}, d_jk: {d_jk.item():.4f}")
-                
-                sim_weights = torch.stack([w_ij, w_ik, w_jk])
-                weights = torch.stack([w_ij, w_ik, w_jk])
-                
-                max_sim = torch.max(sim_weights)
-                exp_sims = torch.exp((sim_weights - max_sim) / self.temperature)
-                softmax_denom = exp_sims.sum()
-                softmax = exp_sims / softmax_denom
-                
-                if debug:
-                    print(f"Softmax weights: {softmax.cpu().numpy()}")
-                
-                dot_product = torch.dot(weights, softmax)
-                triplet_term = (w_ij + w_ik + w_jk) - dot_product
-                
-                if debug:
-                    print(f"Triplet term: {triplet_term.item():.4f}")
-                
-                triplet_terms.append(triplet_term)
-                    
-            except RuntimeError as e:
-                if debug:
-                    print(f"Error in triplet {i}, {j}, {k}: {str(e)}")
-                continue
-        
-    
-        triplet_loss = torch.stack(triplet_terms).sum()
-        
-        # Get unique elements from triplets
-        unique_elements = list(set([i for triplet in sampled_triplets for i in triplet]))
-    
-        # Sum distances between all unique pairs
-        sum_dists = 0
-        for i in range(len(unique_elements)):
-            for j in range(i+1, len(unique_elements)):
-                idx1, idx2 = unique_elements[i], unique_elements[j]
-                sum_dists += distances[idx1, idx2]
-        total_loss = triplet_loss+sum_dists*2
-        if debug:
-            print(f"\nFinal stats:")
-            print(f"Triplet loss mean: {triplet_loss.item():.4f}")
-            print(f"Constant term: {sum_dists.item():.4f}")
-            print(f"Total loss: {total_loss.item():.4f}")
-        
+            # Compute softmax and loss terms
+            sim_weights = torch.stack([w_ij, w_ik, w_jk], dim=1)
+            max_sim = torch.max(sim_weights, dim=1)[0].unsqueeze(1)
+            exp_sims = torch.exp((sim_weights - max_sim) / self.temperature)
+            softmax = exp_sims / exp_sims.sum(dim=1, keepdim=True)
+            
+            weights = torch.stack([w_ij, w_ik, w_jk], dim=1)
+            dot_product = torch.sum(weights * softmax, dim=1)
+            triplet_term = (w_ij + w_ik + w_jk) - dot_product
+            triplet_terms.append(triplet_term)
+
+        triplet_loss = torch.cat(triplet_terms).sum()
+
+        # Compute distance sum efficiently
+
+        pairs_i, pairs_j = torch.combinations(sampled_idx, r=2).unbind(1)
+        sum_dists = distances[pairs_i, pairs_j].sum()
+
+        total_loss = triplet_loss + sum_dists * 2
         return total_loss, triplet_loss, sum_dists
 
     def training_step(self, batch, batch_idx):
@@ -335,8 +329,7 @@ class HyperbolicResNet(pl.LightningModule):
 
         if self.current_epoch >= self.pretrain_epochs:
             distances = self.compute_distance_matrix(z, batch_size=int(1e3))
-            samples = x.size(0)**2
-            hyphc_loss, triplet_loss, sum_dists = self.compute_hyphc_loss(z, distances, sampled_n=samples)
+            hyphc_loss, triplet_loss, sum_dists = self.compute_hyphc_loss(z, distances, sampled_n=self.triplet_sampled_n, batch_size=self.loss_batch_size)
             if 'train/hyphc_loss' not in self.metrics:
                 self.metrics['train/hyphc_loss'] = []
             self.metrics['train/hyphc_loss'].append(hyphc_loss.detach())
@@ -396,7 +389,6 @@ class HyperbolicResNet(pl.LightningModule):
                     all_labels_np = all_labels.cpu().numpy()
                     if self.wandb_enabled:
                         
-                        print("Computing dendrogram purity and embeddings for logging")
                         class_names = self.trainer.datamodule.get_class_names()
                         fig = plot_embeddings(all_embeddings_np, all_labels_np, class_names, label_type=self.plot_label_type)
 
@@ -404,7 +396,6 @@ class HyperbolicResNet(pl.LightningModule):
                         self.metrics["eval/Hyperbolic Embedding"] = wandb.Image(fig, caption="Hyperbolic Embeddings Epoch {}".format(self.current_epoch))
                         plt.close()
                         
-                        print("Computing T-SNE embeddings for logging")
                         tsne = TSNE(n_components=2, perplexity=30, n_iter=300)
                         embeddings = tsne.fit_transform(all_embeddings_np)
                         fig = plot_embeddings(embeddings, all_labels_np, class_names, label_type=self.plot_label_type)
@@ -416,7 +407,6 @@ class HyperbolicResNet(pl.LightningModule):
                     # Free memory
                     del embeddings, labels
                     torch.cuda.empty_cache()
-                    print("Computing similarity matrix")
                     similarities = self.compute_distance_matrix(
                         all_embeddings.to(self.device), 
                         batch_size=int(1e3)  # Smaller batch size for distance computation
@@ -429,7 +419,6 @@ class HyperbolicResNet(pl.LightningModule):
                     # Free GPU memory
                     torch.cuda.empty_cache()
                     
-                    print("Computing dendrogram purity")
                     # Compute dendrogram purity
                     dp_score = compute_dendrogram_purity(
                         similarities,
@@ -440,8 +429,7 @@ class HyperbolicResNet(pl.LightningModule):
                     # Log the metric
                     self.metrics['eval/dendrogram_purity'] = dp_score
 
-                    print("Computing HypHC loss")
-                    hyhc_loss, triplet_loss, sum_dists = self.compute_hyphc_loss(all_embeddings, similarities, sampled_n=(x.size(0)**2))
+                    hyhc_loss, triplet_loss, sum_dists = self.compute_hyphc_loss(all_embeddings, similarities, sampled_n=self.triplet_sampled_n, batch_size=self.loss_batch_size)
                     self.metrics['eval/hyphc_loss'] = hyhc_loss.item()
                     self.metrics['eval/triplet_loss'] = triplet_loss.item()
                     self.metrics['eval/sum_dists'] = sum_dists.item()
@@ -491,10 +479,17 @@ def compute_strided_pairwise_distances(z: torch.Tensor, n: int, manifold_min_eno
             condition = res < 1 + manifold_min_enorm
             block_distances = torch.where(condition,
                                         torch.zeros_like(res),
-                                        torch.arccosh(res) / c.sqrt())
+                                        arcosh(res) / c.sqrt())
             
             # Fill distance matrix
             distances[i:end_i, j:end_j] = block_distances
             distances[j:end_j, i:end_i] = block_distances.t()
     
     return distances
+
+
+def find_n_for_combinations(target_combinations, r):
+    n = r
+    while math.comb(n, r) < target_combinations:
+        n += 1
+    return n
