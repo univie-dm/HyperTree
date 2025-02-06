@@ -72,7 +72,7 @@ class DecoderBlock(nn.Module):
 from ..hyperbolic_math.src.manifolds import PoincareBall
 from ..eval import compute_dendrogram_purity, plot_embeddings
 
-class HyperbolicResNet(pl.LightningModule):
+class HyperbolicResNet18(pl.LightningModule):
     def __init__(
         self,
         input_dim: int,

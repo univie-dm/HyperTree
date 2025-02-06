@@ -2,8 +2,11 @@ import warnings
 import omegaconf
 import torch
 import wandb
+from src.hyperbolic_math.src.manifolds.poincare import PoincareBall
+from src.models.resnet34 import HyperbolicResNet34
 from src.models.feedforward import HyperbolicAE
-from src.models.resnet18 import HyperbolicResNet
+from src.models.resnet18 import HyperbolicResNet18
+from src.models.shadowCones import HyperbolicContrastiveModel
 
 import hydra
 from omegaconf import DictConfig
@@ -41,6 +44,15 @@ def main(cfg: DictConfig) -> None:
 
     else:
         logger = CSVLogger(save_dir=cfg.wandb.save_dir, name=cfg.wandb.project)
+
+    
+    trainer = pl.Trainer(logger=logger,
+                        max_epochs=cfg.pretrain_epochs,
+                        devices='auto',
+                        accelerator='auto',
+                        deterministic=True,
+                        enable_checkpointing=False,
+                        )
    
 
     # Determine dataset type and create appropriate datamodule
@@ -80,6 +92,9 @@ def main(cfg: DictConfig) -> None:
 
     datamodule.setup()
 
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    manifold = PoincareBall(c=torch.Tensor([cfg.magnitude_curvature,]).to(device))
+
     if cfg.ae_type == 'feedforward':
         model = HyperbolicAE(
             input_dim=input_dim,
@@ -99,7 +114,7 @@ def main(cfg: DictConfig) -> None:
     elif cfg.ae_type == 'variational':
         raise NotImplementedError("Variational autoencoder not implemented yet")
     elif cfg.ae_type == 'resnet18' or cfg.ae_type == 'resnet':
-        model = HyperbolicResNet(
+        model = HyperbolicResNet18(
             input_dim=input_dim,
             latent_dim=cfg.embedding_dim,
             learning_rate=cfg.learning_rate,
@@ -113,18 +128,32 @@ def main(cfg: DictConfig) -> None:
             triplet_sampled_n=cfg.triplet_sampled_n,
             loss_batch_size=cfg.loss_batch_size,
         )
+    elif cfg.ae_type == 'resnet34':
+        model = HyperbolicResNet34(
+            manifold=manifold,
+            latent_dim=cfg.embedding_dim,
+            learning_rate=cfg.learning_rate,
+        )
+            
     else:
         raise ValueError("Invalid autoencoder type")
 
-    trainer = pl.Trainer(logger=logger,
-                         max_epochs=cfg.pretrain_epochs+cfg.clustering_epochs,
-                         devices='auto',
-                         accelerator='auto',
-                         deterministic=True,
-                         enable_checkpointing=False,
-                         )
-
     trainer.fit(model, datamodule)
+    cone_model = HyperbolicContrastiveModel(
+        resnet=model,
+        manifold=manifold,
+        light_radius=0.5,
+        temperature=0.1,
+        contrastive_weight=0.1,
+    )
+    trainer = pl.Trainer(logger=logger,
+                        max_epochs=5,
+                        devices='auto',
+                        accelerator='auto',
+                        deterministic=True,
+                        enable_checkpointing=False,
+                        )
+    trainer.fit(cone_model, datamodule)
     wandb.finish()
 
 
