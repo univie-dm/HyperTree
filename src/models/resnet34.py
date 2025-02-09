@@ -170,7 +170,7 @@ class HyperbolicResNet34(pl.LightningModule):
         x_aug_dist_loss = torch.Tensor([max(self.manifold.dist_0(z_aug).mean()-0.5, 0.0)]).to(self.device)
         recon_loss = (x_recon_loss + x_aug_recon_loss)/2
         dist_loss = (x_dist_loss + x_aug_dist_loss)/2
-        loss = recon_loss + dist_loss
+        loss = recon_loss #+ dist_loss
         
         self.metrics.setdefault('pretrain/x_recon_loss', []).append(x_recon_loss.detach())
         self.metrics.setdefault('pretrain/x_dist_loss', []).append(x_dist_loss)

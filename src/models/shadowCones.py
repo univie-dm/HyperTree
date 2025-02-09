@@ -98,8 +98,10 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         
         # Reconstruction loss
         x_recon, z, tangent_vecs = self(x)
-        recon_loss = F.mse_loss(x_recon, x)
-        _, x_aug_z, _ = self(x_aug)
+        x_aug_recon, z_aug, _ = self(x_aug)
+        x_recon_loss = F.mse_loss(x_recon, x)
+        aug_recon_loss = F.mse_loss(x_aug_recon, x_aug)
+        recon_loss = (x_recon_loss + aug_recon_loss) / 2
         
         points = []
         for _, z_batch, _ in self.trainer.datamodule.test_dataloader():
@@ -107,20 +109,34 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
             points.append(z_points)
         points = torch.cat(points)
 
-        similarities = self.batch_cone_membership(z, x_aug_z, points, self.light_radius)
-        self.metrics.setdefault("train/similarities", []).append(similarities.mean())
-        logits = similarities / self.temperature 
-        pos_sim = logits.diag()
-        exp_logits = torch.exp(logits)
-        neg_sim = torch.log(exp_logits.sum(dim=0))
-        contrastive_loss = -(pos_sim - neg_sim).mean()
+        cone_similarities = self.batch_cone_membership(z, z_aug, points, self.light_radius)
+        self.metrics.setdefault("train/similarities", []).append(cone_similarities.mean())
+        cone_logits = cone_similarities / self.temperature 
+        cone_pos_sim = cone_logits.diag()
+        cone_exp_logits = torch.exp(cone_logits)
+        cone_neg_sim = torch.log(cone_exp_logits.sum(dim=0))
+        cone_contrastive_loss = -(cone_pos_sim - cone_neg_sim).mean()
+
+        '''
+        dist_similarities = self.manifold.dist(z, z_aug)
+        dist_logits = dist_similarities / self.temperature
+        dist_pos_sim = dist_logits.diag()
+        dist_exp_logits = torch.exp(dist_logits)
+        dist_neg_sim = torch.log(dist_exp_logits.sum(dim=0))
+        dist_contrastive_loss = -(dist_pos_sim - dist_neg_sim).mean()
+        '''
+        contrastive_loss = cone_contrastive_loss #+ dist_contrastive_loss
         
         # Combined loss
         total_loss = recon_loss + self.contrastive_weight * contrastive_loss
         
         # Logging
         self.metrics.setdefault("train/recon_loss", []).append(recon_loss)
+        self.metrics.setdefault("train/x_recon_loss", []).append(x_recon_loss)
+        self.metrics.setdefault("train/aug_recon_loss", []).append(aug_recon_loss)
         self.metrics.setdefault("train/contrastive_loss", []).append(contrastive_loss)
+        self.metrics.setdefault("train/cone_contrastive_loss", []).append(cone_contrastive_loss)
+        #self.metrics.setdefault("train/dist_contrastive_loss", []).append(dist_contrastive_loss)
         self.metrics.setdefault("train/total_loss", []).append(total_loss)
         
         return total_loss
