@@ -118,7 +118,7 @@ class ColorDataModule(pl.LightningDataModule):
             base_test.targets = [self._get_coarse_label(t) for t in base_test.targets]
         
         if self.subset == 'all':
-            self.train_dataset = MultiViewDataset(base_train, base_transform, base_transform)
+            self.train_dataset = MultiViewDataset(base_train, base_transform, aug_transform)
             self.test_dataset = MultiViewDataset(base_test, base_transform, base_transform)
         else:
             self.train_dataset = MultiViewDataset(base_train, base_transform, aug_transform)

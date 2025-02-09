@@ -142,12 +142,12 @@ def main(cfg: DictConfig) -> None:
     cone_model = HyperbolicContrastiveModel(
         resnet=model,
         manifold=manifold,
-        light_radius=0.5,
-        temperature=0.1,
-        contrastive_weight=0.1,
+        light_radius=cfg.light_radius,
+        temperature=cfg.temperature,
+        contrastive_weight=cfg.contrastive_weight,
     )
     trainer = pl.Trainer(logger=logger,
-                        max_epochs=5,
+                        max_epochs=cfg.clustering_epochs,
                         devices='auto',
                         accelerator='auto',
                         deterministic=True,

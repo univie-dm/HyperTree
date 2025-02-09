@@ -16,6 +16,7 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         contrastive_weight: float = 0.1,
         **kwargs
     ):
+        self.save_hyperparameters(ignore=['resnet'])
         # Get latent_dim from resnet model
         latent_dim = resnet.encoder.fc[-1].out_features
         super().__init__(manifold=manifold, latent_dim=latent_dim, **kwargs)
@@ -34,7 +35,8 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         self.light_radius = light_radius
         self.temperature = temperature
         self.contrastive_weight = contrastive_weight
-        self.save_hyperparameters(ignore=['resnet'])
+        self.metrics = {}
+        
 
 
     def batch_cone_membership(self, x: torch.Tensor, x_aug: torch.Tensor, points: torch.Tensor, light_radius: float, curvature: float = 1.0) -> torch.Tensor:
@@ -85,6 +87,8 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         intersection = torch.sum(in_x_cone * in_x_aug_cone, dim=1).float()
         in_x_cone_sum = torch.sum(in_x_cone, dim=1)
         in_x_aug_cone_sum = torch.sum(in_x_aug_cone, dim=1)
+        self.metrics.setdefault("train/in_x_cone", []).append(in_x_cone_sum.mean())
+        self.metrics.setdefault("train/in_x_aug_cone", []).append(in_x_aug_cone_sum.mean())
         min_sum = torch.minimum(in_x_cone_sum, in_x_aug_cone_sum)    
         return torch.where(min_sum == 0, torch.zeros_like(intersection), intersection/min_sum)
 
@@ -98,12 +102,13 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         _, x_aug_z, _ = self(x_aug)
         
         points = []
-        for _, z_batch, _ in self.trainer.datamodule.train_dataloader():
+        for _, z_batch, _ in self.trainer.datamodule.test_dataloader():
             _, z_points, _ = self(z_batch.to(self.device))
             points.append(z_points)
         points = torch.cat(points)
 
         similarities = self.batch_cone_membership(z, x_aug_z, points, self.light_radius)
+        self.metrics.setdefault("train/similarities", []).append(similarities.mean())
         logits = similarities / self.temperature 
         pos_sim = logits.diag()
         exp_logits = torch.exp(logits)
@@ -114,8 +119,14 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         total_loss = recon_loss + self.contrastive_weight * contrastive_loss
         
         # Logging
-        self.log('train/recon_loss', recon_loss, prog_bar=True)
-        self.log('train/contrastive_loss', contrastive_loss, prog_bar=True)
-        self.log('train/total_loss', total_loss)
+        self.metrics.setdefault("train/recon_loss", []).append(recon_loss)
+        self.metrics.setdefault("train/contrastive_loss", []).append(contrastive_loss)
+        self.metrics.setdefault("train/total_loss", []).append(total_loss)
         
         return total_loss
+    
+    def on_train_epoch_end(self):
+        for key in self.metrics:
+            self.log(key, torch.stack(self.metrics[key]).mean())
+        self.log("train/epoch", self.current_epoch)
+        self.metrics = {}
