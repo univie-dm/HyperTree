@@ -1,9 +1,14 @@
+import torch
+from sklearn.manifold import TSNE
+import numpy as np
+import matplotlib.pyplot as plt
+from src.hyperbolic_math.src.utils.math_utils import arcosh
 
 def embedddings_plot(x, y, manifold):
-    #pairwise_dists = compute_strided_pairwise_distances(x.detach().cpu(), x.shape[0], manifold.min_enorm, manifold.c.cpu(), 512)
     x = x.detach().cpu().numpy()
     if x.shape[1] > 2:
-        x = TSNE(n_components=2).fit_transform(x)
+        pairwise_dists = compute_strided_pairwise_distances(torch.Tensor(x), x.shape[0], manifold.min_enorm, manifold.c.cpu(), 512)
+        x = TSNE(n_components=2, metric="precomputed", init="random").fit_transform(pairwise_dists)
     # Normalize points to fit within the circle
     #x = x / np.linalg.norm(x, axis=1, keepdims=True)
     

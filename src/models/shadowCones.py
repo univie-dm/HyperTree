@@ -23,6 +23,7 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         # Get latent_dim from resnet model
         latent_dim = resnet.encoder.fc[-1].out_features
         super().__init__(manifold=manifold, latent_dim=latent_dim, **kwargs)
+        self.global_epoch = resnet.current_epoch
         
         # Load encoder weights
         self.encoder.load_state_dict(resnet.encoder.state_dict())
@@ -38,6 +39,7 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         self.light_radius = light_radius
         self.temperature = temperature
         self.contrastive_weight = contrastive_weight
+        self.log_interval = resnet.log_interval
         self.metrics = {}
         
 
@@ -150,7 +152,7 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
     def on_train_epoch_end(self):
         labels = []
         embeddings = []
-        if not (self.log_interval > 0 and self.current_epoch % self.log_interval == 0):
+        if self.current_epoch % self.log_interval != 0:
             return
         if not isinstance(self.logger.experiment, wandb.sdk.wandb_run.Run):
             return
@@ -158,18 +160,18 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
             for x_aug, x, y in self.trainer.datamodule.test_dataloader():
                 x_recon, z, tangent_vecs = self(x.to(self.device))
                 labels.append(y.detach())
-                embeddings.append(tangent_vecs.detach())
+                embeddings.append(z.detach())
             labels = torch.cat(labels).cpu()
             embeddings = torch.cat(embeddings).cpu()
             em_plot = embedddings_plot(embeddings, labels, self.manifold)
             del embeddings
             del labels
-            self.metrics['pretrain/embeddings'] = wandb.Image(em_plot)
-            self.metrics['pretrain/epoch'] = self.current_epoch
+            self.metrics['train/embeddings'] = wandb.Image(em_plot)
+            self.metrics['train/epoch'] = self.current_epoch
             for key in self.metrics:
                 if isinstance(self.metrics[key], List):
                     self.metrics[key] = torch.stack(self.metrics[key]).mean()
-                self.logger.experiment.log(self.metrics, step=self.current_epoch)
+                self.logger.experiment.log(self.metrics, step=self.current_epoch+self.global_epoch)
             plt.close()
             self.metrics = {}
 

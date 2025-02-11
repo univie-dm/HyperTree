@@ -133,6 +133,7 @@ def main(cfg: DictConfig) -> None:
             manifold=manifold,
             latent_dim=cfg.embedding_dim,
             learning_rate=cfg.learning_rate,
+            log_interval=cfg.log_interval,
         )
             
     else:

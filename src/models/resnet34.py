@@ -185,7 +185,7 @@ class HyperbolicResNet34(pl.LightningModule):
     def on_train_epoch_end(self):
         labels = []
         embeddings = []
-        if not (self.log_interval > 0 and self.current_epoch % self.log_interval == 0):
+        if self.current_epoch % self.log_interval != 0:
             return
         if not isinstance(self.logger.experiment, wandb.sdk.wandb_run.Run):
             return
