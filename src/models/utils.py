@@ -6,36 +6,49 @@ from src.hyperbolic_math.src.utils.math_utils import arcosh
 
 def embedddings_plot(x, y, manifold, class_names=None):
     x = x.detach().cpu().numpy()
+    y = y.cpu().numpy()  # Ensure labels are also on CPU and numpy
+    
     if x.shape[1] > 2:
-        pairwise_dists = compute_strided_pairwise_distances(torch.Tensor(x), x.shape[0], manifold.min_enorm, manifold.c.cpu(), 512)
+        pairwise_dists = compute_strided_pairwise_distances(
+            torch.Tensor(x), x.shape[0], manifold.min_enorm, manifold.c.cpu(), 512)
         x = TSNE(n_components=2, metric="precomputed", init="random").fit_transform(pairwise_dists)
-    # Normalize points to fit within the circle
-    #x = x / np.linalg.norm(x, axis=1, keepdims=True)
     
     # Create figure
     plt.figure(figsize=(12, 8))
     ax = plt.gca()
 
-    # Draw boundary circle
-    circle = plt.Circle((0, 0), 1, fill=False, color='black', alpha=0.5)
-    ax.add_artist(circle)
+    # Remove boundary circle since points extend beyond unit disk
 
-    # Scatter plot with normalized points
+    # Get unique classes for proper legend handling
+    unique_classes = np.unique(y)
+    
+    # Create scatter plot
     scatter = plt.scatter(x[:, 0], x[:, 1], c=y, alpha=0.6, cmap='tab10')
-
+    
     # Add legend with labels
-    if class_names:
-        handles, labels = scatter.legend_elements()
-        labels = [class_names[int(label)] for label in labels]
-        legend1 = ax.legend(handles, labels, title="Classes", loc="upper right")
+    if class_names is not None:
+        # Create custom legend with class names
+        from matplotlib.lines import Line2D
+        legend_elements = [Line2D([0], [0], marker='o', color='w', 
+                                markerfacecolor=plt.cm.tab10(i / 10), 
+                                label=class_names[i][0],
+                                markersize=10)
+                         for i in unique_classes]
+        ax.legend(handles=legend_elements, title="Classes", loc="upper right")
     else:
-        legend1 = ax.legend(*scatter.legend_elements(), title="Classes", loc="upper right")
-    ax.add_artist(legend1)
+        # Use default numeric labels
+        ax.legend(*scatter.legend_elements(), title="Classes", loc="upper right")
 
-    # Set equal aspect ratio and limits
+    # Set equal aspect ratio and expand limits to show full spread
     ax.set_aspect('equal')
-    #ax.set_xlim(-1.1, 1.1)
-    #ax.set_ylim(-1.1, 1.1)
+    
+    # Get the maximum absolute value for x and y coordinates
+    max_val = max(abs(x).max(), abs(y).max())
+    margin = max_val * 0.2  # Add 10% margin
+    
+    # Set limits symmetrically
+    ax.set_xlim(-max_val - margin, max_val + margin)
+    ax.set_ylim(-max_val - margin, max_val + margin)
     
     # Add title
     plt.title("Hyperbolic Embeddings")
@@ -45,7 +58,6 @@ def embedddings_plot(x, y, manifold, class_names=None):
 
 @torch.jit.script
 def compute_strided_pairwise_distances(z: torch.Tensor, n: int, manifold_min_enorm: float, c: torch.Tensor, batch_size: int) -> torch.Tensor:
-    
     z_sqnorm = z.pow(2).sum(dim=-1)
     distances = torch.zeros((n, n)).cpu()
     

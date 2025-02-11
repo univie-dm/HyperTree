@@ -160,6 +160,7 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
                     x_recon, z, tangent_vecs = self(x.to(self.device))
                     labels.append(y.detach())
                     embeddings.append(z.detach())
+
                 labels = torch.cat(labels).cpu()
                 embeddings = torch.cat(embeddings).cpu()
                 em_plot = embedddings_plot(embeddings, labels, self.manifold, self.trainer.datamodule.get_class_names())
