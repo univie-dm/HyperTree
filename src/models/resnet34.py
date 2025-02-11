@@ -1,6 +1,7 @@
 import math
 import random
 import time
+from src.models.utils import embedddings_plot
 import numpy as np
 from sklearn.manifold import TSNE
 import torch
@@ -81,7 +82,6 @@ class HyperbolicResNet34(pl.LightningModule):
         log_interval: int = 5,
     ):
         super().__init__()
-        self.save_hyperparameters()
         self.manifold = manifold
         self.learning_rate = learning_rate
         self.log_interval = log_interval
@@ -179,6 +179,7 @@ class HyperbolicResNet34(pl.LightningModule):
         self.metrics.setdefault('pretrain/recon_loss', []).append(recon_loss.detach())
         self.metrics.setdefault('pretrain/dist_loss', []).append(dist_loss)
         self.metrics.setdefault('pretrain/loss', []).append(loss.detach())
+        self.metrics.setdefault('pretrain/dist_x2x_aug', []).append(self.manifold.dist(z, z_aug).mean())
         return loss
     
     def on_train_epoch_end(self):
@@ -191,11 +192,13 @@ class HyperbolicResNet34(pl.LightningModule):
         with torch.no_grad():
             for x_aug, x, y in self.trainer.datamodule.test_dataloader():
                 x_recon, z, tangent_vecs = self(x.to(self.device))
-                labels.append(y)
-                embeddings.append(tangent_vecs)
+                labels.append(y.detach())
+                embeddings.append(z.detach())
             labels = torch.cat(labels).cpu()
             embeddings = torch.cat(embeddings).cpu()
             em_plot = embedddings_plot(embeddings, labels, self.manifold)
+            del embeddings
+            del labels
             self.metrics['pretrain/embeddings'] = wandb.Image(em_plot)
             self.metrics['pretrain/epoch'] = self.current_epoch
             for key in self.metrics:
@@ -205,78 +208,5 @@ class HyperbolicResNet34(pl.LightningModule):
             plt.close()
             self.metrics = {}
 
+            return
 
-def embedddings_plot(x, y, manifold):
-    #pairwise_dists = compute_strided_pairwise_distances(x.detach().cpu(), x.shape[0], manifold.min_enorm, manifold.c.cpu(), 512)
-    x = x.detach().cpu().numpy()
-    if x.shape[1] > 2:
-        x = TSNE(n_components=2).fit_transform(x)
-    # Normalize points to fit within the circle
-    #x = x / np.linalg.norm(x, axis=1, keepdims=True)
-    
-    # Create figure
-    plt.figure(figsize=(12, 8))
-    ax = plt.gca()
-
-    # Draw boundary circle
-    circle = plt.Circle((0, 0), 1, fill=False, color='black', alpha=0.5)
-    ax.add_artist(circle)
-
-    # Scatter plot with normalized points
-    scatter = plt.scatter(x[:, 0], x[:, 1], c=y, alpha=0.6, cmap='tab10')
-
-    # Add legend with labels
-    legend1 = ax.legend(*scatter.legend_elements(), title="Classes", loc="upper right")
-    ax.add_artist(legend1)
-
-    # Set equal aspect ratio and limits
-    ax.set_aspect('equal')
-    #ax.set_xlim(-1.1, 1.1)
-    #ax.set_ylim(-1.1, 1.1)
-    
-    # Add title
-    plt.title("Hyperbolic Embeddings")
-    
-    return plt.gcf()
-
-
-@torch.jit.script
-def compute_strided_pairwise_distances(z: torch.Tensor, n: int, manifold_min_enorm: float, c: torch.Tensor, batch_size: int) -> torch.Tensor:
-    
-    z_sqnorm = z.pow(2).sum(dim=-1)
-    distances = torch.zeros((n, n)).cpu()
-    
-    for i in range(0, n, batch_size):
-        end_i = min(i + batch_size, n)
-        for j in range(i + 1, n, batch_size):
-            end_j = min(j + batch_size, n)
-            
-            # Get blocks of points
-            x = z[i:end_i]  # Shape: (batch_i, d)
-            y = z[j:end_j]  # Shape: (batch_j, d)
-            
-            # Get corresponding squared norms and reshape for broadcasting
-            x_sqnorm = z_sqnorm[i:end_i].view(-1, 1)      # Shape: (batch_i, 1)
-            y_sqnorm = z_sqnorm[j:end_j].view(1, -1)      # Shape: (1, batch_j)
-            
-            # Compute block distances
-            xy_diff = x.unsqueeze(1) - y.unsqueeze(0)     # Shape: (batch_i, batch_j, d)
-            xy_diff_sqnorm = xy_diff.pow(2).sum(dim=-1)   # Shape: (batch_i, batch_j)
-            
-            # Compute denominator terms ensuring correct broadcasting
-            denom1 = (1 - c * x_sqnorm)                   # Shape: (batch_i, 1)
-            denom2 = (1 - c * y_sqnorm)                   # Shape: (1, batch_j)
-            denominator = denom1 * denom2                  # Shape: (batch_i, batch_j)
-            
-            # Compute final result
-            res = 1 + 2 * c * xy_diff_sqnorm / denominator
-            condition = res < 1 + manifold_min_enorm
-            block_distances = torch.where(condition,
-                                        torch.zeros_like(res),
-                                        arcosh(res) / c.sqrt())
-            
-            # Fill distance matrix
-            distances[i:end_i, j:end_j] = block_distances
-            distances[j:end_j, i:end_i] = block_distances.t()
-    
-    return distances

@@ -1,10 +1,14 @@
+from typing import List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
+import wandb
+import matplotlib.pyplot as plt
 from src.models.resnet34 import HyperbolicResNet34
 from src.hyperbolic_math.src.manifolds.poincare import PoincareBall
 from src.hyperbolic_math.src.utils.math_utils import arcosh
+from src.models.utils import embedddings_plot
 
 class HyperbolicContrastiveModel(HyperbolicResNet34):
     def __init__(
@@ -16,7 +20,6 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         contrastive_weight: float = 0.1,
         **kwargs
     ):
-        self.save_hyperparameters(ignore=['resnet'])
         # Get latent_dim from resnet model
         latent_dim = resnet.encoder.fc[-1].out_features
         super().__init__(manifold=manifold, latent_dim=latent_dim, **kwargs)
@@ -106,7 +109,7 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         points = []
         for _, z_batch, _ in self.trainer.datamodule.test_dataloader():
             _, z_points, _ = self(z_batch.to(self.device))
-            points.append(z_points)
+            points.append(z_points.detach())
         points = torch.cat(points)
 
         cone_similarities = self.batch_cone_membership(z, z_aug, points, self.light_radius)
@@ -116,6 +119,7 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         cone_exp_logits = torch.exp(cone_logits)
         cone_neg_sim = torch.log(cone_exp_logits.sum(dim=0))
         cone_contrastive_loss = -(cone_pos_sim - cone_neg_sim).mean()
+        del points
 
         '''
         dist_similarities = self.manifold.dist(z, z_aug)
@@ -138,11 +142,35 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         self.metrics.setdefault("train/cone_contrastive_loss", []).append(cone_contrastive_loss)
         #self.metrics.setdefault("train/dist_contrastive_loss", []).append(dist_contrastive_loss)
         self.metrics.setdefault("train/total_loss", []).append(total_loss)
+        self.metrics.setdefault('train/dist_x2x_aug', []).append(self.manifold.dist(z, z_aug).mean())
+
         
         return total_loss
     
     def on_train_epoch_end(self):
-        for key in self.metrics:
-            self.log(key, torch.stack(self.metrics[key]).mean())
-        self.log("train/epoch", self.current_epoch)
-        self.metrics = {}
+        labels = []
+        embeddings = []
+        if not (self.log_interval > 0 and self.current_epoch % self.log_interval == 0):
+            return
+        if not isinstance(self.logger.experiment, wandb.sdk.wandb_run.Run):
+            return
+        with torch.no_grad():
+            for x_aug, x, y in self.trainer.datamodule.test_dataloader():
+                x_recon, z, tangent_vecs = self(x.to(self.device))
+                labels.append(y.detach())
+                embeddings.append(tangent_vecs.detach())
+            labels = torch.cat(labels).cpu()
+            embeddings = torch.cat(embeddings).cpu()
+            em_plot = embedddings_plot(embeddings, labels, self.manifold)
+            del embeddings
+            del labels
+            self.metrics['pretrain/embeddings'] = wandb.Image(em_plot)
+            self.metrics['pretrain/epoch'] = self.current_epoch
+            for key in self.metrics:
+                if isinstance(self.metrics[key], List):
+                    self.metrics[key] = torch.stack(self.metrics[key]).mean()
+                self.logger.experiment.log(self.metrics, step=self.current_epoch)
+            plt.close()
+            self.metrics = {}
+
+            return

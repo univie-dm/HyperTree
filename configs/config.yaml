@@ -1,8 +1,8 @@
 # Training parameters
 seed: 400
 pretrain_epochs: 400
-clustering_epochs: 1000
-embedding_dim: 10
+clustering_epochs: 400
+embedding_dim: 2
 
 # Model architecture
 ae_type: 'resnet34'
@@ -13,11 +13,11 @@ magnitude_curvature: 1.0
 triplet_sampled_n: 1e4
 loss_batch_size: 1e4
 temperature: 0.1
-light_radius: 0.01
+light_radius: 0.2
 contrastive_weight: 1.0
 
 
-num_workers: 2
+num_workers: 8
 batch_size: 256
 
 # Logging

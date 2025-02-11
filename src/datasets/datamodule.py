@@ -140,12 +140,12 @@ class ColorDataModule(pl.LightningDataModule):
         else:
             dataset = self.train_dataset
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True,
-                         num_workers=self.num_workers, pin_memory=True, persistent_workers=True)
+                         num_workers=self.num_workers)
 
 
     def test_dataloader(self):
         return DataLoader(self.test_dataset, batch_size=self.batch_size,
-                         num_workers=self.num_workers, pin_memory=True, persistent_workers=True)
+                         num_workers=self.num_workers)
 
     @staticmethod
     def _get_coarse_label(fine_label):
