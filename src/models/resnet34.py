@@ -187,7 +187,7 @@ class HyperbolicResNet34(pl.LightningModule):
         embeddings = []
         if not isinstance(self.logger.experiment, wandb.sdk.wandb_run.Run):
             return
-        if self.current_epoch % self.log_interval != 0:
+        if self.current_epoch % self.log_interval == 0:
             with torch.no_grad():
                 for x_aug, x, y in self.trainer.datamodule.test_dataloader():
                     x_recon, z, tangent_vecs = self(x.to(self.device))
