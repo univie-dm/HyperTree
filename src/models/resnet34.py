@@ -185,28 +185,27 @@ class HyperbolicResNet34(pl.LightningModule):
     def on_train_epoch_end(self):
         labels = []
         embeddings = []
-        if self.current_epoch % self.log_interval != 0:
-            return
         if not isinstance(self.logger.experiment, wandb.sdk.wandb_run.Run):
             return
-        with torch.no_grad():
-            for x_aug, x, y in self.trainer.datamodule.test_dataloader():
-                x_recon, z, tangent_vecs = self(x.to(self.device))
-                labels.append(y.detach())
-                embeddings.append(z.detach())
-            labels = torch.cat(labels).cpu()
-            embeddings = torch.cat(embeddings).cpu()
-            em_plot = embedddings_plot(embeddings, labels, self.manifold)
-            del embeddings
-            del labels
-            self.metrics['pretrain/embeddings'] = wandb.Image(em_plot)
-            self.metrics['pretrain/epoch'] = self.current_epoch
-            for key in self.metrics:
-                if isinstance(self.metrics[key], List):
-                    self.metrics[key] = torch.stack(self.metrics[key]).mean()
-                self.logger.experiment.log(self.metrics, step=self.current_epoch)
-            plt.close()
-            self.metrics = {}
+        if self.current_epoch % self.log_interval != 0:
+            with torch.no_grad():
+                for x_aug, x, y in self.trainer.datamodule.test_dataloader():
+                    x_recon, z, tangent_vecs = self(x.to(self.device))
+                    labels.append(y.detach())
+                    embeddings.append(z.detach())
+                labels = torch.cat(labels).cpu()
+                embeddings = torch.cat(embeddings).cpu()
+                em_plot = embedddings_plot(embeddings, labels, self.manifold)
+                del embeddings
+                del labels
+                self.metrics['pretrain/embeddings'] = wandb.Image(em_plot)
+        self.metrics['pretrain/epoch'] = self.current_epoch
+        for key in self.metrics:
+            if isinstance(self.metrics[key], List):
+                self.metrics[key] = torch.stack(self.metrics[key]).mean()
+            self.logger.experiment.log(self.metrics, step=self.current_epoch)
+        plt.close()
+        self.metrics = {}
 
-            return
+        return
 
