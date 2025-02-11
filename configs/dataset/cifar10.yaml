@@ -1,5 +1,5 @@
 name: 'cifar10'
-subset: 'smallest'
+subset: 'all'
 data_dir: './data'
 resize: 32
 channels: 3
