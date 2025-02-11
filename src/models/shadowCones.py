@@ -162,7 +162,7 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
                     embeddings.append(z.detach())
                 labels = torch.cat(labels).cpu()
                 embeddings = torch.cat(embeddings).cpu()
-                em_plot = embedddings_plot(embeddings, labels, self.manifold)
+                em_plot = embedddings_plot(embeddings, labels, self.manifold, self.trainer.datamodule.get_class_names())
                 del embeddings
                 del labels
                 self.metrics['train/embeddings'] = wandb.Image(em_plot)

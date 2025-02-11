@@ -207,6 +207,8 @@ class ColorDataModule(pl.LightningDataModule):
             
             return {i: (fine_labels[i], coarse_labels[fine_to_coarse[fine_labels[i]]]) 
                     for i in range(len(fine_labels))}
+        else:
+            return None
 
 class GrayScaleDataModule(pl.LightningDataModule):
     @staticmethod

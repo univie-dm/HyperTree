@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from src.hyperbolic_math.src.utils.math_utils import arcosh
 
-def embedddings_plot(x, y, manifold):
+def embedddings_plot(x, y, manifold, class_names=None):
     x = x.detach().cpu().numpy()
     if x.shape[1] > 2:
         pairwise_dists = compute_strided_pairwise_distances(torch.Tensor(x), x.shape[0], manifold.min_enorm, manifold.c.cpu(), 512)
@@ -24,7 +24,12 @@ def embedddings_plot(x, y, manifold):
     scatter = plt.scatter(x[:, 0], x[:, 1], c=y, alpha=0.6, cmap='tab10')
 
     # Add legend with labels
-    legend1 = ax.legend(*scatter.legend_elements(), title="Classes", loc="upper right")
+    if class_names:
+        handles, labels = scatter.legend_elements()
+        labels = [class_names[int(label)] for label in labels]
+        legend1 = ax.legend(handles, labels, title="Classes", loc="upper right")
+    else:
+        legend1 = ax.legend(*scatter.legend_elements(), title="Classes", loc="upper right")
     ax.add_artist(legend1)
 
     # Set equal aspect ratio and limits
