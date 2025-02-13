@@ -1,6 +1,10 @@
 import math
 import random
 import time
+
+from sklearn.cluster import AgglomerativeClustering
+from sklearn.metrics import normalized_mutual_info_score
+from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.models.utils import embedddings_plot, sample_n_points_per_class
 import numpy as np
 from sklearn.manifold import TSNE
@@ -200,6 +204,26 @@ class HyperbolicResNet34(pl.LightningModule):
                 embeddings = z.detach().cpu()
                 em_plot = embedddings_plot(embeddings, labels, self.manifold, self.trainer.datamodule.get_class_names())
                 self.metrics['pretrain/embeddings'] = wandb.Image(em_plot)
+
+                embeddings = []
+                labels = []
+                for x_aug, x, y in self.trainer.datamodule.test_dataloader():
+                    z, tangent_vecs = self.encode(x.to(self.device))
+                    embeddings.append(z.detach())
+                    labels.append(y.detach())
+                embeddings = torch.cat(embeddings)
+                labels = torch.cat(labels) 
+
+                pair_dist = compute_pairwise_distances(embeddings, self.manifold)
+                pair_dist = pair_dist.cpu().numpy()
+                labels = labels.cpu().numpy()
+
+                agglo_clustering = AgglomerativeClustering(n_clusters=num_classes, linkage="average", metric="precomputed")
+                pred_labels = agglo_clustering.fit_predict(pair_dist)
+                nmi = normalized_mutual_info_score(labels, pred_labels)
+                self.metrics['pretrain/nmi'] = nmi
+
+
         self.metrics['pretrain/epoch'] = self.current_epoch
         for key in self.metrics:
             if isinstance(self.metrics[key], List):

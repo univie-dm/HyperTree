@@ -1,4 +1,6 @@
 from typing import List
+from sklearn.cluster import AgglomerativeClustering
+from sklearn.metrics import normalized_mutual_info_score
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,6 +11,7 @@ from src.models.resnet34 import HyperbolicResNet34
 from src.hyperbolic_math.src.manifolds.poincare import PoincareBall
 from src.hyperbolic_math.src.utils.math_utils import arcosh
 from src.models.utils import embedddings_plot, ConeOverlapCalculator, sample_n_points_per_class
+from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 
 class HyperbolicContrastiveModel(HyperbolicResNet34):
     def __init__(
@@ -171,6 +174,25 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
                 embeddings = z.detach().cpu()
                 em_plot = embedddings_plot(embeddings, labels, self.manifold, self.trainer.datamodule.get_class_names())
                 self.metrics['train/embeddings'] = wandb.Image(em_plot)
+                
+                embeddings = []
+                labels = []
+                for x_aug, x, y in self.trainer.datamodule.test_dataloader():
+                    z, tangent_vecs = self.encode(x.to(self.device))
+                    embeddings.append(z.detach())
+                    labels.append(y.detach())
+                embeddings = torch.cat(embeddings)
+                labels = torch.cat(labels)
+
+                pair_dist = compute_pairwise_distances(embeddings, self.manifold)
+                pair_dist = pair_dist.cpu().numpy()
+                labels = labels.cpu().numpy()
+
+                agglo_clustering = AgglomerativeClustering(n_clusters=num_classes, linkage='ward', metric="precomputed")
+                pred_labels = agglo_clustering.fit_predict(pair_dist)
+                nmi = normalized_mutual_info_score(labels, pred_labels)
+                self.metrics['pretrain/nmi'] = nmi
+
         self.metrics['train/epoch'] = self.current_epoch
         for key in self.metrics:
             if isinstance(self.metrics[key], List):
