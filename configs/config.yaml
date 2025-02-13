@@ -1,7 +1,7 @@
 # Training parameters
 seed: 400
-pretrain_epochs: 400
-clustering_epochs: 400
+pretrain_epochs: 1000
+clustering_epochs: 1000
 embedding_dim: 10
 
 # Model architecture
@@ -9,11 +9,11 @@ ae_type: 'resnet34'
 hidden_dims: [512, 256, 128, 64, 32]
 learning_rate: 1e-3
 triplet_loss_weight: 1.0
-magnitude_curvature: 1.0
+magnitude_curvature: 3.0
 triplet_sampled_n: 1e4
 loss_batch_size: 1e4
 temperature: 0.1
-light_radius: 0.2
+light_radius: 0.1
 contrastive_weight: 1.0
 
 

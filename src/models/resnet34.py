@@ -1,7 +1,7 @@
 import math
 import random
 import time
-from src.models.utils import embedddings_plot
+from src.models.utils import embedddings_plot, sample_n_points_per_class
 import numpy as np
 from sklearn.manifold import TSNE
 import torch
@@ -189,16 +189,15 @@ class HyperbolicResNet34(pl.LightningModule):
             return
         if self.current_epoch % self.log_interval == 0:
             with torch.no_grad():
-                for x_aug, x, y in self.trainer.datamodule.test_dataloader():
-                    x_recon, z, tangent_vecs = self(x.to(self.device))
-                    labels.append(y.detach())
-                    embeddings.append(z.detach())
-
-                labels = torch.cat(labels).cpu()
-                embeddings = torch.cat(embeddings).cpu()
+                n = 100  # Number of points per class
+                num_classes = len(self.trainer.datamodule.get_class_names())
+                x_aug_sampled, x_sampled, y_sampled = sample_n_points_per_class(
+                    self.trainer.datamodule.test_dataloader(), n, num_classes
+                )
+                x_recon, z, tangent_vecs = self(x_sampled.to(self.device))
+                labels = y_sampled.detach().cpu()
+                embeddings = z.detach().cpu()
                 em_plot = embedddings_plot(embeddings, labels, self.manifold, self.trainer.datamodule.get_class_names())
-                del embeddings
-                del labels
                 self.metrics['pretrain/embeddings'] = wandb.Image(em_plot)
         self.metrics['pretrain/epoch'] = self.current_epoch
         for key in self.metrics:

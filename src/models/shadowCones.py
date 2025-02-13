@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from src.models.resnet34 import HyperbolicResNet34
 from src.hyperbolic_math.src.manifolds.poincare import PoincareBall
 from src.hyperbolic_math.src.utils.math_utils import arcosh
-from src.models.utils import embedddings_plot
+from src.models.utils import embedddings_plot, ConeOverlapCalculator, sample_n_points_per_class
 
 class HyperbolicContrastiveModel(HyperbolicResNet34):
     def __init__(
@@ -40,6 +40,7 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         self.temperature = temperature
         self.contrastive_weight = contrastive_weight
         self.log_interval = resnet.log_interval
+        self.cone_overlapping_calculator = ConeOverlapCalculator(manifold, light_radius)
         self.metrics = {}
         
 
@@ -108,6 +109,7 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         aug_recon_loss = F.mse_loss(x_aug_recon, x_aug)
         recon_loss = (x_recon_loss + aug_recon_loss) / 2
         
+        '''
         points = []
         for _, z_batch, _ in self.trainer.datamodule.test_dataloader():
             _, z_points, _ = self(z_batch.to(self.device))
@@ -115,13 +117,14 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         points = torch.cat(points)
 
         cone_similarities = self.batch_cone_membership(z, z_aug, points, self.light_radius)
+        '''
+        cone_similarities = self.cone_overlapping_calculator(z, z_aug, method='analytical')
         self.metrics.setdefault("train/similarities", []).append(cone_similarities.mean())
         cone_logits = cone_similarities / self.temperature 
         cone_pos_sim = cone_logits.diag()
         cone_exp_logits = torch.exp(cone_logits)
         cone_neg_sim = torch.log(cone_exp_logits.sum(dim=0))
         cone_contrastive_loss = -(cone_pos_sim - cone_neg_sim).mean()
-        del points
 
         '''
         dist_similarities = self.manifold.dist(z, z_aug)
@@ -156,16 +159,15 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
             return
         if self.current_epoch % self.log_interval == 0:
             with torch.no_grad():
-                for x_aug, x, y in self.trainer.datamodule.test_dataloader():
-                    x_recon, z, tangent_vecs = self(x.to(self.device))
-                    labels.append(y.detach())
-                    embeddings.append(z.detach())
-
-                labels = torch.cat(labels).cpu()
-                embeddings = torch.cat(embeddings).cpu()
+                n = 100  # Number of points per class
+                num_classes = len(self.trainer.datamodule.get_class_names())
+                x_aug_sampled, x_sampled, y_sampled = sample_n_points_per_class(
+                    self.trainer.datamodule.test_dataloader(), n, num_classes
+                )
+                x_recon, z, tangent_vecs = self(x_sampled.to(self.device))
+                labels = y_sampled.detach().cpu()
+                embeddings = z.detach().cpu()
                 em_plot = embedddings_plot(embeddings, labels, self.manifold, self.trainer.datamodule.get_class_names())
-                del embeddings
-                del labels
                 self.metrics['train/embeddings'] = wandb.Image(em_plot)
         self.metrics['train/epoch'] = self.current_epoch
         for key in self.metrics:
