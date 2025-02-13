@@ -1,6 +1,6 @@
 from typing import List
 from sklearn.cluster import AgglomerativeClustering
-from sklearn.metrics import normalized_mutual_info_score
+from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -188,10 +188,12 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
                 pair_dist = pair_dist.cpu().numpy()
                 labels = labels.cpu().numpy()
 
-                agglo_clustering = AgglomerativeClustering(n_clusters=num_classes, linkage='ward', metric="precomputed")
+                agglo_clustering = AgglomerativeClustering(n_clusters=num_classes, linkage="average", metric="precomputed")
                 pred_labels = agglo_clustering.fit_predict(pair_dist)
                 nmi = normalized_mutual_info_score(labels, pred_labels)
-                self.metrics['pretrain/nmi'] = nmi
+                self.metrics['train/nmi'] = nmi
+                ari = adjusted_rand_score(labels, pred_labels)
+                self.metrics['train/ari'] = ari
 
         self.metrics['train/epoch'] = self.current_epoch
         for key in self.metrics:

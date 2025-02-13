@@ -3,7 +3,7 @@ import random
 import time
 
 from sklearn.cluster import AgglomerativeClustering
-from sklearn.metrics import normalized_mutual_info_score
+from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.models.utils import embedddings_plot, sample_n_points_per_class
 import numpy as np
@@ -222,6 +222,8 @@ class HyperbolicResNet34(pl.LightningModule):
                 pred_labels = agglo_clustering.fit_predict(pair_dist)
                 nmi = normalized_mutual_info_score(labels, pred_labels)
                 self.metrics['pretrain/nmi'] = nmi
+                ari = adjusted_rand_score(labels, pred_labels)
+                self.metrics['pretrain/ari'] = ari
 
 
         self.metrics['pretrain/epoch'] = self.current_epoch
