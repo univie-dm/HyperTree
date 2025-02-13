@@ -12,8 +12,6 @@ from lightning.pytorch.loggers import WandbLogger
 import wandb
 
 from ..hyperbolic_math.src.manifolds import PoincareBall, Euclidean
-from ..hyperbolic_math.src.optim.riemann_adam import RiemannianAdam
-from ..hyperbolic_math.src.optim.riemann_sgd import RiemannianSGD
 from ..eval import compute_dendrogram_purity, plot_embeddings
 
 class HyperbolicAE(pl.LightningModule):
