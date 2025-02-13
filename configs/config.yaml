@@ -24,7 +24,7 @@ num_workers: 8
 batch_size: 512
 
 # Logging
-log_interval: 10
+log_interval: 5
 wandb:
   enabled: true
   project: 'hyper_clustering'
