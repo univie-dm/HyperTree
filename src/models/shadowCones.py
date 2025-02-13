@@ -150,7 +150,7 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         #self.metrics.setdefault("train/dist_contrastive_loss", []).append(dist_contrastive_loss)
         self.metrics.setdefault("train/total_loss", []).append(total_loss)
         self.metrics.setdefault('train/dist_x2x_aug', []).append(self.manifold.dist(z, z_aug).mean())
-        self.metrics.setdefault('train/c', []).append(self.manifold.c)
+        self.metrics.setdefault('train/c', []).append(self.manifold.c.detach())
 
         return total_loss
     

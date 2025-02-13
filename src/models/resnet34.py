@@ -179,7 +179,7 @@ class HyperbolicResNet34(pl.LightningModule):
         self.metrics.setdefault('pretrain/dist_loss', []).append(dist_loss)
         self.metrics.setdefault('pretrain/loss', []).append(loss.detach())
         self.metrics.setdefault('pretrain/dist_x2x_aug', []).append(self.manifold.dist(z, z_aug).mean())
-        self.metrics.setdefault('pretrain/c', []).append(self.manifold.c)
+        self.metrics.setdefault('pretrain/c', []).append(self.manifold.c.detach())
 
         return loss
     

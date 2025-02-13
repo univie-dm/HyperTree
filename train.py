@@ -43,7 +43,7 @@ def main(cfg: DictConfig) -> None:
     datamodule, input_dim, is_image = get_datamodule(cfg)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    manifold = PoincareBall(c=torch.Tensor([cfg.magnitude_curvature,]).to(device), trainable_c=cfg.trainable_curvature)
+    manifold = PoincareBall(c=torch.Tensor([cfg.magnitude_curvature,]).to(device), trainable_c=False)
     
     model = get_model(cfg, input_dim, is_image, manifold)
 
@@ -55,6 +55,8 @@ def main(cfg: DictConfig) -> None:
 
     print("Finished pretraining")
     print("Starting clustering")
+
+    manifold = PoincareBall(c=torch.Tensor([cfg.magnitude_curvature,]).to(device), trainable_c=cfg.trainable_curvature)
 
     cone_model = HyperbolicContrastiveModel(
         resnet=model,
