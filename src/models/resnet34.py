@@ -15,8 +15,6 @@ import wandb
 from matplotlib import pyplot as plt
 
 import warnings
-
-from ..hyperbolic_math.src.utils.math_utils import arcosh
 warnings.filterwarnings("ignore", ".*'n_iter' was renamed to 'max_iter'.*")
 
 
@@ -158,6 +156,7 @@ class HyperbolicResNet34(pl.LightningModule):
         return x_recon, z, tangent_vecs
 
     def configure_optimizers(self):
+
         return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
 
     def training_step(self, batch, batch_idx):
@@ -180,6 +179,9 @@ class HyperbolicResNet34(pl.LightningModule):
         self.metrics.setdefault('pretrain/dist_loss', []).append(dist_loss)
         self.metrics.setdefault('pretrain/loss', []).append(loss.detach())
         self.metrics.setdefault('pretrain/dist_x2x_aug', []).append(self.manifold.dist(z, z_aug).mean())
+        self.metrics.setdefault('pretrain/c', []).append(self.manifold.c)
+        print(self.manifold.c, flush=True)
+
         return loss
     
     def on_train_epoch_end(self):

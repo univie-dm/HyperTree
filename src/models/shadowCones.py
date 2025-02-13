@@ -43,6 +43,8 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         self.cone_overlapping_calculator = ConeOverlapCalculator(manifold, light_radius)
         self.metrics = {}
         
+    def setup_optimizers(self):
+        return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
 
 
     def batch_cone_membership(self, x: torch.Tensor, x_aug: torch.Tensor, points: torch.Tensor, light_radius: float, curvature: float = 1.0) -> torch.Tensor:
@@ -148,8 +150,8 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         #self.metrics.setdefault("train/dist_contrastive_loss", []).append(dist_contrastive_loss)
         self.metrics.setdefault("train/total_loss", []).append(total_loss)
         self.metrics.setdefault('train/dist_x2x_aug', []).append(self.manifold.dist(z, z_aug).mean())
+        self.metrics.setdefault('train/c', []).append(self.manifold.c)
 
-        
         return total_loss
     
     def on_train_epoch_end(self):
