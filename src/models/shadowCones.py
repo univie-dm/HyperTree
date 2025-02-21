@@ -1,5 +1,5 @@
 from typing import List
-from sklearn.cluster import AgglomerativeClustering
+from sklearn.cluster import AgglomerativeClustering, KMeans
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 import torch
 import torch.nn as nn
@@ -7,16 +7,20 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 import wandb
 import matplotlib.pyplot as plt
-from src.models.resnet34 import HyperbolicResNet34
+from src.models.resnet import HyperbolicResNet
+from src.models.abstract import AbstractModel
 from src.hyperbolic_math.src.manifolds.poincare import PoincareBall
 from src.hyperbolic_math.src.utils.math_utils import arcosh
 from src.models.utils import embedddings_plot, ConeOverlapCalculator, sample_n_points_per_class
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
+from src.eval import dendrogram_purity
+from scipy.spatial.distance import squareform
+from scipy.cluster.hierarchy import linkage
 
-class HyperbolicContrastiveModel(HyperbolicResNet34):
+class HyperbolicContrastiveModel(AbstractModel):
     def __init__(
         self,
-        resnet: HyperbolicResNet34,
+        model: AbstractModel,
         manifold: PoincareBall,
         light_radius: float = 0.5,
         temperature: float = 0.1,
@@ -24,12 +28,12 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
         **kwargs
     ):
         # Get latent_dim from resnet model
-        latent_dim = resnet.encoder.fc[-1].out_features
+        latent_dim = model.encoder.fc[-1].out_features
         super().__init__(manifold=manifold, latent_dim=latent_dim, **kwargs)
-        self.global_epoch = resnet.current_epoch
+        self.global_epoch = model.current_epoch
         
         # Load encoder weights
-        self.encoder.load_state_dict(resnet.encoder.state_dict())
+        self.encoder.load_state_dict(model.encoder.state_dict())
         
         # Load decoder attributes and weights
         self.linear = resnet.linear
@@ -177,23 +181,52 @@ class HyperbolicContrastiveModel(HyperbolicResNet34):
                 
                 embeddings = []
                 labels = []
+                euclidean_embeddings = []
                 for x_aug, x, y in self.trainer.datamodule.test_dataloader():
                     z, tangent_vecs = self.encode(x.to(self.device))
                     embeddings.append(z.detach())
+                    euclidean_embeddings.append(tangent_vecs.detach())
                     labels.append(y.detach())
+
                 embeddings = torch.cat(embeddings)
-                labels = torch.cat(labels)
+                labels = torch.cat(labels) 
+                euclidean_embeddings = torch.cat(euclidean_embeddings).cpu().numpy()
 
                 pair_dist = compute_pairwise_distances(embeddings, self.manifold)
                 pair_dist = pair_dist.cpu().numpy()
                 labels = labels.cpu().numpy()
 
-                agglo_clustering = AgglomerativeClustering(n_clusters=num_classes, linkage="average", metric="precomputed")
-                pred_labels = agglo_clustering.fit_predict(pair_dist)
+                #agglo_clustering = AgglomerativeClustering(n_clusters=num_classes, linkage="average", metric="precomputed")
+                #pred_labels = agglo_clustering.fit_predict(pair_dist)
+                #pred_labels = agglo_clustering.fit_predict(pair_dist)
+                #nmi = normalized_mutual_info_score(labels, pred_labels)
+                #self.metrics['test/hyper_nmi'] = nmi
+                #ari = adjusted_rand_score(labels, pred_labels)
+                #self.metrics['test/hyper_ari'] = ari
+
+                kmeans = KMeans(n_clusters=num_classes, n_init='auto')
+                #agglo_clustering = AgglomerativeClustering(n_clusters=num_classes, linkage="average", metric="euclidean")
+                #pred_labels = agglo_clustering.fit_predict(euclidean_embeddings)
+                pred_labels = kmeans.fit_predict(euclidean_embeddings)
                 nmi = normalized_mutual_info_score(labels, pred_labels)
-                self.metrics['train/nmi'] = nmi
+                self.metrics['test/euclidean_nmi'] = nmi
                 ari = adjusted_rand_score(labels, pred_labels)
-                self.metrics['train/ari'] = ari
+                self.metrics['test/euclidean_ari'] = ari
+                '''
+                x_recon, z, tangent_vecs = self(x_sampled.to(self.device))
+                labels = y_sampled.detach().cpu()
+                embeddings = z.detach()
+                
+                pair_dist = compute_pairwise_distances(embeddings, self.manifold)
+                pair_dist = pair_dist.cpu().numpy()
+                labels = labels.cpu().numpy()
+                
+                condensed_dist = squareform(pair_dist, checks=False)
+                linkage_matrix = linkage(condensed_dist, method="average")
+                
+                dp = dendrogram_purity(linkage_matrix, labels)
+                self.metrics['test/dendrogram_purity'] = dp
+                '''
 
         self.metrics['train/epoch'] = self.current_epoch
         for key in self.metrics:

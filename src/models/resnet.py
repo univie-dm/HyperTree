@@ -2,21 +2,26 @@ import math
 import random
 import time
 
-from sklearn.cluster import AgglomerativeClustering
+from sklearn.cluster import AgglomerativeClustering, KMeans
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.models.utils import embedddings_plot, sample_n_points_per_class
+from src.eval import dendrogram_purity
+from src.hyperbolic_math.src.manifolds import PoincareBall
 import numpy as np
+from scipy.spatial.distance import squareform
+from scipy.cluster.hierarchy import linkage
 from sklearn.manifold import TSNE
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
-from torchvision.models import resnet34
+from torchvision.models import resnet18, resnet34, ResNet18_Weights
 from typing import List, Tuple
 from tqdm import tqdm, trange
 import wandb
 from matplotlib import pyplot as plt
+from matplotlib.pyplot import imsave
 
 import warnings
 warnings.filterwarnings("ignore", ".*'n_iter' was renamed to 'max_iter'.*")
@@ -72,16 +77,15 @@ class DecoderBlock(nn.Module):
         
         return out
 
-from ..hyperbolic_math.src.manifolds import PoincareBall
-from ..eval import compute_dendrogram_purity, plot_embeddings
 
-class HyperbolicResNet34(pl.LightningModule):
+class HyperbolicResNet(pl.LightningModule):
     def __init__(
         self,
         manifold: PoincareBall,
         latent_dim: int = 2,
         learning_rate: float = 1e-3,
         log_interval: int = 5,
+        type: str = 'resnet18',
     ):
         super().__init__()
         self.manifold = manifold
@@ -89,8 +93,13 @@ class HyperbolicResNet34(pl.LightningModule):
         self.log_interval = log_interval
         self.metrics = {}
         
-        # Changed to ResNet-34
-        self.encoder = resnet34(weights=None)
+        if type == 'resnet18':
+            self.encoder = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+        elif type == 'resnet34':
+            self.encoder = resnet34(weights=None)
+        else:
+            raise ValueError(f"Invalid model type: {type}")
+
         # Keep the same FC layer modification
         self.encoder.fc = nn.Sequential(
             nn.Linear(512, 256),
@@ -134,13 +143,14 @@ class HyperbolicResNet34(pl.LightningModule):
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         tangent_vecs = self.encoder(x)
-        z = self.manifold.expmap_0(tangent_vecs)
-        return z, tangent_vecs
+        #z = self.manifold.expmap_0(tangent_vecs)
+        #return z, tangent_vecs
+        return tangent_vecs, tangent_vecs
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
-        tangent_vecs = self.manifold.logmap_0(z)
+        #tangent_vecs = self.manifold.logmap_0(z)
         # Project to initial feature map
-        x = self.linear(tangent_vecs)
+        x = self.linear(z)
         x = x.view(-1, 512 * self.expansion, 4, 4)
         
         # Pass through decoder layers
@@ -156,7 +166,8 @@ class HyperbolicResNet34(pl.LightningModule):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         z, tangent_vecs = self.encode(x)
-        x_recon = self.decode(z)
+        #x_recon = self.decode(z)
+        x_recon = self.decode(tangent_vecs)
         return x_recon, z, tangent_vecs
 
     def configure_optimizers(self):
@@ -165,25 +176,26 @@ class HyperbolicResNet34(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         x_aug, x, y = batch
+        
         x_recon, z, _ = self(x)
         x_aug_recon, z_aug, _ = self(x_aug)
         x_recon_loss = F.mse_loss(x_recon, x)
-        x_dist_loss = torch.Tensor([max(self.manifold.dist_0(z).mean()-0.5, 0.0)]).to(self.device)
+        #x_dist_loss = torch.Tensor([self.manifold.dist_0(z).mean()]).to(self.device)
         x_aug_recon_loss = F.mse_loss(x_aug_recon, x_aug)
-        x_aug_dist_loss = torch.Tensor([max(self.manifold.dist_0(z_aug).mean()-0.5, 0.0)]).to(self.device)
+        #x_aug_dist_loss = torch.Tensor([self.manifold.dist_0(z_aug).mean()]).to(self.device)
         recon_loss = (x_recon_loss + x_aug_recon_loss)/2
-        dist_loss = (x_dist_loss + x_aug_dist_loss)/2
+        #dist_loss = (x_dist_loss + x_aug_dist_loss)/2
         loss = recon_loss #+ dist_loss
         
         self.metrics.setdefault('pretrain/x_recon_loss', []).append(x_recon_loss.detach())
-        self.metrics.setdefault('pretrain/x_dist_loss', []).append(x_dist_loss)
+        #self.metrics.setdefault('pretrain/x_dist_loss', []).append(x_dist_loss)
         self.metrics.setdefault('pretrain/x_aug_recon_loss', []).append(x_aug_recon_loss.detach())
-        self.metrics.setdefault('pretrain/x_aug_dist_loss', []).append(x_aug_dist_loss)
+        #self.metrics.setdefault('pretrain/x_aug_dist_loss', []).append(x_aug_dist_loss)
         self.metrics.setdefault('pretrain/recon_loss', []).append(recon_loss.detach())
-        self.metrics.setdefault('pretrain/dist_loss', []).append(dist_loss)
+        #self.metrics.setdefault('pretrain/dist_loss', []).append(dist_loss)
         self.metrics.setdefault('pretrain/loss', []).append(loss.detach())
-        self.metrics.setdefault('pretrain/dist_x2x_aug', []).append(self.manifold.dist(z, z_aug).mean())
-        self.metrics.setdefault('pretrain/c', []).append(self.manifold.c.detach())
+        #self.metrics.setdefault('pretrain/dist_x2x_aug', []).append(self.manifold.dist(z, z_aug).mean())
+        #self.metrics.setdefault('pretrain/c', []).append(self.manifold.c.detach())
 
         return loss
     
@@ -206,24 +218,53 @@ class HyperbolicResNet34(pl.LightningModule):
                 self.metrics['pretrain/embeddings'] = wandb.Image(em_plot)
 
                 embeddings = []
+                euclidean_embeddings = []
                 labels = []
                 for x_aug, x, y in self.trainer.datamodule.test_dataloader():
                     z, tangent_vecs = self.encode(x.to(self.device))
                     embeddings.append(z.detach())
+                    euclidean_embeddings.append(tangent_vecs.detach())
                     labels.append(y.detach())
                 embeddings = torch.cat(embeddings)
                 labels = torch.cat(labels) 
+                euclidean_embeddings = torch.cat(euclidean_embeddings).cpu().numpy()
 
                 pair_dist = compute_pairwise_distances(embeddings, self.manifold)
                 pair_dist = pair_dist.cpu().numpy()
                 labels = labels.cpu().numpy()
 
-                agglo_clustering = AgglomerativeClustering(n_clusters=num_classes, linkage="average", metric="precomputed")
-                pred_labels = agglo_clustering.fit_predict(pair_dist)
+                #agglo_clustering = AgglomerativeClustering(n_clusters=num_classes, linkage="average", metric="precomputed")
+                #pred_labels = agglo_clustering.fit_predict(pair_dist)
+                #pred_labels = agglo_clustering.fit_predict(pair_dist)
+                #nmi = normalized_mutual_info_score(labels, pred_labels)
+                #self.metrics['test/hyper_nmi'] = nmi
+                #ari = adjusted_rand_score(labels, pred_labels)
+                #self.metrics['test/hyper_ari'] = ari
+
+                kmeans = KMeans(n_clusters=num_classes, n_init='auto')
+                #agglo_clustering = AgglomerativeClustering(n_clusters=num_classes, linkage="average", metric="euclidean")
+                #pred_labels = agglo_clustering.fit_predict(euclidean_embeddings)
+                pred_labels = kmeans.fit_predict(euclidean_embeddings)
                 nmi = normalized_mutual_info_score(labels, pred_labels)
-                self.metrics['pretrain/nmi'] = nmi
+                self.metrics['test/euclidean_nmi'] = nmi
                 ari = adjusted_rand_score(labels, pred_labels)
-                self.metrics['pretrain/ari'] = ari
+                self.metrics['test/euclidean_ari'] = ari
+                
+                '''
+                x_recon, z, tangent_vecs = self(x_sampled.to(self.device))
+                labels = y_sampled.detach().cpu()
+                embeddings = z.detach()
+                
+                pair_dist = compute_pairwise_distances(embeddings, self.manifold)
+                pair_dist = pair_dist.cpu().numpy()
+                labels = labels.cpu().numpy()
+                
+                condensed_dist = squareform(pair_dist, checks=False)
+                linkage_matrix = linkage(condensed_dist, method="average")
+                
+                dp = dendrogram_purity(linkage_matrix, labels)
+                self.metrics['test/dendrogram_purity'] = dp
+                '''
 
 
         self.metrics['pretrain/epoch'] = self.current_epoch

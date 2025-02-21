@@ -5,9 +5,8 @@ import omegaconf
 import torch
 from pytorch_lightning.loggers import WandbLogger, CSVLogger
 
-from src.models.resnet34 import HyperbolicResNet34
 from src.models.feedforward import HyperbolicAE
-from src.models.resnet18 import HyperbolicResNet18
+from src.models.resnet import HyperbolicResNet
 from src.datasets.datamodule import ColorDataModule, GrayScaleDataModule, TabularDataModule
 
 
@@ -73,41 +72,21 @@ def get_model(cfg, input_dim, is_image, manifold):
             hidden_dims=cfg.hidden_dims,
             latent_dim=cfg.embedding_dim,
             learning_rate=cfg.learning_rate,
-            hyphc_weight=cfg.triplet_loss_weight,
-            magnitude_curvature=cfg.magnitude_curvature,
-            is_image=is_image,
+            manifold=manifold,
             log_interval=cfg.log_interval,
-            pretrain_epochs=cfg.pretrain_epochs,
-            wandb_enabled=cfg.wandb.enabled,
-            plot_label_type=cfg.wandb.plot_label_type,
         )
     elif cfg.ae_type == 'convolutional':
         raise NotImplementedError("Convolutional autoencoder not implemented yet")
     elif cfg.ae_type == 'variational':
         raise NotImplementedError("Variational autoencoder not implemented yet")
-    elif cfg.ae_type == 'resnet18' or cfg.ae_type == 'resnet':
-        model = HyperbolicResNet18(
-            input_dim=input_dim,
-            latent_dim=cfg.embedding_dim,
-            learning_rate=cfg.learning_rate,
-            hyphc_weight=cfg.triplet_loss_weight,
-            magnitude_curvature=cfg.magnitude_curvature,
-            is_image=is_image,
-            log_interval=cfg.log_interval,
-            pretrain_epochs=cfg.pretrain_epochs,
-            wandb_enabled=cfg.wandb.enabled,
-            plot_label_type=cfg.wandb.plot_label_type,
-            triplet_sampled_n=cfg.triplet_sampled_n,
-            loss_batch_size=cfg.loss_batch_size,
-        )
-    elif cfg.ae_type == 'resnet34':
-        model = HyperbolicResNet34(
+    elif cfg.ae_type == 'resnet18' or cfg.ae_type == 'resnet34':
+        model = HyperbolicResNet(
             manifold=manifold,
             latent_dim=cfg.embedding_dim,
             learning_rate=cfg.learning_rate,
             log_interval=cfg.log_interval,
-        )
-            
+            type=cfg.ae_type,
+        )            
     else:
         raise ValueError("Invalid autoencoder type")
     

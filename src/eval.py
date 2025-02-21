@@ -1,9 +1,11 @@
 from matplotlib import pyplot as plt
 import numpy as np
 from scipy.cluster.hierarchy import linkage, fcluster
+from scipy.spatial.distance import squareform
 from typing import Tuple, List
 from sklearn.decomposition import PCA
 import torch
+from tqdm import tqdm
 
 def get_cluster_pairs(labels: np.ndarray) -> set:
     """Get all pairs of points that belong to the same cluster more efficiently."""
@@ -17,56 +19,6 @@ def get_cluster_pairs(labels: np.ndarray) -> set:
                 for j in range(i + 1, len(indices)):
                     pairs.add(tuple(sorted([indices[i], indices[j]])))
     return pairs
-
-def compute_dendrogram_purity(
-    distances: torch.Tensor,
-    true_labels: torch.Tensor,
-    method: str = 'complete',
-    max_clusters: int = 20  # Limit number of clusters to evaluate
-) -> float:
-    """
-    Compute the dendrogram purity metric more efficiently.
-    """
-    # Convert to numpy for scipy compatibility
-    if isinstance(distances, torch.Tensor):
-        distances = distances.cpu().numpy()
-    if isinstance(true_labels, torch.Tensor):
-        true_labels = true_labels.cpu().numpy()
-    
-    # Convert similarities to distances if needed
-    if np.all(distances >= 0) and np.all(distances <= 1):
-        distances = 1 - distances
-    
-    # Ensure the matrix is symmetric
-    distances = (distances + distances.T) / 2
-    
-    # Compute linkage matrix
-    condensed_dist = distances[np.triu_indices_from(distances, k=1)]
-    Z = linkage(condensed_dist, method=method)
-    
-    # Get ground truth pairs
-    true_pairs = get_cluster_pairs(true_labels)
-    
-    if len(true_pairs) == 0:
-        return 1.0
-    
-    # Evaluate purity at different cut heights
-    purities = []
-    # Use fewer cut heights for efficiency
-    cut_heights = np.unique(Z[:, 2])[::max(1, len(Z)//max_clusters)]
-    
-    for height in cut_heights:
-        pred_labels = fcluster(Z, height, criterion='distance')
-        pred_pairs = get_cluster_pairs(pred_labels)
-        
-        if len(pred_pairs) == 0:
-            continue
-            
-        correct_pairs = len(true_pairs.intersection(pred_pairs))
-        purity = correct_pairs / len(pred_pairs) if len(pred_pairs) > 0 else 0
-        purities.append(purity)
-    
-    return np.mean(purities) if purities else 0.0
 
 
 def plot_embeddings(all_embeddings_np, all_labels_np, class_names=None, label_type='class'):
@@ -150,3 +102,118 @@ def plot_embeddings(all_embeddings_np, all_labels_np, class_names=None, label_ty
     plt.title("Hyperbolic Embeddings")
     
     return plt.gcf()
+
+
+import torch
+from scipy.cluster.hierarchy import linkage
+from scipy.spatial.distance import squareform
+
+def dendrogram_purity(linkage_matrix, labels):
+    """
+    Calculate dendrogram purity given a linkage matrix and ground truth labels.
+    
+    Args:
+        linkage_matrix (numpy.ndarray or torch.Tensor): Linkage matrix from hierarchical clustering.
+        labels (torch.Tensor or list): Ground truth labels for each data point.
+    
+    Returns:
+        float: Dendrogram purity score.
+    """
+    # Convert inputs to appropriate types
+    if isinstance(linkage_matrix, torch.Tensor):
+        linkage_matrix = linkage_matrix.cpu().numpy()
+    labels = torch.as_tensor(labels)
+
+    n_samples = labels.size(0)
+    unique_labels = torch.unique(labels)
+    n_classes = len(unique_labels)
+
+    # Handle edge cases
+    if n_samples <= 1 or n_classes == 1:
+        return 1.0 if n_samples == 1 else 0.0
+
+    # Label-to-index mapping
+    label_to_idx = {label.item(): idx for idx, label in enumerate(unique_labels)}
+
+    # Calculate valid pairs
+    label_counts = torch.bincount(labels).cpu().numpy()
+    total_pairs = sum(c * (c - 1) // 2 for c in label_counts if c >= 2)
+    if total_pairs == 0:
+        return 0.0
+
+    # Build tree structure
+    n_merges = linkage_matrix.shape[0]  # Use .shape for numpy arrays
+    n_nodes = n_samples + n_merges
+
+    parent = torch.full((n_nodes,), -1, dtype=torch.int64)
+    left_child = torch.zeros(n_nodes, dtype=torch.int64)
+    right_child = torch.zeros(n_nodes, dtype=torch.int64)
+    class_counts = torch.zeros((n_nodes, n_classes), dtype=torch.float32)
+
+    # Initialize leaves
+    for i in range(n_samples):
+        lbl_idx = label_to_idx[labels[i].item()]
+        class_counts[i, lbl_idx] = 1.0
+
+    # Process merges
+    for i in range(n_merges):
+        new_cluster_id = n_samples + i
+        left = int(linkage_matrix[i, 0])
+        right = int(linkage_matrix[i, 1])
+        
+        left_child[new_cluster_id] = left
+        right_child[new_cluster_id] = right
+        parent[left] = new_cluster_id
+        parent[right] = new_cluster_id
+        
+        class_counts[new_cluster_id] = class_counts[left] + class_counts[right]
+
+    # Group indices by class
+    class_indices = {}
+    for label in unique_labels:
+        mask = (labels == label)
+        class_indices[label.item()] = torch.nonzero(mask, as_tuple=True)[0].tolist()
+
+    sum_purity = 0.0
+
+    # Compute purity for each pair
+    for lbl, indices in class_indices.items():
+        count = len(indices)
+        if count < 2:
+            continue
+        
+        lbl_idx = label_to_idx[lbl]
+        
+        for i in range(count):
+            for j in range(i + 1, count):
+                idx_i = indices[i]
+                idx_j = indices[j]
+                
+                # Find LCA
+                path_i = []
+                current = idx_i
+                while current != -1:
+                    path_i.append(current)
+                    current = parent[current]
+                
+                path_j_set = set()
+                current = idx_j
+                while current != -1:
+                    path_j_set.add(current)
+                    current = parent[current]
+                
+                # Find first common node
+                lca_node = None
+                for node in path_i:
+                    if node in path_j_set:
+                        lca_node = node
+                        break
+                
+                if lca_node is None:
+                    continue
+                
+                total = class_counts[lca_node].sum().item()
+                purity = class_counts[lca_node, lbl_idx].item() / total if total != 0 else 0.0
+                sum_purity += purity
+
+    return sum_purity / total_pairs

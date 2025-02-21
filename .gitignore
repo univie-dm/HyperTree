@@ -175,3 +175,5 @@ cython_debug/
 .pypirc
 logs/
 sbatch.sh
+sbatch_array.sh
+setup.sh
