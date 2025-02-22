@@ -62,7 +62,7 @@ def get_datamodule(cfg):
     datamodule.setup()
     return datamodule, input_dim, is_image
 
-def get_model(cfg, input_dim, is_image, manifold):
+def get_model(cfg, input_dim, manifold):
     if os.path.exists(f"data/models/{get_model_path(cfg)}.pt") and not cfg.overwrite:
         model = torch.load(f"data/models/{get_model_path(cfg)}.pt", weights_only=False)
         print("Loaded model from {}".format(f"data/models/{get_model_path(cfg)}.pt"))

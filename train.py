@@ -45,12 +45,12 @@ def main(cfg: DictConfig) -> None:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     manifold = PoincareBall(c=torch.Tensor([cfg.magnitude_curvature,]).to(device), trainable_c=False)
     
-    model = get_model(cfg, input_dim, is_image, manifold)
+    ae_model = get_model(cfg, input_dim, manifold)
 
     if not os.path.exists(f"data/models/{get_model_path(cfg)}.pt") or cfg.overwrite:
         print("Starting pretraining")
-        trainer.fit(model, datamodule)
-        torch.save(model, f"data/models/{get_model_path(cfg)}.pt")
+        trainer.fit(ae_model, datamodule)
+        torch.save(ae_model, f"data/models/{get_model_path(cfg)}.pt")
         print("Saved model to {}".format(f"data/models/{get_model_path(cfg)}.pt"))
 
     print("Finished pretraining")
@@ -59,11 +59,12 @@ def main(cfg: DictConfig) -> None:
     manifold = PoincareBall(c=torch.Tensor([cfg.magnitude_curvature,]).to(device), trainable_c=cfg.trainable_curvature)
 
     cone_model = HyperbolicContrastiveModel(
-        resnet=model,
+        ae_model=ae_model,
         manifold=manifold,
         light_radius=cfg.light_radius,
         temperature=cfg.temperature,
         contrastive_weight=cfg.contrastive_weight,
+        learning_rate=cfg.learning_rate,
     )
     trainer = pl.Trainer(logger=logger,
                         max_epochs=cfg.clustering_epochs,

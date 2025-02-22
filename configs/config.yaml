@@ -1,7 +1,7 @@
 # Training parameters
 seed: 400
-pretrain_epochs: 2000
-clustering_epochs: 2000
+pretrain_epochs: 500
+clustering_epochs: 500
 embedding_dim: 10
 
 # Model architecture
@@ -44,5 +44,5 @@ hydra:
     
 defaults:
   - _self_
-  - dataset: ${oc.select:dataset,cifar10}
+  - dataset: ${oc.select:dataset,mnist}
 

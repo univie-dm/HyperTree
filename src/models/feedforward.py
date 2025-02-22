@@ -1,6 +1,6 @@
 from src.models.abstract import AbstractModel
-from sklearn.cluster import AgglomerativeClustering
-from sklearn.metrics import normalized_mutual_info_score
+from sklearn.cluster import AgglomerativeClustering, KMeans
+from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -24,6 +24,7 @@ class HyperbolicAE(AbstractModel):
         self.input_dim = input_dim
         self.learning_rate = learning_rate
         self.log_interval = log_interval
+        self.latent_dim = latent_dim
         self.metrics = {}
         
         # Initialize Poincare ball manifold
@@ -82,18 +83,19 @@ class HyperbolicAE(AbstractModel):
     def training_step(self, batch, batch_idx):
         x_aug, x, y = batch
         x = x.view(x.size(0), -1)
-        #x_aug = x_aug.view(x_aug.size(0), -1)
+        x_aug = x_aug.view(x_aug.size(0), -1)
         x_recon, z, _ = self(x)
-        #x_aug_recon, z_aug, _ = self(x_aug)
+        x_aug_recon, z_aug, _ = self(x_aug)
         
 
         recon_loss = F.mse_loss(x_recon, x)
-        #recon_loss_aug = F.mse_loss(x_aug_recon, x_aug)
-        self.metrics.setdefault("train/recon_loss", []).append(recon_loss)
-        #self.metrics.setdefault("train/recon_loss_aug", []).append(recon_loss_aug)
+        recon_loss_aug = F.mse_loss(x_aug_recon, x_aug)
+        self.metrics.setdefault("pretrain/recon_loss", []).append(recon_loss)
+        self.metrics.setdefault("pretrain/recon_loss_aug", []).append(recon_loss_aug)
         
-        loss = (recon_loss) #+ recon_loss_aug)/2
-        self.metrics.setdefault("train/total_loss", []).append(loss)
+        loss = (recon_loss + recon_loss_aug)/2
+        self.metrics.setdefault("pretrain/total_loss", []).append(loss)
+        self.metrics.setdefault("pretrain/c", []).append(self.manifold.c.detach())
         
         return loss
     
@@ -105,61 +107,33 @@ class HyperbolicAE(AbstractModel):
                 embeddings = []
                 labels = []
                 
-                for batch_idx, (x_aug, x, y) in enumerate(test_loader):                        
-                    try:
-                        # Clear cache periodically
-                        if batch_idx % 5 == 0:
-                            torch.cuda.empty_cache()
-                        
-                        # Ensure input is properly flattened
-                        if len(x.shape) > 2:
-                            x = x.view(x.size(0), -1)
-                        x = x.to(self.device)
-                        
-                        _, z, _ = self(x)
-                        embeddings.append(z.cpu())  # Move to CPU immediately
-                        labels.append(y.cpu())
-                        
-                    except RuntimeError as e:
-                        if "out of memory" in str(e):
-                            print(f"OOM at batch {batch_idx}, continuing with collected samples")
-                            torch.cuda.empty_cache()
-                            break
-                        raise e
-                
-                if not embeddings:
-                    print("No embeddings collected, skipping dendrogram purity computation")
-                    return
-                    
+                for batch_idx, (x_aug, x, y) in enumerate(test_loader):
+                    x = x.view(x.size(0), -1)
+                    _, z, _ = self(x.to(self.device))
+                    embeddings.append(z.cpu())  # Move to CPU immediately
+                    labels.append(y.cpu())
                 # Concatenate all embeddings and labels
-                try:
+
                     all_embeddings = torch.cat(embeddings, dim=0)
                     all_labels = torch.cat(labels, dim=0)
                     
                     # Convert to numpy
                     all_embeddings_np = all_embeddings.cpu().numpy()
                     all_labels_np = all_labels.cpu().numpy()
-                   
-                    del embeddings, labels
-                    torch.cuda.empty_cache()
-                    
+                                  
                     # Move to CPU for dendrogram purity computation
                     all_labels = all_labels.cpu()
-                    
-                    # Free GPU memory
-                    torch.cuda.empty_cache()
                     
                     agglomerative_clustering = AgglomerativeClustering(n_clusters=10)
                     agglomerative_clustering.fit(all_embeddings_np)
                     nmi = normalized_mutual_info_score(all_labels_np, agglomerative_clustering.labels_)
-
-
+                    ari = adjusted_rand_score(all_labels_np, agglomerative_clustering.labels_)
                     # Log the metric
-                    self.metrics.setdefault("train/nmi", []).append(nmi)
-                except RuntimeError as e:
-                    print(f"Error during computation: {str(e)}")
-                    return
-        self.metrics['train/epoch'] = self.current_epoch
+                    self.metrics.setdefault("pretrain/nmi", []).append(nmi)                    
+                    self.metrics.setdefault("pretrain/ari", []).append(ari)
+
+
+        self.metrics['pretrain/epoch'] = self.current_epoch
         for key, value in self.metrics.items():
             if isinstance(value, list):
                 self.metrics[key] = sum(value) / len(value)
