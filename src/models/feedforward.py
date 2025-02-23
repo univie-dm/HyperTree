@@ -110,9 +110,8 @@ class HyperbolicAE(AbstractModel):
                 for batch_idx, (x_aug, x, y) in enumerate(test_loader):
                     x = x.view(x.size(0), -1)
                     _, z, _ = self(x.to(self.device))
-                    embeddings.append(z.cpu())  # Move to CPU immediately
+                    embeddings.append(z.cpu())
                     labels.append(y.cpu())
-                # Concatenate all embeddings and labels
 
                     all_embeddings = torch.cat(embeddings, dim=0)
                     all_labels = torch.cat(labels, dim=0)

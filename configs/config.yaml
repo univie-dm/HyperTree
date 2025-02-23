@@ -1,7 +1,7 @@
 # Training parameters
 seed: 400
 pretrain_epochs: 500
-clustering_epochs: 500
+clustering_epochs: 3000
 embedding_dim: 10
 
 # Model architecture
