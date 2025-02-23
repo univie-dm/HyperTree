@@ -51,7 +51,8 @@ def main(cfg: DictConfig) -> None:
         print("Starting pretraining")
         trainer.fit(ae_model, datamodule)
         torch.save(ae_model, f"data/models/{get_model_path(cfg)}.pt")
-        print("Saved model to {}".format(f"data/models/{get_model_path(cfg)}.pt"))
+    else:
+        ae_model = torch.load(f"data/models/{get_model_path(cfg)}.pt", weights_only=False)
 
     print("Finished pretraining")
     print("Starting clustering")

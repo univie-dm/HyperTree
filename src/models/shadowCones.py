@@ -28,16 +28,18 @@ class HyperbolicContrastiveModel(AbstractModel):
         learning_rate: float = 1e-3,
         **kwargs
     ):
-
         super().__init__()
         self.global_epoch = ae_model.current_epoch
         
-        # Load encoder weights
+        # Load encoder, decoder, and to_tangent modules with their weights
         self.encoder = ae_model.encoder
-        
-        # Load decoder attributes and weights
         self.decoder = ae_model.decoder
         self.to_tangent = ae_model.to_tangent
+        
+        # Ensure weights are copied by loading state dict
+        self.encoder.load_state_dict(ae_model.encoder.state_dict())
+        self.decoder.load_state_dict(ae_model.decoder.state_dict())
+        self.to_tangent.load_state_dict(ae_model.to_tangent.state_dict())
         
         self.light_radius = light_radius
         self.temperature = temperature
@@ -46,6 +48,7 @@ class HyperbolicContrastiveModel(AbstractModel):
         self.learning_rate = learning_rate
         self.manifold = manifold
         self.cone_overlapping_calculator = ConeOverlapCalculator(manifold, light_radius)
+        self.global_epoch = ae_model.current_epoch
         self.metrics = {}
         
     def setup_optimizers(self):
@@ -181,57 +184,42 @@ class HyperbolicContrastiveModel(AbstractModel):
         return total_loss
     
     def on_train_epoch_end(self):
-        labels = []
-        embeddings = []
-        if not isinstance(self.logger.experiment, wandb.sdk.wandb_run.Run):
-            return
         if self.current_epoch % self.log_interval == 0:
             with torch.no_grad():
-                '''
-                n = 100  # Number of points per class
-                num_classes = len(self.trainer.datamodule.get_class_names())
-                x_aug_sampled, x_sampled, y_sampled = sample_n_points_per_class(
-                    self.trainer.datamodule.test_dataloader(), n, num_classes
-                )
-                x_recon, z, tangent_vecs = self(x_sampled.to(self.device))
-                labels = y_sampled.detach().cpu()
-                embeddings = z.detach().cpu()
-                em_plot = embedddings_plot(embeddings, labels, self.manifold, self.trainer.datamodule.get_class_names())
-                self.metrics['train/embeddings'] = wandb.Image(em_plot)
-                '''
+                test_loader = self.trainer.datamodule.test_dataloader()
+                
                 embeddings = []
                 labels = []
-                euclidean_embeddings = []
-                for x_aug, x, y in self.trainer.datamodule.test_dataloader():
+                
+                for batch_idx, (x_aug, x, y) in enumerate(test_loader):
                     x = x.view(x.size(0), -1)
-                    x_aug = x_aug.view(x_aug.size(0), -1)
-                    z, tangent_vecs = self.encode(x.to(self.device))
-                    embeddings.append(z.detach())
-                    euclidean_embeddings.append(tangent_vecs.detach())
-                    labels.append(y.detach())
+                    _, z, _ = self(x.to(self.device))
+                    embeddings.append(z.cpu())  # Move to CPU immediately
+                    labels.append(y.cpu())
+                # Concatenate all embeddings and labels
 
-                embeddings = torch.cat(embeddings)
-                labels = torch.cat(labels) 
-                euclidean_embeddings = torch.cat(euclidean_embeddings).cpu().numpy()
+                    all_embeddings = torch.cat(embeddings, dim=0)
+                    all_labels = torch.cat(labels, dim=0)
+                    
+                    # Convert to numpy
+                    all_embeddings_np = all_embeddings.cpu().numpy()
+                    all_labels_np = all_labels.cpu().numpy()
+                                  
+                    # Move to CPU for dendrogram purity computation
+                    all_labels = all_labels.cpu()
+                    
+                    agglomerative_clustering = AgglomerativeClustering(n_clusters=10)
+                    agglomerative_clustering.fit(all_embeddings_np)
+                    nmi = normalized_mutual_info_score(all_labels_np, agglomerative_clustering.labels_)
+                    ari = adjusted_rand_score(all_labels_np, agglomerative_clustering.labels_)
+                    # Log the metric
+                    self.metrics.setdefault("clustering/nmi", []).append(nmi)                    
+                    self.metrics.setdefault("clustering/ari", []).append(ari)
 
-                pair_dist = compute_pairwise_distances(embeddings, self.manifold)
-                pair_dist = pair_dist.cpu().numpy()
-                labels = labels.cpu().numpy()
-                num_classes = len(self.trainer.datamodule.get_class_names())
-
-                agglo_clustering = AgglomerativeClustering(n_clusters=num_classes, linkage="average", metric="precomputed")
-                pred_labels = agglo_clustering.fit_predict(pair_dist)
-                nmi = normalized_mutual_info_score(labels, pred_labels)
-                self.metrics['clustering/hyperbolic_nmi'] = nmi
-                ari = adjusted_rand_score(labels, pred_labels)
-                self.metrics['clustering/hyperbolic_ari'] = ari
-
-               
 
         self.metrics['clustering/epoch'] = self.current_epoch
-        for key in self.metrics:
-            if isinstance(self.metrics[key], List):
-                self.metrics[key] = torch.stack(self.metrics[key]).mean()
-            self.logger.experiment.log(self.metrics, step=self.current_epoch+self.global_epoch)
-        plt.close()
+        for key, value in self.metrics.items():
+            if isinstance(value, list):
+                self.metrics[key] = sum(value) / len(value)
+        self.logger.experiment.log(self.metrics, step=self.global_epoch+self.current_epoch)
         self.metrics = {}
