@@ -1,21 +1,12 @@
-from typing import List, Tuple
-from sklearn.cluster import AgglomerativeClustering, KMeans
+from typing import Tuple
+from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-import pytorch_lightning as pl
-import wandb
-import matplotlib.pyplot as plt
-from src.models.resnet import HyperbolicResNet
 from src.models.abstract import AbstractModel
 from src.hyperbolic_math.src.manifolds.poincare import PoincareBall
-from src.hyperbolic_math.src.utils.math_utils import arcosh
-from src.models.utils import embedddings_plot, ConeOverlapCalculator, sample_n_points_per_class
-from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
-from src.eval import dendrogram_purity
-from scipy.spatial.distance import squareform
-from scipy.cluster.hierarchy import linkage
+from src.models.utils import ConeOverlapCalculator
+
 
 class HyperbolicContrastiveModel(AbstractModel):
     def __init__(
@@ -149,7 +140,8 @@ class HyperbolicContrastiveModel(AbstractModel):
 
         cone_similarities = self.batch_cone_membership(z, z_aug, points, self.light_radius)
         '''
-        cone_similarities = self.cone_overlapping_calculator(z, z_aug, method='analytical')
+        #cone_similarities = self.cone_overlapping_calculator(z, z_aug, method='analytical')
+        cone_similarities = self.manifold.dist(z, z_aug)
         self.metrics.setdefault("clustering/similarities", []).append(cone_similarities.mean())
         cone_logits = cone_similarities / self.temperature 
         cone_pos_sim = cone_logits.diag()
