@@ -22,16 +22,14 @@ from src.utils import get_datamodule, get_model, get_model_path, get_logger
 def main(cfg: DictConfig) -> None:
     print(cfg, flush=True)
     if cfg.seed >= 0:
-        seed_everything(cfg.seed)   
+        seed_everything(cfg.seed)
     else:
         print("Warning: Running without setting seed!")
     torch.set_float32_matmul_precision('medium')
 
     warnings.filterwarnings("ignore", ".*is smaller than the logging interval Trainer.*")
-    
-    logger = get_logger(cfg)
 
-    
+    logger = get_logger(cfg)
     trainer = pl.Trainer(logger=logger,
                         max_epochs=cfg.pretrain_epochs,
                         devices='auto',
@@ -39,13 +37,9 @@ def main(cfg: DictConfig) -> None:
                         deterministic=True,
                         enable_checkpointing=False,
                         )
-   
     datamodule, input_dim, is_image = get_datamodule(cfg)
-
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    manifold = PoincareBall(c=torch.Tensor([cfg.magnitude_curvature,]).to(device), trainable_c=False)
-    
-    ae_model = get_model(cfg, input_dim, manifold)
+    ae_model = get_model(cfg, input_dim)
 
     if not os.path.exists(f"data/models/{get_model_path(cfg)}.pt") or cfg.overwrite:
         print("Starting pretraining")
@@ -57,24 +51,23 @@ def main(cfg: DictConfig) -> None:
     print("Finished pretraining")
     print("Starting clustering")
 
-    manifold = PoincareBall(c=torch.Tensor([cfg.magnitude_curvature,]).to(device), trainable_c=cfg.trainable_curvature)
-
-    cone_model = HyperbolicContrastiveModel(
-        ae_model=ae_model,
-        manifold=manifold,
-        light_radius=cfg.light_radius,
-        temperature=cfg.temperature,
-        contrastive_weight=cfg.contrastive_weight,
-        learning_rate=cfg.learning_rate,
-    )
+    # cone_model = HyperbolicContrastiveModel(
+    #     ae_model=ae_model,
+    #     manifold=manifold,
+    #     light_radius=cfg.light_radius,
+    #     temperature=cfg.temperature,
+    #     contrastive_weight=cfg.contrastive_weight,
+    #     learning_rate=cfg.learning_rate,
+    # )
     trainer = pl.Trainer(logger=logger,
-                        max_epochs=cfg.clustering_epochs,
-                        devices='auto',
-                        accelerator='auto',
-                        deterministic=True,
-                        enable_checkpointing=False,
-                        )
-    trainer.fit(cone_model, datamodule)
+                         max_epochs=cfg.clustering_epochs,
+                         devices='auto',
+                         accelerator='auto',
+                         deterministic=True,
+                         enable_checkpointing=False,
+                         )
+    #trainer.fit(cone_model, datamodule)
+    trainer.fit(ae_model, datamodule)
     wandb.finish()
 
 

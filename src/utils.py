@@ -1,17 +1,15 @@
-import os
-from hashlib import md5
-
 import omegaconf
+import os
 import torch
+
+from hashlib import md5
 from pytorch_lightning.loggers import WandbLogger, CSVLogger
-
-from src.models.feedforward import HyperbolicAE
-from src.models.resnet import HyperbolicResNet
+from typing import Tuple, Union
 from src.datasets.datamodule import ColorDataModule, GrayScaleDataModule, TabularDataModule
+from src.models import HyperbolicAE, HyperbolicResNet
 
 
-
-def get_model_path(cfg):
+def get_model_path(cfg: omegaconf.DictConfig):
     attr = {
         "seed" : cfg.seed,
         "pretrain_epochs" : cfg.pretrain_epochs,
@@ -23,7 +21,7 @@ def get_model_path(cfg):
     }
     return md5(str(attr).encode()).hexdigest()
 
-def get_datamodule(cfg):
+def get_datamodule(cfg: omegaconf.DictConfig) -> Tuple[Union[TabularDataModule, GrayScaleDataModule, ColorDataModule], int, bool]:
     # Determine dataset type and create appropriate datamodule
     if hasattr(cfg.dataset, 'type') and cfg.dataset.type == 'tabular':
         datamodule = TabularDataModule(
@@ -62,7 +60,7 @@ def get_datamodule(cfg):
     datamodule.setup()
     return datamodule, input_dim, is_image
 
-def get_model(cfg, input_dim, manifold):
+def get_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[HyperbolicAE, HyperbolicResNet]:
     if os.path.exists(f"data/models/{get_model_path(cfg)}.pt") and not cfg.overwrite:
         model = torch.load(f"data/models/{get_model_path(cfg)}.pt", weights_only=False)
         print("Loaded model from {}".format(f"data/models/{get_model_path(cfg)}.pt"))
@@ -70,9 +68,13 @@ def get_model(cfg, input_dim, manifold):
         model = HyperbolicAE(
             input_dim=input_dim,
             hidden_dims=cfg.hidden_dims,
+            manifold_name=cfg.manifold_name,
+            curvature_magnitude=cfg.curvature_magnitude,
+            trainable_curvature=cfg.trainable_curvature,
             latent_dim=cfg.embedding_dim,
             learning_rate=cfg.learning_rate,
-            manifold=manifold,
+            hyphc_weight=cfg.hyphc_weight,
+            temperature=cfg.temperature,
             log_interval=cfg.log_interval,
         )
     elif cfg.ae_type == 'convolutional':
@@ -81,18 +83,22 @@ def get_model(cfg, input_dim, manifold):
         raise NotImplementedError("Variational autoencoder not implemented yet")
     elif cfg.ae_type == 'resnet18' or cfg.ae_type == 'resnet34':
         model = HyperbolicResNet(
-            manifold=manifold,
+            type=cfg.ae_type,
+            manifold_name=cfg.manifold_name,
+            curvature_magnitude=cfg.curvature_magnitude,
+            trainable_curvature=cfg.trainable_curvature,
             latent_dim=cfg.embedding_dim,
             learning_rate=cfg.learning_rate,
+            hyphc_weight=cfg.hyphc_weight,
+            temperature=cfg.temperature,
             log_interval=cfg.log_interval,
-            type=cfg.ae_type,
-        )            
+        )
     else:
         raise ValueError("Invalid autoencoder type")
-    
+
     return model
-    
-def get_logger(cfg):
+
+def get_logger(cfg: omegaconf.DictConfig) -> Union[WandbLogger, CSVLogger]:
     if cfg.wandb.enabled:
         logger = WandbLogger(
             project=cfg.wandb.project,
@@ -102,7 +108,6 @@ def get_logger(cfg):
             config=omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
             tags=cfg.wandb.tags,
         )
-
     else:
         logger = CSVLogger(save_dir=cfg.wandb.save_dir, name=cfg.wandb.project)
 

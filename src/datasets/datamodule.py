@@ -1,14 +1,12 @@
+import torch
 import pytorch_lightning as pl
-from torch.utils.data import DataLoader, random_split
-from torchvision import transforms, datasets
-import torch
-from typing import Literal, Optional, Union
-import torch
+import numpy as np
+
 from sklearn.datasets import load_iris
 from sklearn.preprocessing import StandardScaler
-import numpy as np
-import pytorch_lightning as pl
-from torch.utils.data import DataLoader, random_split, TensorDataset
+from torchvision import transforms, datasets
+from torch.utils.data import DataLoader
+from typing import Literal, Optional, Union
 
 
 class MultiViewDataset(torch.utils.data.Dataset):
@@ -22,7 +20,6 @@ class MultiViewDataset(torch.utils.data.Dataset):
         # Apply transforms
         aug_img = self.aug_transform(img)
         base_img = self.base_transform(img)
-            
         return aug_img, base_img, label
 
     def __len__(self):
@@ -30,7 +27,7 @@ class MultiViewDataset(torch.utils.data.Dataset):
 
 class ColorDataModule(pl.LightningDataModule):
     @staticmethod
-    def get_normalize_fn(data: torch.Tensor):
+    def get_normalize_fn(data: torch.Tensor) -> transforms.Normalize:
         channel_means = data.mean([0, 2, 3])
         channel_stds = data.std([0, 2, 3])
         return transforms.Normalize(channel_means, channel_stds)
@@ -60,10 +57,10 @@ class ColorDataModule(pl.LightningDataModule):
         self.test_dataset = None
         self.full_dataset = None
         self.ground_truth_labels = None
-        
-    def setup(self, stage: str = None):
+
+    def setup(self, stage: str = None) -> None:
         dataset_class = self.dataset_map[self.dataset_name]
-        
+
         # Special handling for CIFAR100_20
         if self.dataset_name == "cifar100_20":
             dataset_class = datasets.CIFAR100
@@ -76,26 +73,26 @@ class ColorDataModule(pl.LightningDataModule):
         if self.dataset_name == "gtsrb":
             # Force resize for GTSRB to handle inconsistent image sizes
             base_transforms.insert(0, transforms.Resize((32, 32)))
-            temp_dataset = dataset_class(self.data_dir, split='train', 
-                                      transform=transforms.Compose(base_transforms), 
-                                      download=True)
+            temp_dataset = dataset_class(self.data_dir, split='train',
+                                         transform=transforms.Compose(base_transforms),
+                                         download=True)
         else:
             temp_dataset = dataset_class(self.data_dir, train=True,
-                                       transform=transforms.Compose(base_transforms,), download=True)
+                                         transform=transforms.Compose(base_transforms,), download=True)
         temp_loader = DataLoader(temp_dataset, batch_size=1000, num_workers=self.num_workers)
         normalize_fn = self.get_normalize_fn(next(iter(temp_loader))[0])
-        
+
         transform_list = []
         if self.resize:
             transform_list.append(transforms.Resize((self.resize, self.resize)))
         transform_list.extend([transforms.ToTensor(), normalize_fn])
         base_transform = transforms.Compose(transform_list)
-        
+
         aug_transform = transforms.Compose([
             *transform_list[:-2],
             transforms.RandomResizedCrop((self.resize, self.resize) if self.resize else (32, 32)),
             transforms.RandomApply([
-                transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)], 
+                transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
                 p=0.8),
             transforms.RandomGrayscale(p=0.2),
             transforms.RandomHorizontalFlip(p=0.5),
@@ -111,12 +108,12 @@ class ColorDataModule(pl.LightningDataModule):
         else:
             base_train = dataset_class(self.data_dir, train=True, transform=None)
             base_test = dataset_class(self.data_dir, train=False, transform=None)
-        
+
         # Handle CIFAR100 coarse labels (20 classes)
         if self.coarse_labels:
             base_train.targets = [self._get_coarse_label(t) for t in base_train.targets]
             base_test.targets = [self._get_coarse_label(t) for t in base_test.targets]
-        
+
         if self.subset == 'all':
             self.train_dataset = MultiViewDataset(base_train, base_transform, aug_transform)
             self.test_dataset = MultiViewDataset(base_test, base_transform, base_transform)
@@ -132,7 +129,7 @@ class ColorDataModule(pl.LightningDataModule):
                 labels.append(label)
             self.ground_truth_labels = torch.tensor(labels)
 
-    def train_dataloader(self):
+    def train_dataloader(self) -> DataLoader:
         if self.subset == 'all':
             dataset = self.full_dataset
         elif self.subset == 'smallest':
@@ -140,12 +137,11 @@ class ColorDataModule(pl.LightningDataModule):
         else:
             dataset = self.train_dataset
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True,
-                         num_workers=self.num_workers)
+                          num_workers=self.num_workers)
 
-
-    def test_dataloader(self):
+    def test_dataloader(self) -> DataLoader:
         return DataLoader(self.test_dataset, batch_size=self.batch_size,
-                         num_workers=self.num_workers)
+                          num_workers=self.num_workers)
 
     @staticmethod
     def _get_coarse_label(fine_label):
@@ -161,9 +157,8 @@ class ColorDataModule(pl.LightningDataModule):
                          16, 19, 2, 4, 6, 19, 5, 5, 8, 19,
                          18, 1, 2, 15, 6, 0, 17, 8, 14, 13]
         return _coarse_labels[fine_label]
-    
 
-    def get_class_names(self):
+    def get_class_names(self) -> Union[None, dict]:
         # For CIFAR10:
         if self.dataset_name == "cifar10":
             fine_labels = datasets.CIFAR10(self.data_dir, train=False).classes
@@ -171,7 +166,7 @@ class ColorDataModule(pl.LightningDataModule):
         # For CIFAR100:
         elif self.dataset_name == "cifar100":
             fine_labels = datasets.CIFAR100(self.data_dir, train=False).classes
-            
+
             # CIFAR100 superclass mapping
             coarse_labels = [
                 'aquatic mammals', 'fish', 'flowers', 'food containers', 'fruit and vegetables',
@@ -180,7 +175,7 @@ class ColorDataModule(pl.LightningDataModule):
                 'medium-sized mammals', 'non-insect invertebrates', 'people', 'reptiles', 'small mammals',
                 'trees', 'vehicles 1', 'vehicles 2'
             ]
-            
+
             # Mapping of fine classes to their superclasses (index corresponds to coarse_labels)
             fine_to_coarse = {
                 'beaver': 0, 'dolphin': 0, 'otter': 0, 'seal': 0, 'whale': 0,
@@ -204,15 +199,15 @@ class ColorDataModule(pl.LightningDataModule):
                 'bicycle': 18, 'bus': 18, 'motorcycle': 18, 'pickup_truck': 18, 'train': 18,
                 'lawn_mower': 19, 'rocket': 19, 'streetcar': 19, 'tank': 19, 'tractor': 19
             }
-            
-            return {i: (fine_labels[i], coarse_labels[fine_to_coarse[fine_labels[i]]]) 
+
+            return {i: (fine_labels[i], coarse_labels[fine_to_coarse[fine_labels[i]]])
                     for i in range(len(fine_labels))}
         else:
             return None
 
 class GrayScaleDataModule(pl.LightningDataModule):
     @staticmethod
-    def get_normalize_fn(data: torch.Tensor):
+    def get_normalize_fn(data: torch.Tensor) -> transforms.Normalize:
         channel_means = data.mean([0, 2, 3])
         channel_stds = data.std([0, 2, 3])
         return transforms.Normalize(channel_means, channel_stds)
@@ -242,23 +237,22 @@ class GrayScaleDataModule(pl.LightningDataModule):
             "fmnist": datasets.FashionMNIST,
             "kmnist": datasets.KMNIST,
             "usps": datasets.USPS,
-
         }
 
-    def setup(self, stage: str = None):
+    def setup(self, stage: str = None) -> None:
         dataset_class = self.dataset_map[self.dataset_name]
-        
+
         dataset_class(self.data_dir, train=False, transform=transforms.ToTensor(), download=True)
         temp_dataset = dataset_class(self.data_dir, train=True, transform=transforms.ToTensor(), download=True)
         temp_loader = DataLoader(temp_dataset, batch_size=1000, num_workers=self.num_workers)
         normalize_fn = self.get_normalize_fn(next(iter(temp_loader))[0])
-        
+
         transform_list = []
         if self.resize:
             transform_list.append(transforms.Resize((self.resize, self.resize)))
         transform_list.extend([transforms.ToTensor(), normalize_fn])
         base_transform = transforms.Compose(transform_list)
-        
+
         aug_transform = transforms.Compose([
             *transform_list[:-2],
             transforms.RandomAffine(degrees=16, translate=(0.1, 0.1), shear=8),
@@ -268,7 +262,7 @@ class GrayScaleDataModule(pl.LightningDataModule):
 
         base_test = dataset_class(self.data_dir, train=False, transform=None)
         base_train = dataset_class(self.data_dir, train=True, transform=None)
-        
+
         if self.subset == 'all':
             self.train_dataset = MultiViewDataset(base_train, base_transform, base_transform)
             self.test_dataset = MultiViewDataset(base_test, base_transform, base_transform)
@@ -278,40 +272,33 @@ class GrayScaleDataModule(pl.LightningDataModule):
         self.full_dataset = torch.utils.data.ConcatDataset([self.train_dataset, self.test_dataset])
         self.ground_truth_labels = base_test.targets
 
-    def train_dataloader(self):
+    def train_dataloader(self) -> DataLoader:
         if self.subset == 'all':
             dataset = self.full_dataset
         else:
             dataset = self.train_dataset
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True,
-                         num_workers=self.num_workers)
+                          num_workers=self.num_workers)
 
-    def test_dataloader(self):
+    def test_dataloader(self) -> DataLoader:
         return DataLoader(self.test_dataset, batch_size=self.batch_size,
-                         num_workers=self.num_workers)
-    
-    def get_class_names(self):
+                          num_workers=self.num_workers)
+
+    def get_class_names(self) -> Union[None, dict]:
         # For MNIST:
-        if self.dataset_name == "mnist":
+        if self.name == "mnist":
             return {
                 0: "Zero", 1: "One", 2: "Two", 3: "Three", 4: "Four",
                 5: "Five", 6: "Six", 7: "Seven", 8: "Eight", 9: "Nine"
             }
         # For FashionMNIST:
-        elif self.dataset_name == "fmnist":
+        elif self.name == "fmnist":
             return {
                 0: "T-shirt/top", 1: "Trouser", 2: "Pullover", 3: "Dress", 4: "Coat",
                 5: "Sandal", 6: "Shirt", 7: "Sneaker", 8: "Bag", 9: "Ankle boot"
             }
         else:
             None
-
-
-
-
-
-
-
 
 class TabularMultiViewDataset(torch.utils.data.Dataset):
     def __init__(self, data, targets, transform=None, aug_transform=None):
@@ -323,19 +310,19 @@ class TabularMultiViewDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         x = self.data[idx]
         y = self.targets[idx]
-        
+
         # Apply basic transform
         if self.transform:
             x_base = self.transform(x)
         else:
             x_base = x
-            
+
         # Apply augmentation transform
         if self.aug_transform:
             x_aug = self.aug_transform(x)
         else:
             x_aug = x_base
-            
+
         return x_aug, x_base, y
 
     def __len__(self):
@@ -345,7 +332,7 @@ class TabularTransform:
     """Basic transform for tabular data"""
     def __init__(self, noise_std=0.0):
         self.noise_std = noise_std
-        
+
     def __call__(self, x):
         if self.noise_std > 0:
             noise = torch.randn_like(x) * self.noise_std
@@ -369,93 +356,93 @@ class TabularDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.train_ratio = train_ratio
         self.aug_noise_std = aug_noise_std
-        
+
         self.train_dataset = None
         self.test_dataset = None
         self.full_dataset = None
         self.ground_truth_labels = None
         self.input_dim = None
-        
+
         # Map dataset names to loading functions
         self.dataset_map = {
             "iris": load_iris
         }
 
-    def prepare_data(self):
+    def prepare_data(self) -> None:
         # Download datasets if needed (not needed for iris)
         pass
 
-    def setup(self, stage: str = None):
+    def setup(self, stage: str = None) -> None:
         # Load dataset
         dataset_fn = self.dataset_map[self.dataset_name]
         dataset = dataset_fn()
-        
+
         # Standardize features
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(dataset.data)
-        
+
         # Split into train/test
         num_samples = len(dataset.data)
         num_train = int(num_samples * self.train_ratio)
         indices = np.random.permutation(num_samples)
         train_idx, test_idx = indices[:num_train], indices[num_train:]
-        
+
         # Create transforms
         base_transform = TabularTransform(noise_std=0.0)
         aug_transform = TabularTransform(noise_std=self.aug_noise_std)
-        
+
         # Create train/test datasets
         if self.subset == 'all':
             self.train_dataset = TabularMultiViewDataset(
-                X_scaled[train_idx], 
+                X_scaled[train_idx],
                 dataset.target[train_idx],
                 transform=base_transform,
                 aug_transform=base_transform
             )
             self.test_dataset = TabularMultiViewDataset(
-                X_scaled[test_idx], 
+                X_scaled[test_idx],
                 dataset.target[test_idx],
                 transform=base_transform,
                 aug_transform=base_transform
             )
         else:
             self.train_dataset = TabularMultiViewDataset(
-                X_scaled[train_idx], 
+                X_scaled[train_idx],
                 dataset.target[train_idx],
                 transform=base_transform,
                 aug_transform=aug_transform
             )
             self.test_dataset = TabularMultiViewDataset(
-                X_scaled[test_idx], 
+                X_scaled[test_idx],
                 dataset.target[test_idx],
                 transform=base_transform,
                 aug_transform=base_transform
             )
-            
+
         self.full_dataset = torch.utils.data.ConcatDataset([self.train_dataset, self.test_dataset])
         self.ground_truth_labels = dataset.target
         self.input_dim = dataset.data.shape[1]  # Number of features
 
-    def train_dataloader(self):
+    def train_dataloader(self) -> DataLoader:
         if self.subset == 'all':
             dataset = self.full_dataset
         else:
             dataset = self.train_dataset
         return DataLoader(
-            dataset, 
-            batch_size=self.batch_size, 
+            dataset,
+            batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers
         )
 
-    def test_dataloader(self):
+    def test_dataloader(self) -> DataLoader:
         return DataLoader(
-            self.test_dataset, 
+            self.test_dataset,
             batch_size=self.batch_size,
             num_workers=self.num_workers
         )
-    
-    def get_class_names(self):
+
+    def get_class_names(self) -> dict:
         return {
             0: "Setosa",
             1: "Versicolour",

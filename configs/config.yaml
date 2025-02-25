@@ -2,31 +2,30 @@
 seed: 400
 pretrain_epochs: 500
 clustering_epochs: 3000
-embedding_dim: 10
-
-# Model architecture
-ae_type: 'feedforward'
-hidden_dims: [512, 256, 128, 64, 32]
-learning_rate: 3e-3
-triplet_loss_weight: 1.0
-magnitude_curvature: 2.5
-trainable_curvature: false
-triplet_sampled_n: 1e4
-loss_batch_size: 1e4
-temperature: 0.1
-light_radius: 0.1
-contrastive_weight: 1.0
-save_model: true
-overwrite: false
-
-
 num_workers: 8
 batch_size: 512
+
+overwrite: False
+
+# Model architecture
+ae_type: 'feedforward' # "resnet18", "resnet34"
+hidden_dims: [512, 256, 128, 64, 32]
+manifold_name: "PoincareBall" # "Euclidean", "Hyperboloid", "PoincareBall"
+curvature_magnitude: 1.0
+trainable_curvature: False
+embedding_dim: 10
+learning_rate: 3e-3
+hyphc_weight: 0.1
+temperature: 0.05
+
+# Contrastive params
+contrastive_weight: 1.0
+light_radius: 0.1
 
 # Logging
 log_interval: 5
 wandb:
-  enabled: true
+  enabled: True
   project: 'hyper_clustering'
   entity: 'kevin-sidak-team'
   save_dir: './logs'
@@ -40,9 +39,8 @@ hydra:
     dir: ${wandb.save_dir}/hydra/${now:%Y-%m-%d_%H-%M-%S}
   output_subdir: null
   job:
-    chdir: false
-    
+    chdir: False
+
 defaults:
   - _self_
   - dataset: ${oc.select:dataset,mnist}
-
