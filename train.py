@@ -1,19 +1,15 @@
+import hydra
 import os
-import warnings
-import omegaconf
 import torch
 import wandb
-from src.hyperbolic_math.src.manifolds.poincare import PoincareBall
-from src.models.shadowCones import HyperbolicContrastiveModel
-
-import hydra
-from omegaconf import DictConfig
+import warnings
 import pytorch_lightning as pl
 
 from lightning.pytorch import seed_everything
+from omegaconf import DictConfig
 from threadpoolctl import threadpool_limits
+from src.models.shadowCones import HyperbolicContrastiveModel
 from src.utils import get_datamodule, get_model, get_model_path, get_logger
-
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")
