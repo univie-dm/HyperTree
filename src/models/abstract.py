@@ -20,6 +20,7 @@ class AbstractModel(pl.LightningModule):
         learning_rate: float = 1e-3,
         hyphc_weight: float = 0.1,
         temperature: float = 0.05,
+        hyphc_triplet_subsampling_size: int = 100,
         log_interval: int = 5
     ):
         super().__init__()
@@ -35,6 +36,7 @@ class AbstractModel(pl.LightningModule):
         self.learning_rate = learning_rate
         self.hyphc_weight = hyphc_weight
         self.temperature = temperature
+        self.hyphc_triplet_subsampling_size = hyphc_triplet_subsampling_size
         self.log_interval = log_interval
         self.metrics = {}
 

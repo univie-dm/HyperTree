@@ -1,26 +1,30 @@
 # Training parameters
 seed: 400
-pretrain_epochs: 500
-clustering_epochs: 3000
 num_workers: 8
 batch_size: 512
-
 overwrite: False
+learning_rate: 3e-3
+## Pretraining parameters
+pretrain_epochs: 500
+pretrain_trainable_curvature: False
+## Clustering parameters
+clustering_epochs: 3000
+clustering_trainable_curvature: False
+### Contrastive parameters
+contrastive_weight: 1.0
+contrastive_temperature: 0.05
+light_radius: 0.1
+### HypHC parameters
+hyphc_weight: 0.1
+hyphc_temperature: 0.05
+hyphc_triplet_subsampling_size: 100
 
 # Model architecture
-ae_type: 'feedforward' # "resnet18", "resnet34"
+ae_type: 'feedforward' # "feedforward", "resnet18", "resnet34"
 hidden_dims: [512, 256, 128, 64, 32]
+embedding_dim: 10
 manifold_name: "PoincareBall" # "Euclidean", "Hyperboloid", "PoincareBall"
 curvature_magnitude: 1.0
-trainable_curvature: False
-embedding_dim: 10
-learning_rate: 3e-3
-hyphc_weight: 0.1
-temperature: 0.05
-
-# Contrastive params
-contrastive_weight: 1.0
-light_radius: 0.1
 
 # Logging
 log_interval: 5

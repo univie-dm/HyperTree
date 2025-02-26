@@ -18,6 +18,7 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "ae_type" : cfg.ae_type,
         "hidden_dims" : cfg.hidden_dims,
         "learning_rate" : cfg.learning_rate,
+        # TODO: add more identifier for saving runs
     }
     return md5(str(attr).encode()).hexdigest()
 
@@ -70,11 +71,11 @@ def get_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[HyperbolicAE, 
             hidden_dims=cfg.hidden_dims,
             manifold_name=cfg.manifold_name,
             curvature_magnitude=cfg.curvature_magnitude,
-            trainable_curvature=cfg.trainable_curvature,
+            trainable_curvature=cfg.pretrain_trainable_curvature,
             latent_dim=cfg.embedding_dim,
             learning_rate=cfg.learning_rate,
             hyphc_weight=cfg.hyphc_weight,
-            temperature=cfg.temperature,
+            temperature=cfg.hyphc_temperature,
             log_interval=cfg.log_interval,
         )
     elif cfg.ae_type == 'convolutional':
@@ -86,11 +87,11 @@ def get_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[HyperbolicAE, 
             type=cfg.ae_type,
             manifold_name=cfg.manifold_name,
             curvature_magnitude=cfg.curvature_magnitude,
-            trainable_curvature=cfg.trainable_curvature,
+            trainable_curvature=cfg.pretrain_trainable_curvature,
             latent_dim=cfg.embedding_dim,
             learning_rate=cfg.learning_rate,
             hyphc_weight=cfg.hyphc_weight,
-            temperature=cfg.temperature,
+            temperature=cfg.hyphc_temperature,
             log_interval=cfg.log_interval,
         )
     else:

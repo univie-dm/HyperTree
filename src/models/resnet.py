@@ -65,17 +65,19 @@ class HyperbolicResNet(AbstractModel):
         learning_rate: float = 1e-3,
         hyphc_weight: float = 0.1,
         temperature: float = 0.05,
+        hyphc_triplet_subsampling_size: int = 100,
         log_interval: int = 5
     ):
         super().__init__(
-            manifold_name,
-            curvature_magnitude,
-            trainable_curvature,
-            latent_dim,
-            learning_rate,
-            hyphc_weight,
-            temperature,
-            log_interval
+            manifold_name=manifold_name,
+            curvature_magnitude=curvature_magnitude,
+            trainable_curvature=trainable_curvature,
+            latent_dim=latent_dim,
+            learning_rate=learning_rate,
+            hyphc_weight=hyphc_weight,
+            temperature=temperature,
+            hyphc_triplet_subsampling_size=hyphc_triplet_subsampling_size,
+            log_interval=log_interval
         )
         self.type = type
         # Decoder params
@@ -136,15 +138,15 @@ class HyperbolicResNet(AbstractModel):
         x_recon, _, _ = self(x)
         x_aug_recon, _, _ = self(x_aug)
 
-        recon_loss = F.mse_loss(x_recon, x)
-        recon_loss_aug = F.mse_loss(x_aug_recon, x_aug)
+        # Reconstruction loss
+        x_recon_loss = F.mse_loss(x_recon, x)
+        x_aug_recon_loss = F.mse_loss(x_aug_recon, x_aug)
+        loss = (x_recon_loss + x_aug_recon_loss) / 2
 
-        self.metrics.setdefault("pretrain/recon_loss", []).append(recon_loss)
-        self.metrics.setdefault("pretrain/recon_loss_aug", []).append(recon_loss_aug)
-
-        loss = (recon_loss + recon_loss_aug) / 2
+        # Logging
+        self.metrics.setdefault("pretrain/x_recon_loss", []).append(x_recon_loss)
+        self.metrics.setdefault("pretrain/x_aug_recon_loss", []).append(x_aug_recon_loss)
         self.metrics.setdefault("pretrain/total_loss", []).append(loss)
         self.metrics.setdefault("pretrain/c", []).append(self.manifold.c.detach())
 
-        # TODO: Add Hyp loss here?
         return loss
