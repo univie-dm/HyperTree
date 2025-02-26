@@ -75,6 +75,8 @@ class AbstractModel(pl.LightningModule):
         pass
 
     def on_train_epoch_end(self) -> None:
+        if not isinstance(self.logger, pl.loggers.WandbLogger):
+            return
         if self.current_epoch % self.log_interval == 0:
             with torch.no_grad():
                 test_loader = self.trainer.datamodule.test_dataloader()
