@@ -66,7 +66,9 @@ class HyperbolicResNet(AbstractModel):
         hyphc_weight: float = 0.1,
         temperature: float = 0.05,
         hyphc_triplet_subsampling_size: int = 100,
-        log_interval: int = 5
+        log_interval: int = 5,
+        input_channels: int = 3,
+        output_size: int = 32
     ):
         super().__init__(
             manifold_name=manifold_name,
@@ -80,6 +82,7 @@ class HyperbolicResNet(AbstractModel):
             log_interval=log_interval
         )
         self.type = type
+        self.input_channels = input_channels
         # Decoder params
         self.expansion = 1
         self.inplanes = 512 * self.expansion
@@ -92,17 +95,31 @@ class HyperbolicResNet(AbstractModel):
         else:
             raise ValueError(f"Invalid model type: {type}")
 
+        # Modify first conv layer to accept different number of input channels
+        self.encoder.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+
+        self.encoder_linear = nn.Linear(1000, self.latent_dim)
+
         # Project latent vector to starting feature map
         self.linear = nn.Linear(latent_dim, self.inplanes * 4 * 4)
 
         # Decoder
-        self.decoder = nn.Sequential(
-            self._make_decoder_layer(256, 2, scale=2),  # 8x8
-            self._make_decoder_layer(128, 2, scale=2),  # 16x16
-            self._make_decoder_layer(64, 2, scale=2),   # 32x32
-            nn.Conv2d(64, 3, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.Tanh()
-        )
+        if output_size == 28:  # For MNIST
+            self.decoder = nn.Sequential(
+                self._make_decoder_layer(256, 2, scale=2),  # 8x8
+                self._make_decoder_layer(128, 2, scale=2),  # 16x16
+                self._make_decoder_layer(64, 2, scale=1.75),  # 28x28 (using scale=1.75 instead of 2)
+                nn.Conv2d(64, input_channels, kernel_size=3, stride=1, padding=1, bias=False),
+                nn.Tanh()
+            )
+        else:  # For 32x32 images
+            self.decoder = nn.Sequential(
+                self._make_decoder_layer(256, 2, scale=2),  # 8x8
+                self._make_decoder_layer(128, 2, scale=2),  # 16x16
+                self._make_decoder_layer(64, 2, scale=2),   # 32x32
+                nn.Conv2d(64, input_channels, kernel_size=3, stride=1, padding=1, bias=False),
+                nn.Tanh()
+            )
 
     def _make_decoder_layer(self, planes: int, blocks: int, scale: int=1) -> nn.Sequential:
         upsample = None
@@ -122,6 +139,7 @@ class HyperbolicResNet(AbstractModel):
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         tangent_z = self.encoder(x)
+        tangent_z = self.encoder_linear(tangent_z)
         manifold_z = self.manifold.expmap_0(tangent_z)
         return manifold_z, tangent_z
 
@@ -129,12 +147,12 @@ class HyperbolicResNet(AbstractModel):
         tangent_z = self.manifold.logmap_0(manifold_z)
         x = self.linear(tangent_z)
         x = x.view(-1, 512 * self.expansion, 4, 4)
-        x_recon = self.decoder(tangent_z)
+        x_recon = self.decoder(x)
         return x_recon
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug, x, _ = batch
-
+        
         x_recon, _, _ = self(x)
         x_aug_recon, _, _ = self(x_aug)
 

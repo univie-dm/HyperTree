@@ -83,7 +83,6 @@ class AbstractModel(pl.LightningModule):
                 labels = []
 
                 for batch_idx, (x_aug, x, y) in enumerate(test_loader):
-                    x = x.view(x.size(0), -1)
                     _, z, _ = self(x.to(self.device))
                     embeddings.append(z.cpu())
                     labels.append(y.cpu())

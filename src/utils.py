@@ -93,6 +93,8 @@ def get_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[HyperbolicAE, 
             hyphc_weight=cfg.hyphc_weight,
             temperature=cfg.hyphc_temperature,
             log_interval=cfg.log_interval,
+            input_channels=cfg.dataset.channels,
+            output_size=cfg.dataset.resize
         )
     else:
         raise ValueError("Invalid autoencoder type")

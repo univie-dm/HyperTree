@@ -63,6 +63,7 @@ class HyperbolicAE(AbstractModel):
         self.decoder = nn.Sequential(*decoder_layers)
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        x = x.view(x.size(0), -1)
         hidden = self.encoder(x)
         tangent_z = self.to_tangent(hidden)
         manifold_z = self.manifold.expmap_0(tangent_z)
@@ -71,13 +72,13 @@ class HyperbolicAE(AbstractModel):
     def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
         tangent_z = self.manifold.logmap_0(manifold_z)
         x_recon = self.decoder(tangent_z)
+        x_recon = x_recon.view(-1, *self.orginal_input_shape)
         return x_recon
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug, x, _ = batch
-        x = x.view(x.size(0), -1)
-        x_aug = x_aug.view(x_aug.size(0), -1)
-
+        self.orginal_input_shape = x.shape[1:]
+        
         x_recon, _, _ = self(x)
         x_aug_recon, _, _ = self(x_aug)
 
