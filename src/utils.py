@@ -18,6 +18,9 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "ae_type" : cfg.ae_type,
         "hidden_dims" : cfg.hidden_dims,
         "learning_rate" : cfg.learning_rate,
+        "manifold_name" : cfg.manifold_name,
+        "curvature_magnitude" : cfg.curvature_magnitude,
+        "pretrain_trainable_curvature" : cfg.pretrain_trainable_curvature,
         # TODO: add more identifier for saving runs
     }
     return md5(str(attr).encode()).hexdigest()
@@ -110,6 +113,7 @@ def get_logger(cfg: omegaconf.DictConfig) -> Union[WandbLogger, CSVLogger]:
             dir=cfg.wandb.save_dir,
             config=omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
             tags=cfg.wandb.tags,
+            log_model=False
         )
     else:
         logger = CSVLogger(save_dir=cfg.wandb.save_dir, name=cfg.wandb.project)

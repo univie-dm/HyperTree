@@ -6,7 +6,7 @@ from typing import Tuple
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from ..hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
-from ..hyperbolic_math.src.utils.helpers import compute_pairwise_distances
+from ..hyperbolic_math.src.utils.helpers import compute_pairwise_distances, get_delta
 from ..hyperbolic_math.src.utils.math_utils import arsinh, sinh
 
 
@@ -104,13 +104,18 @@ class AbstractModel(pl.LightningModule):
                     nmi = normalized_mutual_info_score(all_labels_np, agglomerative_clustering.labels_)
                     ari = adjusted_rand_score(all_labels_np, agglomerative_clustering.labels_)
                     # Log the metric
-                    self.metrics.setdefault("pretrain/nmi", []).append(nmi)
-                    self.metrics.setdefault("pretrain/ari", []).append(ari)
+                    self.metrics.setdefault("test/nmi", []).append(nmi)
+                    self.metrics.setdefault("test/ari", []).append(ari)
+
+                    delta, diam, rel_delta = get_delta(all_embeddings, self.manifold)
+                    self.metrics.setdefault("test/delta", []).append(delta.item())
+                    self.metrics.setdefault("test/diam", []).append(diam.item())
+                    self.metrics.setdefault("test/rel_delta", []).append(rel_delta.item())
 
         self.metrics['pretrain/epoch'] = self.current_epoch
         for key, value in self.metrics.items():
-            if isinstance(value, list):
-                self.metrics[key] = sum(value) / len(value)
+                if isinstance(value, list):
+                    self.metrics[key] = sum(value) / len(value)
         self.logger.experiment.log(self.metrics, step=self.current_epoch)
         self.metrics = {}
 

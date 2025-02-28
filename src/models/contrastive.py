@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from typing import Tuple, Type
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
+from ..hyperbolic_math.src.utils.helpers import get_delta
 from src.models.abstract import AbstractModel
 from src.models.utils import ConeOverlapCalculator
 
@@ -212,8 +213,13 @@ class HyperbolicContrastiveModel(AbstractModel):
                     nmi = normalized_mutual_info_score(all_labels_np, agglomerative_clustering.labels_)
                     ari = adjusted_rand_score(all_labels_np, agglomerative_clustering.labels_)
                     # Log the metric
-                    self.metrics.setdefault("clustering/nmi", []).append(nmi)
-                    self.metrics.setdefault("clustering/ari", []).append(ari)
+                    self.metrics.setdefault("test/nmi", []).append(nmi)
+                    self.metrics.setdefault("test/ari", []).append(ari)
+
+                    delta, diam, rel_delta = get_delta(all_embeddings.to(self.device), self.manifold)
+                    self.metrics.setdefault("test/delta", []).append(delta.item())
+                    self.metrics.setdefault("test/diam", []).append(diam.item())
+                    self.metrics.setdefault("test/rel_delta", []).append(rel_delta.item())
 
         self.metrics['clustering/epoch'] = self.current_epoch
         for key, value in self.metrics.items():
