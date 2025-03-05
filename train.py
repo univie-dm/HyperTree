@@ -53,6 +53,7 @@ def main(cfg: DictConfig) -> None:
         contrastive_weight=cfg.contrastive_weight,
         contrastive_temperature=cfg.contrastive_temperature,
         light_radius=cfg.light_radius,
+        start_epoch=cfg.pretrain_epochs
     )
     trainer = pl.Trainer(logger=logger,
                          max_epochs=cfg.clustering_epochs,

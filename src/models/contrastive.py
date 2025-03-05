@@ -17,7 +17,8 @@ class HyperbolicContrastiveModel(AbstractModel):
         clustering_trainable_curvature: bool = False,
         contrastive_weight: float = 0.1,
         contrastive_temperature: float = 0.1,
-        light_radius: float = 0.5
+        light_radius: float = 0.5,
+        start_epoch: int = 0,
     ):
         super().__init__(
             manifold_name=ae_model.manifold.name,
@@ -30,7 +31,7 @@ class HyperbolicContrastiveModel(AbstractModel):
             hyphc_triplet_subsampling_size=ae_model.hyphc_triplet_subsampling_size,
             log_interval=ae_model.log_interval
         )
-        self.global_epoch = ae_model.current_epoch
+        self.global_epoch = start_epoch
 
         self.contrastive_weight = contrastive_weight
         self.temperature = contrastive_temperature
