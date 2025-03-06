@@ -19,6 +19,7 @@ class HyperbolicContrastiveModel(AbstractModel):
         contrastive_temperature: float = 0.1,
         light_radius: float = 0.5,
         start_epoch: int = 0,
+        hyphc_weight: float = 0.1
     ):
         super().__init__(
             manifold_name=ae_model.manifold.name,
@@ -36,7 +37,7 @@ class HyperbolicContrastiveModel(AbstractModel):
         self.contrastive_weight = contrastive_weight
         self.temperature = contrastive_temperature
         self.light_radius = light_radius
-        self.cone_overlapping_calculator = ConeOverlapCalculator(self.manifold, light_radius)
+        self.hyphc_weight = hyphc_weight
 
         # Load encoder, decoder, and to_tangent modules with their weights
         self.encoder = ae_model.encoder
@@ -131,38 +132,6 @@ class HyperbolicContrastiveModel(AbstractModel):
         z_hyphc_loss, triplet_loss, _ = self.compute_hyphc_loss(manifold_z, subsample_size=self.hyphc_triplet_subsampling_size)
         z_aug_hyphc_loss, triplet_loss_aug, _ = self.compute_hyphc_loss(manifold_z_aug, subsample_size=self.hyphc_triplet_subsampling_size)
         hyphc_loss = (z_hyphc_loss + z_aug_hyphc_loss) / 2
-
-        # Shadow Cone contrastive loss
-        '''
-        points = []
-        for _, z_batch, _ in self.trainer.datamodule.test_dataloader():
-            _, z_points, _ = self(z_batch.to(self.device))
-            points.append(z_points.detach())
-        points = torch.cat(points)
-
-        cone_similarities = self.batch_cone_membership(z, z_aug, points, self.light_radius)
-        '''
-        # #cone_similarities = self.cone_overlapping_calculator(manifold_z, manifold_z_aug, method='analytical')
-        # cone_similarities = self.manifold.dist(manifold_z, manifold_z_aug)
-        # self.metrics.setdefault("clustering/similarities", []).append(cone_similarities.mean())
-        # cone_logits = cone_similarities / self.temperature
-        # cone_pos_sim = cone_logits.diag()
-        # cone_exp_logits = torch.exp(cone_logits)
-        # cone_neg_sim = torch.log(cone_exp_logits.sum(dim=0))
-        # cone_contrastive_loss = -(cone_pos_sim - cone_neg_sim).mean()
-
-        '''
-        dist_similarities = self.manifold.dist(z, z_aug)
-        dist_logits = dist_similarities / self.temperature
-        dist_pos_sim = dist_logits.diag()
-        dist_exp_logits = torch.exp(dist_logits)
-        dist_neg_sim = torch.log(dist_exp_logits.sum(dim=0))
-        dist_contrastive_loss = -(dist_pos_sim - dist_neg_sim).mean()
-        '''
-        #contrastive_loss = cone_contrastive_loss #+ dist_contrastive_loss
-
-        # Combined loss
-        #total_loss = recon_loss + self.contrastive_weight * contrastive_loss
         total_loss = recon_loss + self.hyphc_weight * hyphc_loss
 
         # Logging
@@ -174,9 +143,6 @@ class HyperbolicContrastiveModel(AbstractModel):
         self.metrics.setdefault("clustering/z_aug_hyphc_loss", []).append(z_aug_hyphc_loss)
         self.metrics.setdefault("clustering/triplet_loss", []).append(triplet_loss)
         self.metrics.setdefault("clustering/triplet_loss_aug", []).append(triplet_loss_aug)
-        #self.metrics.setdefault("clustering/contrastive_loss", []).append(contrastive_loss)
-        #self.metrics.setdefault("clustering/cone_contrastive_loss", []).append(cone_contrastive_loss)
-        #self.metrics.setdefault("train/dist_contrastive_loss", []).append(dist_contrastive_loss)
         self.metrics.setdefault("clustering/total_loss", []).append(total_loss)
         self.metrics.setdefault('clustering/dist_x2x_aug', []).append(self.manifold.dist(manifold_z, manifold_z_aug).mean())
         self.metrics.setdefault('clustering/c', []).append(self.manifold.c.detach())
