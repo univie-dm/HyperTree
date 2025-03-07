@@ -9,55 +9,23 @@ from src.hyperbolic_math.src.manifolds import Manifold
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 
 
-def embedddings_plot(x: torch.Tensor, y: torch.Tensor, manifold: Type[Manifold], class_names=None) -> plt.Figure:
-    if x.shape[1] > 2:
-        pairwise_dists = compute_pairwise_distances(x, manifold).detach().cpu().numpy()
-        x = TSNE(n_components=2, metric="precomputed", init="random").fit_transform(pairwise_dists)
+# TODO:
+def create_label_mapping(all_embeddings_np, all_labels_np, class_names, label_type='class'):
+    # Create label mappings
+    if class_names and isinstance(class_names[0], tuple):
+        label_mapping = {}
+        superclass_mapping = {}
+        for label in np.unique(all_labels_np):
+            class_name, superclass = class_names[label]
+            superclass_mapping[label] = superclass if superclass else class_name
+            if label_type == 'super':
+                label_mapping[label] = superclass
+            elif label_type == 'class':
+                label_mapping[label] = class_name
+            elif label_type == 'both':
+                label_mapping[label] = f"{class_name} ({superclass})"
     else:
-        x = x.detach().cpu().numpy()
-
-    # Ensure that labels are also on the CPU and numpy
-    y = y.cpu().numpy()
-
-    # Create figure
-    plt.figure(figsize=(12, 8))
-    ax = plt.gca()
-
-    # Get unique classes for proper legend handling
-    unique_classes = np.unique(y)
-
-    # Create scatter plot
-    scatter = plt.scatter(x[:, 0], x[:, 1], c=y, alpha=0.6, cmap='tab10')
-
-    # Add legend with labels
-    if class_names is not None:
-        # Create custom legend with class names
-        from matplotlib.lines import Line2D
-        legend_elements = [Line2D([0], [0], marker='o', color='w',
-                                  markerfacecolor=plt.cm.tab10(i / 10),
-                                  label=class_names[i][0],
-                                  markersize=10
-                                  ) for i in unique_classes]
-        ax.legend(handles=legend_elements, title="Classes", loc="upper right")
-    else:
-        # Use default numeric labels
-        ax.legend(*scatter.legend_elements(), title="Classes", loc="upper right")
-
-    # Set equal aspect ratio and expand limits to show full spread
-    ax.set_aspect('equal')
-
-    # Get the maximum absolute value for x and y coordinates
-    max_val = max(abs(x).max(), abs(y).max())
-    margin = max_val * 0.2  # Add 10% margin
-
-    # Set limits symmetrically
-    ax.set_xlim(-max_val - margin, max_val + margin)
-    ax.set_ylim(-max_val - margin, max_val + margin)
-
-    # Add title
-    plt.title("Hyperbolic Embeddings")
-
-    return plt.gcf()
+        label_mapping = {label: str(label) for label in np.unique(all_labels_np)}
 
 
 # TODO:

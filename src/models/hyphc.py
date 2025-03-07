@@ -2,6 +2,7 @@ import torch
 import pytorch_lightning as pl
 import torch.nn.functional as F
 import numpy as np
+import wandb
 
 from typing import Tuple, Type
 from sklearn.cluster import AgglomerativeClustering
@@ -9,6 +10,7 @@ from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from src.models.abstract import AbstractModel
 from ..hyperbolic_math.src.utils.helpers import get_delta, compute_pairwise_distances
 from ..hyperbolic_math.src.utils.math_utils import arsinh, sinh
+from ..hyperbolic_math.src.utils.vis_utils import create_figure
 
 
 class HyperbolicHCModel(AbstractModel):
@@ -106,8 +108,36 @@ class HyperbolicHCModel(AbstractModel):
                 np_sampled_triplet_indices = torch.combinations(torch.arange(n, device=device), r=3).cpu().numpy()
         elif sampling == 'random':
             pass
-        elif sampling == 'chami':
-            pass
+        elif sampling == 'chami_1':
+            n_nodes =0 ### added to avoid compilation error
+            num_samples = int(num_samples)
+            all_nodes = np.arange(n_nodes)
+            mesh = np.array(np.meshgrid(all_nodes, all_nodes))
+            pairs = mesh.T.reshape(-1, 2)
+            pairs = pairs[pairs[:, 0] < pairs[:, 1]]
+            n_pairs = pairs.shape[0]
+
+            print("Generating all pairs subset")
+            subset = np.random.choice(np.arange(n_pairs), num_samples, replace=False)
+            pairs = pairs[subset]
+        elif sampling == 'chami_2':
+            n_nodes =0 ### added to avoid compilation error
+            num_samples = int(num_samples)
+            all_nodes = np.arange(n_nodes)
+            mesh = np.array(np.meshgrid(all_nodes, all_nodes))
+            pairs = mesh.T.reshape(-1, 2)
+            pairs = pairs[pairs[:, 0] < pairs[:, 1]]
+            n_pairs = pairs.shape[0]
+
+            print("Generating all pairs superset")
+            k_base = int(num_samples / n_pairs)
+            k_rem = num_samples - (k_base * n_pairs)
+            subset = np.random.choice(np.arange(n_pairs), k_rem, replace=False)
+            pairs_rem = pairs[subset]
+            pairs_base = np.repeat(np.expand_dims(pairs, 0), k_base, axis=0).reshape((-1, 2))
+            pairs = np.concatenate([pairs_base, pairs_rem], axis=0)
+            num_samples = pairs.shape[0]
+            triples = np.concatenate([pairs, np.random.randint(n_nodes, size=(num_samples, 1))], axis=1)
         else:
             raise ValueError(f"Invalid sampling strategy: {sampling}")
 
@@ -225,6 +255,9 @@ class HyperbolicHCModel(AbstractModel):
                 label_matches = (all_labels == nn_labels).float()
                 nn_accuracy = label_matches.mean()
 
+                # Create embeddings plot
+                fig = create_figure(all_embeddings, manifold=self.manifold, labels=all_labels_np)
+
                 # Log the metrics
                 self.metrics.setdefault("test/nmi", []).append(nmi)
                 self.metrics.setdefault("test/ari", []).append(ari)
@@ -232,6 +265,7 @@ class HyperbolicHCModel(AbstractModel):
                 self.metrics.setdefault("test/diam", []).append(diam.item())
                 self.metrics.setdefault("test/rel_delta", []).append(rel_delta.item())
                 self.metrics.setdefault("test/nn_accuracy", []).append(nn_accuracy.item())
+                self.metrics["test/Hyperbolic Embeddings"] = wandb.Image(fig)
 
         self.metrics['clustering/epoch'] = self.current_epoch
         for key, value in self.metrics.items():
