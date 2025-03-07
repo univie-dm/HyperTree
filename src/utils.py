@@ -44,6 +44,7 @@ def get_datamodule(cfg: omegaconf.DictConfig) -> Tuple[Union[TabularDataModule, 
             data_dir=cfg.dataset.data_dir,
             resize=cfg.dataset.resize,
             num_workers=cfg.num_workers,
+            selected_classes=cfg.dataset.get('selected_classes', None)
         )
         input_dim = cfg.dataset.resize * cfg.dataset.resize * cfg.dataset.channels
         is_image = True

@@ -98,3 +98,7 @@ def plot_embeddings(all_embeddings_np, all_labels_np, class_names=None, label_ty
     plt.title("Hyperbolic Embeddings")
 
     return plt.gcf()
+
+
+def eval_clustering(distances: np.ndarray, labels: np.ndarray) -> Tuple[float, float]:
+

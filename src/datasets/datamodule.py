@@ -219,7 +219,8 @@ class GrayScaleDataModule(pl.LightningDataModule):
         batch_size: int = 256,
         resize: int = 28,
         subset: str = 'train',
-        num_workers: int = 1
+        num_workers: int = 1,
+        selected_classes: Optional[list] = None
     ):
         super().__init__()
         self.dataset_name = dataset_name
@@ -228,6 +229,7 @@ class GrayScaleDataModule(pl.LightningDataModule):
         self.resize = resize
         self.subset = subset
         self.num_workers = num_workers
+        self.selected_classes = selected_classes
         self.train_dataset = None
         self.test_dataset = None
         self.full_dataset = None
@@ -242,6 +244,7 @@ class GrayScaleDataModule(pl.LightningDataModule):
     def setup(self, stage: str = None) -> None:
         dataset_class = self.dataset_map[self.dataset_name]
 
+        # First download the dataset
         dataset_class(self.data_dir, train=False, transform=transforms.ToTensor(), download=True)
         temp_dataset = dataset_class(self.data_dir, train=True, transform=transforms.ToTensor(), download=True)
         temp_loader = DataLoader(temp_dataset, batch_size=1000, num_workers=self.num_workers)
@@ -260,8 +263,28 @@ class GrayScaleDataModule(pl.LightningDataModule):
             normalize_fn
         ])
 
+        # Load base datasets
         base_test = dataset_class(self.data_dir, train=False, transform=None)
         base_train = dataset_class(self.data_dir, train=True, transform=None)
+
+        # Filter for selected classes if specified
+        if self.selected_classes is not None:
+            # Validate selected classes
+            max_class = max(base_train.targets)
+            invalid_classes = [c for c in self.selected_classes if c > max_class]
+            if invalid_classes:
+                raise ValueError(f"Invalid class labels for {self.dataset_name}: {invalid_classes}. "
+                               f"Maximum class label is {max_class}.")
+
+            # Create masks for selected classes
+            train_mask = torch.tensor([label in self.selected_classes for label in base_train.targets])
+            test_mask = torch.tensor([label in self.selected_classes for label in base_test.targets])
+
+            # Filter datasets
+            base_train.data = base_train.data[train_mask]
+            base_train.targets = [label for i, label in enumerate(base_train.targets) if train_mask[i]]
+            base_test.data = base_test.data[test_mask]
+            base_test.targets = [label for i, label in enumerate(base_test.targets) if test_mask[i]]
 
         if self.subset == 'all':
             self.train_dataset = MultiViewDataset(base_train, base_transform, base_transform)
