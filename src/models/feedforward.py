@@ -16,9 +16,6 @@ class HyperbolicAE(AbstractModel):
         trainable_curvature: bool = False,
         latent_dim: int = 2,
         learning_rate: float = 1e-3,
-        hyphc_weight: float = 0.1,
-        temperature: float = 0.05,
-        hyphc_triplet_subsampling_size: int = 100,
         log_interval: int = 5
     ):
         super().__init__(
@@ -27,9 +24,6 @@ class HyperbolicAE(AbstractModel):
             trainable_curvature=trainable_curvature,
             latent_dim=latent_dim,
             learning_rate=learning_rate,
-            hyphc_weight=hyphc_weight,
-            temperature=temperature,
-            hyphc_triplet_subsampling_size=hyphc_triplet_subsampling_size,
             log_interval=log_interval
         )
         self.input_dim = input_dim

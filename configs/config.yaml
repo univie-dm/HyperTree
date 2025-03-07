@@ -9,6 +9,7 @@ pretrain_epochs: 500
 pretrain_trainable_curvature: False
 ## Clustering parameters
 clustering_epochs: 3000
+clustering_model: 'HyperbolicHC' # 'HyperbolicHC', 'HyperbolicContrastive'
 clustering_trainable_curvature: False
 ### Contrastive parameters
 contrastive_weight: 1.0

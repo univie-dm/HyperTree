@@ -6,7 +6,7 @@ from hashlib import md5
 from pytorch_lightning.loggers import WandbLogger, CSVLogger
 from typing import Tuple, Union
 from src.datasets.datamodule import ColorDataModule, GrayScaleDataModule, TabularDataModule
-from src.models import HyperbolicAE, HyperbolicResNet
+from src.models import HyperbolicContrastiveModel, HyperbolicAE, HyperbolicHCModel, HyperbolicResNet
 
 
 def get_model_path(cfg: omegaconf.DictConfig):
@@ -64,7 +64,7 @@ def get_datamodule(cfg: omegaconf.DictConfig) -> Tuple[Union[TabularDataModule, 
     datamodule.setup()
     return datamodule, input_dim, is_image
 
-def get_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[HyperbolicAE, HyperbolicResNet]:
+def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[HyperbolicAE, HyperbolicResNet]:
     if os.path.exists(f"data/models/{get_model_path(cfg)}.pt") and not cfg.overwrite:
         model = torch.load(f"data/models/{get_model_path(cfg)}.pt", weights_only=False)
         print("Loaded model from {}".format(f"data/models/{get_model_path(cfg)}.pt"))
@@ -77,8 +77,6 @@ def get_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[HyperbolicAE, 
             trainable_curvature=cfg.pretrain_trainable_curvature,
             latent_dim=cfg.embedding_dim,
             learning_rate=cfg.learning_rate,
-            hyphc_weight=cfg.hyphc_weight,
-            temperature=cfg.hyphc_temperature,
             log_interval=cfg.log_interval,
         )
     elif cfg.ae_type == 'convolutional':
@@ -93,14 +91,38 @@ def get_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[HyperbolicAE, 
             trainable_curvature=cfg.pretrain_trainable_curvature,
             latent_dim=cfg.embedding_dim,
             learning_rate=cfg.learning_rate,
-            hyphc_weight=cfg.hyphc_weight,
-            temperature=cfg.hyphc_temperature,
             log_interval=cfg.log_interval,
             input_channels=cfg.dataset.channels,
             output_size=cfg.dataset.resize
         )
     else:
         raise ValueError("Invalid autoencoder type")
+
+    return model
+
+def get_clustering_model(cfg: omegaconf.DictConfig,
+                         pretrain_model:  Union[HyperbolicAE, HyperbolicResNet]
+                         ) -> Union[HyperbolicContrastiveModel, HyperbolicHCModel]:
+    if cfg.clustering_model == 'HyperbolicContrastive':
+        model = HyperbolicContrastiveModel(
+            ae_model=pretrain_model,
+            clustering_trainable_curvature=cfg.clustering_trainable_curvature,
+            contrastive_weight=cfg.contrastive_weight,
+            contrastive_temperature=cfg.contrastive_temperature,
+            light_radius=cfg.light_radius,
+            start_epoch=cfg.pretrain_epochs
+        )
+    elif cfg.clustering_model == 'HyperbolicHC':
+        model = HyperbolicHCModel(
+            ae_model=pretrain_model,
+            clustering_trainable_curvature=cfg.clustering_trainable_curvature,
+            hyphc_weight=cfg.hyphc_weight,
+            hyphc_temperature=cfg.hyphc_temperature,
+            hyphc_triplet_subsampling_size=cfg.hyphc_triplet_subsampling_size,
+            start_epoch=cfg.pretrain_epochs
+        )
+    else:
+        raise ValueError("Invalid clustering model")
 
     return model
 
