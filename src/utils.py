@@ -21,6 +21,10 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "manifold_name" : cfg.manifold_name,
         "curvature_magnitude" : cfg.curvature_magnitude,
         "pretrain_trainable_curvature" : cfg.pretrain_trainable_curvature,
+        "dataset_name" : cfg.dataset.name,
+        "batch_size" : cfg.batch_size,
+        "selected_classes" : cfg.dataset.selected_classes,
+        "dataset_subset" : cfg.dataset.subset,
         # TODO: add more identifier for saving runs
     }
     return md5(str(attr).encode()).hexdigest()

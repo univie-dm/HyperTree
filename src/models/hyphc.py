@@ -5,6 +5,7 @@ import numpy as np
 import wandb
 import matplotlib.pyplot as plt
 from lightning.pytorch.utilities import grad_norm
+from pytorch_lightning.loggers import WandbLogger
 
 
 from typing import Tuple, Type
@@ -14,12 +15,13 @@ from src.models.abstract import AbstractModel
 from ..hyperbolic_math.src.utils.helpers import get_delta, compute_pairwise_distances
 from ..hyperbolic_math.src.utils.math_utils import arsinh, sinh
 from ..hyperbolic_math.src.utils.vis_utils import create_figure
+from sklearn.metrics.pairwise import cosine_similarity
 
 
 class HyperbolicHCModel(AbstractModel):
     def __init__(
         self,
-        ae_model: Type[AbstractModel],
+        ae_model: AbstractModel,
         clustering_trainable_curvature: bool = False,
         hyphc_weight: float = 0.1,
         hyphc_temperature: float = 0.5,
@@ -95,7 +97,7 @@ class HyperbolicHCModel(AbstractModel):
             indices = indices[:, batch_size:]
         return lcas
 
-    def compute_hyphc_loss(self, embeddings: torch.Tensor, subsample_size: int=1e6, sampling: str="all_subsample_triplets") -> torch.Tensor:
+    def compute_hyphc_loss(self, embeddings: torch.Tensor, subsample_size: int=1000000, sampling: str="all_subsample_triplets") -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         n = embeddings.size(0)
         device = embeddings.device
 
@@ -112,8 +114,8 @@ class HyperbolicHCModel(AbstractModel):
         elif sampling == 'random':
             pass
         elif sampling == 'chami_1':
-            n_nodes =0 ### added to avoid compilation error
-            num_samples = int(num_samples)
+            n_nodes = n  # Use the number of embeddings
+            num_samples = min(1000, n * (n-1) // 2)  # Reasonable default
             all_nodes = np.arange(n_nodes)
             mesh = np.array(np.meshgrid(all_nodes, all_nodes))
             pairs = mesh.T.reshape(-1, 2)
@@ -124,8 +126,8 @@ class HyperbolicHCModel(AbstractModel):
             subset = np.random.choice(np.arange(n_pairs), num_samples, replace=False)
             pairs = pairs[subset]
         elif sampling == 'chami_2':
-            n_nodes =0 ### added to avoid compilation error
-            num_samples = int(num_samples)
+            n_nodes = n  # Use the number of embeddings
+            num_samples = min(1000, n * (n-1) // 2)  # Reasonable default
             all_nodes = np.arange(n_nodes)
             mesh = np.array(np.meshgrid(all_nodes, all_nodes))
             pairs = mesh.T.reshape(-1, 2)
@@ -223,12 +225,12 @@ class HyperbolicHCModel(AbstractModel):
         self.metrics.setdefault("clustering/similarties_sum_aug", []).append(similarties_sum_aug)
         self.metrics.setdefault("clustering/total_loss", []).append(total_loss)
         self.metrics.setdefault('clustering/dist_x2x_aug', []).append(self.manifold.dist(manifold_z, manifold_z_aug).mean())
-        self.metrics.setdefault('clustering/c', []).append(self.manifold.c.detach())
+        self.metrics.setdefault('clustering/c', []).append(self.manifold.c.item())
 
         return total_loss
 
     def on_train_epoch_end(self) -> None:
-        if not isinstance(self.logger, pl.loggers.WandbLogger):
+        if not isinstance(self.logger, WandbLogger):
             return
         if self.current_epoch % self.log_interval == 0:
             with torch.no_grad():
@@ -249,20 +251,26 @@ class HyperbolicHCModel(AbstractModel):
                 delta, diam, rel_delta = get_delta(all_embeddings, self.manifold)
 
                 all_labels_np = all_labels.cpu().numpy()
-                pdist = compute_pairwise_distances(all_embeddings, self.manifold).cpu().numpy()
+                
+                # Compute cosine similarity directly on hyperbolic embeddings
+                hyperbolic_embeddings_np = all_embeddings.cpu().numpy()
+                cosine_sim_matrix = cosine_similarity(hyperbolic_embeddings_np)
+                
+                # Convert to distance matrix (1 - similarity)
+                cosine_dist_matrix = 1 - cosine_sim_matrix
+                
+                # Use cosine distance with complete linkage for clustering
+                agglomerative_clustering = AgglomerativeClustering(
+                    n_clusters=10, 
+                    metric='precomputed', 
+                    linkage='complete'
+                )
+                
+                # Perform clustering with cosine similarity on hyperbolic embeddings
+                predicted_labels = agglomerative_clustering.fit_predict(cosine_dist_matrix)
+                nmi = normalized_mutual_info_score(all_labels_np, predicted_labels)
+                ari = adjusted_rand_score(all_labels_np, predicted_labels)
 
-                agglomerative_clustering = AgglomerativeClustering(n_clusters=4, metric='precomputed', linkage='single')
-                agglomerative_clustering.fit(pdist)
-                nmi = normalized_mutual_info_score(all_labels_np, agglomerative_clustering.labels_)
-                ari = adjusted_rand_score(all_labels_np, agglomerative_clustering.labels_)
-
-                # Calculate nearest neighbor accuracy
-                pdist_tensor = torch.from_numpy(pdist).to(self.device)
-                pdist_tensor.fill_diagonal_(float('inf'))  # Exclude self
-                _, nn_indices = torch.min(pdist_tensor, dim=1)
-                nn_labels = all_labels[nn_indices.to(all_labels.device)]
-                label_matches = (all_labels == nn_labels).float()
-                nn_accuracy = label_matches.mean()
 
                 # Create embeddings plot
                 fig = create_figure(all_embeddings, manifold=self.manifold, labels=all_labels_np)
@@ -273,7 +281,6 @@ class HyperbolicHCModel(AbstractModel):
                 self.metrics.setdefault("test/delta", []).append(delta.item())
                 self.metrics.setdefault("test/diam", []).append(diam.item())
                 self.metrics.setdefault("test/rel_delta", []).append(rel_delta.item())
-                self.metrics.setdefault("test/nn_accuracy", []).append(nn_accuracy.item())
                 self.metrics["test/Hyperbolic Embeddings"] = wandb.Image(fig)
                 plt.close()
 
@@ -281,5 +288,5 @@ class HyperbolicHCModel(AbstractModel):
         for key, value in self.metrics.items():
             if isinstance(value, list):
                 self.metrics[key] = sum(value) / len(value)
-        self.logger.experiment.log(self.metrics, step=self.global_epoch+self.current_epoch)
+        self.logger.experiment.log(self.metrics, step=self.global_epoch+self.current_epoch) # type: ignore
         self.metrics = {}

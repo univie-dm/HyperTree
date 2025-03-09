@@ -1,4 +1,3 @@
-from unittest import TestLoader
 import torch
 import numpy as np
 import pytorch_lightning as pl
@@ -6,6 +5,7 @@ import pytorch_lightning as pl
 from typing import Any, Mapping, Optional, Tuple, Union
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
+from sklearn.metrics.pairwise import cosine_similarity
 from ..hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
 from ..hyperbolic_math.src.utils.helpers import compute_pairwise_distances, get_delta
 
@@ -51,12 +51,6 @@ class AbstractModel(pl.LightningModule):
     def training_step(self, batch: torch.Tensor, batch_idx) -> Optional[Union[torch.Tensor, Mapping[str, Any]]]:
         pass
 
-    def validation_step(self, batch: torch.Tensor, batch_idx) -> Optional[Union[torch.Tensor, Mapping[str, Any]]]:
-        pass
-
-    def test_step(self, batch: torch.Tensor, batch_idx) -> Optional[Union[torch.Tensor, Mapping[str, Any]]]:
-        pass
-
     def on_train_epoch_start(self) -> None:
         pass
 
@@ -83,19 +77,25 @@ class AbstractModel(pl.LightningModule):
                 # Move to CPU for NMI and ARI calculation
                 
                 all_labels_np = all_labels.cpu().numpy()
-                pdist = compute_pairwise_distances(all_embeddings, self.manifold).cpu().numpy()
-                agglomerative_clustering = AgglomerativeClustering(n_clusters=4, metric='precomputed', linkage='single')
-                agglomerative_clustering.fit(pdist)
-                nmi = normalized_mutual_info_score(all_labels_np, agglomerative_clustering.labels_)
-                ari = adjusted_rand_score(all_labels_np, agglomerative_clustering.labels_)
+                # Compute cosine similarity directly on hyperbolic embeddings
+                hyperbolic_embeddings_np = all_embeddings.cpu().numpy()
+                cosine_sim_matrix = cosine_similarity(hyperbolic_embeddings_np)
+                
+                # Convert to distance matrix (1 - similarity)
+                cosine_dist_matrix = 1 - cosine_sim_matrix
 
-                # Calculate nearest neighbor accuracy
-                pdist_tensor = torch.from_numpy(pdist).to(self.device)
-                pdist_tensor.fill_diagonal_(float('inf'))  # Exclude self
-                _, nn_indices = torch.min(pdist_tensor, dim=1)
-                nn_labels = all_labels[nn_indices.to(all_labels.device)]
-                label_matches = (all_labels == nn_labels).float()
-                nn_accuracy = label_matches.mean()
+                # Use cosine distance for clustering
+                agglomerative_clustering = AgglomerativeClustering(
+                    n_clusters=4, 
+                    metric='precomputed', 
+                    linkage='complete'
+                )
+                
+                # Perform clustering with cosine similarity on hyperbolic embeddings
+                predicted_labels = agglomerative_clustering.fit_predict(cosine_dist_matrix)
+                nmi = normalized_mutual_info_score(all_labels_np, predicted_labels)
+                ari = adjusted_rand_score(all_labels_np, predicted_labels)
+
 
                 # Log the metrics
                 self.metrics.setdefault("test/nmi", []).append(nmi)
@@ -103,7 +103,6 @@ class AbstractModel(pl.LightningModule):
                 self.metrics.setdefault("test/delta", []).append(delta.item())
                 self.metrics.setdefault("test/diam", []).append(diam.item())
                 self.metrics.setdefault("test/rel_delta", []).append(rel_delta.item())
-                self.metrics.setdefault("test/nn_accuracy", []).append(nn_accuracy.item())
 
         self.metrics['pretrain/epoch'] = self.current_epoch
         for key, value in self.metrics.items():
