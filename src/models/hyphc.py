@@ -3,6 +3,9 @@ import pytorch_lightning as pl
 import torch.nn.functional as F
 import numpy as np
 import wandb
+import matplotlib.pyplot as plt
+from lightning.pytorch.utilities import grad_norm
+
 
 from typing import Tuple, Type
 from sklearn.cluster import AgglomerativeClustering
@@ -201,6 +204,12 @@ class HyperbolicHCModel(AbstractModel):
         hyphc_loss = (z_hyphc_loss + z_aug_hyphc_loss) / 2
         total_loss = recon_loss + self.hyphc_weight * hyphc_loss
 
+
+        for key, value in grad_norm(self, norm_type=2).items():
+            if key == "grad_2.0_norm_total":
+                key = "grad_2.0_norm/total"
+            self.metrics.setdefault(f"{key}", []).append(value)
+
         # Logging
         self.metrics.setdefault("clustering/recon_loss", []).append(recon_loss)
         self.metrics.setdefault("clustering/x_recon_loss", []).append(x_recon_loss)
@@ -242,7 +251,7 @@ class HyperbolicHCModel(AbstractModel):
                 all_labels_np = all_labels.cpu().numpy()
                 pdist = compute_pairwise_distances(all_embeddings, self.manifold).cpu().numpy()
 
-                agglomerative_clustering = AgglomerativeClustering(n_clusters=4, metric='precomputed', linkage='average')
+                agglomerative_clustering = AgglomerativeClustering(n_clusters=4, metric='precomputed', linkage='single')
                 agglomerative_clustering.fit(pdist)
                 nmi = normalized_mutual_info_score(all_labels_np, agglomerative_clustering.labels_)
                 ari = adjusted_rand_score(all_labels_np, agglomerative_clustering.labels_)
@@ -266,6 +275,7 @@ class HyperbolicHCModel(AbstractModel):
                 self.metrics.setdefault("test/rel_delta", []).append(rel_delta.item())
                 self.metrics.setdefault("test/nn_accuracy", []).append(nn_accuracy.item())
                 self.metrics["test/Hyperbolic Embeddings"] = wandb.Image(fig)
+                plt.close()
 
         self.metrics['clustering/epoch'] = self.current_epoch
         for key, value in self.metrics.items():

@@ -23,7 +23,7 @@ hyphc_triplet_subsampling_size: 100
 # Model architecture
 ae_type: 'feedforward' # "feedforward", "resnet18", "resnet34"
 hidden_dims: [512, 256, 128, 64, 32]
-embedding_dim: 10
+embedding_dim: 4
 manifold_name: "PoincareBall" # "Euclidean", "Hyperboloid", "PoincareBall"
 curvature_magnitude: 1.0
 

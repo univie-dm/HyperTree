@@ -84,7 +84,7 @@ class AbstractModel(pl.LightningModule):
                 
                 all_labels_np = all_labels.cpu().numpy()
                 pdist = compute_pairwise_distances(all_embeddings, self.manifold).cpu().numpy()
-                agglomerative_clustering = AgglomerativeClustering(n_clusters=4, metric='precomputed', linkage='average')
+                agglomerative_clustering = AgglomerativeClustering(n_clusters=4, metric='precomputed', linkage='single')
                 agglomerative_clustering.fit(pdist)
                 nmi = normalized_mutual_info_score(all_labels_np, agglomerative_clustering.labels_)
                 ari = adjusted_rand_score(all_labels_np, agglomerative_clustering.labels_)
