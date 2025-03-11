@@ -243,7 +243,7 @@ class HyperbolicHCModel(AbstractModel):
             return
         if self.current_epoch % self.log_interval == 0:
             with torch.no_grad():
-                test_loader = self.trainer.datamodule.test_dataloader()
+                test_loader = self.trainer.datamodule.test_dataloader() # type: ignore
 
                 embeddings = []
                 labels = []
