@@ -38,10 +38,10 @@ class AbstractModel(pl.LightningModule):
         self.log_interval = log_interval
         self.metrics = {}
 
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
+    def encode(self, x: torch.Tensor) -> torch.Tensor: # type: ignore
         pass
 
-    def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
+    def decode(self, manifold_z: torch.Tensor) -> torch.Tensor: # type: ignore
         pass
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -57,7 +57,7 @@ class AbstractModel(pl.LightningModule):
             return
         if self.current_epoch % self.log_interval == 0:
             with torch.no_grad():
-                test_loader = self.trainer.datamodule.test_dataloader()
+                test_loader = self.trainer.datamodule.test_dataloader() # type: ignore
 
                 embeddings = []
                 euclidean = []###
@@ -119,5 +119,5 @@ class AbstractModel(pl.LightningModule):
         for key, value in self.metrics.items():
             if isinstance(value, list):
                 self.metrics[key] = sum(value) / len(value)
-        self.logger.experiment.log(self.metrics, step=self.current_epoch)
+        self.logger.experiment.log(self.metrics, step=self.current_epoch) # type: ignore
         self.metrics = {}
