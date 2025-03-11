@@ -1,21 +1,19 @@
 import torch
-import pytorch_lightning as pl
+import wandb
 import torch.nn.functional as F
 import numpy as np
-import wandb
 import matplotlib.pyplot as plt
-from lightning.pytorch.utilities import grad_norm
+
+from typing import Tuple
 from pytorch_lightning.loggers import WandbLogger
-
-
-from typing import Tuple, Type
+from lightning.pytorch.utilities import grad_norm
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
+from sklearn.metrics.pairwise import cosine_similarity
 from src.models.abstract import AbstractModel
-from src.hyperbolic_math.src.utils.helpers import get_delta, compute_pairwise_distances
+from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances, get_delta
 from src.hyperbolic_math.src.utils.math_utils import arsinh, sinh
 from src.hyperbolic_math.src.utils.vis_utils import create_figure
-from sklearn.metrics.pairwise import cosine_similarity
 
 
 class HyperbolicHCModel(AbstractModel):
@@ -25,9 +23,9 @@ class HyperbolicHCModel(AbstractModel):
         clustering_trainable_curvature: bool = False,
         hyphc_weight: float = 0.1,
         hyphc_temperature: float = 0.5,
+        hyphc_sampling_strategy: str = 'all_subsample_triplets',
         hyphc_triplet_subsampling_size: int = 100,
-        start_epoch: int = 0,
-        hyphc_sampling_strategy: str = 'chami_2'
+        start_epoch: int = 0
     ):
         super().__init__(
             manifold_name=ae_model.manifold.name,
@@ -41,8 +39,9 @@ class HyperbolicHCModel(AbstractModel):
 
         self.hyphc_weight = hyphc_weight
         self.hyphc_temperature = hyphc_temperature
-        self.hyphc_triplet_subsampling_size = hyphc_triplet_subsampling_size
         self.hyphc_sampling_strategy = hyphc_sampling_strategy
+        self.hyphc_triplet_subsampling_size = hyphc_triplet_subsampling_size
+
         # Load encoder, decoder, and to_tangent modules with their weights
         self.encoder = ae_model.encoder
         self.decoder = ae_model.decoder
@@ -52,6 +51,27 @@ class HyperbolicHCModel(AbstractModel):
         self.encoder.load_state_dict(ae_model.encoder.state_dict())
         self.decoder.load_state_dict(ae_model.decoder.state_dict())
         self.to_tangent.load_state_dict(ae_model.to_tangent.state_dict())
+
+    def sample_triplets(self, num_pts: int, device: torch.device) -> np.ndarray:
+        """Sample triplets for the HypHC loss."""
+        if self.hyphc_sampling_strategy == 'all_subsample_triplets':
+            sampled_indices = torch.randperm(num_pts, device=device)[:min(self.hyphc_triplet_subsampling_size, num_pts)]
+            np_sampled_triplet_indices = torch.combinations(sampled_indices, r=3).cpu().numpy()
+        elif self.hyphc_sampling_strategy == 'random':
+            pass
+        elif self.hyphc_sampling_strategy == 'chami':
+            sampled_indices = torch.randperm(num_pts, device=device)[:min(self.hyphc_triplet_subsampling_size, num_pts)]
+            sampled_pair_indices = torch.combinations(sampled_indices, r=2)
+
+            # Append a third random point to the torch tensor of 2-tuples
+            random_indices = torch.randint(0, num_pts, (sampled_pair_indices.shape[0], 1), device=device)
+            sampled_triplet_indices = torch.cat([sampled_pair_indices, random_indices], dim=1)
+            np_sampled_triplet_indices = sampled_triplet_indices.cpu().numpy()
+
+            sampled_indices = torch.unique(sampled_triplet_indices)
+        else:
+            raise ValueError(f"Invalid sampling strategy: {self.hyphc_sampling_strategy}")
+        return sampled_indices, np_sampled_triplet_indices
 
     def compute_lca_depth(self, points: torch.Tensor, batch_size: int=1_000, debug=False) -> torch.Tensor:
         """Corrected implementation of Chami et al. (2020) LCA depth computation."""
@@ -98,54 +118,43 @@ class HyperbolicHCModel(AbstractModel):
             indices = indices[:, batch_size:]
         return lcas
 
-    def compute_hyphc_loss(self, embeddings: torch.Tensor, subsample_size: int=1000000, sampling: str="all_subsample_triplets") -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def compute_lca_depth_chami(self, points: torch.Tensor, batch_size: int=1_000, debug=False) -> torch.Tensor:
+        """LCA depth computation of Chami et al. (2020)."""
+        device = points.device
+        lcas = torch.zeros((points.shape[0], points.shape[0]), dtype=points.dtype).to(device)
+        indices = torch.triu_indices(points.shape[0], points.shape[0], 1).to(device)
+        while indices.shape[1] > 0:
+            x = points[indices[0,:batch_size], :]
+            y = points[indices[1,:batch_size], :]
+
+            xy = (x * y).sum(dim=-1, keepdim=True)
+            xy_norm_prod = (x.norm(p=2, dim=-1, keepdim=True) * y.norm(p=2, dim=-1, keepdim=True)).clamp(min=1e-15)
+            sinh_x = sinh(self.manifold.dist_0(x))
+            sinh_y = sinh(self.manifold.dist_0(y))
+            sinh_xy = sinh(self.manifold.dist(x, y))
+            sin_gamma = (1 - (xy / xy_norm_prod) ** 2).clamp(min=0).sqrt()
+
+            sin_alpha = sin_gamma * sinh_y / sinh_xy
+            sin_beta = sin_gamma * sinh_x / sinh_xy
+
+            if debug:
+                print(f"sinh_x: {sinh_x}, sinh_y: {sinh_y}, sinh_xy: {sinh_xy}")
+                print(f"sin_gamma: {sin_gamma}, sin_alpha: {sin_alpha}, sin_beta: {sin_beta}")
+
+            lca_depth = arsinh(sin_alpha * sinh_x)
+
+            lca_depth = lca_depth.reshape(-1)
+            lcas[indices[0,:batch_size], indices[1,:batch_size]] = lca_depth
+            lcas[indices[1,:batch_size], indices[0,:batch_size]] = lca_depth
+            indices = indices[:, batch_size:]
+        return lcas
+
+    def compute_hyphc_loss(self, embeddings: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         n = embeddings.size(0)
         device = embeddings.device
 
         # Sample triplets
-        if sampling == 'all_subsample_triplets':
-            if subsample_size < n:
-                sampled_indices = torch.unique(torch.randint(0, n, (subsample_size,), device=device))
-                np_sampled_indices = sampled_indices.cpu().numpy()
-                np_sampled_triplet_indices = torch.combinations(sampled_indices, r=3).cpu().numpy()
-            else:
-                sampled_indices = torch.arange(n, device=device)
-                np_sampled_indices = sampled_indices.cpu().numpy()
-                np_sampled_triplet_indices = torch.combinations(torch.arange(n, device=device), r=3).cpu().numpy()
-        elif sampling == 'random':
-            pass
-        elif sampling == 'chami_1':
-            n_nodes = n  # Use the number of embeddings
-            num_samples = min(1000, n * (n-1) // 2)  # Reasonable default
-            all_nodes = np.arange(n_nodes)
-            mesh = np.array(np.meshgrid(all_nodes, all_nodes))
-            pairs = mesh.T.reshape(-1, 2)
-            pairs = pairs[pairs[:, 0] < pairs[:, 1]]
-            n_pairs = pairs.shape[0]
-
-            print("Generating all pairs subset")
-            subset = np.random.choice(np.arange(n_pairs), num_samples, replace=False)
-            pairs = pairs[subset]
-        elif sampling == 'chami_2':
-            n_nodes = n  # Use the number of embeddings
-            num_samples = min(1000, n * (n-1) // 2)  # Reasonable default
-            all_nodes = np.arange(n_nodes)
-            mesh = np.array(np.meshgrid(all_nodes, all_nodes))
-            pairs = mesh.T.reshape(-1, 2)
-            pairs = pairs[pairs[:, 0] < pairs[:, 1]]
-            n_pairs = pairs.shape[0]
-
-            print("Generating all pairs superset")
-            k_base = int(num_samples / n_pairs)
-            k_rem = num_samples - (k_base * n_pairs)
-            subset = np.random.choice(np.arange(n_pairs), k_rem, replace=False)
-            pairs_rem = pairs[subset]
-            pairs_base = np.repeat(np.expand_dims(pairs, 0), k_base, axis=0).reshape((-1, 2))
-            pairs = np.concatenate([pairs_base, pairs_rem], axis=0)
-            num_samples = pairs.shape[0]
-            triples = np.concatenate([pairs, np.random.randint(n_nodes, size=(num_samples, 1))], axis=1)
-        else:
-            raise ValueError(f"Invalid sampling strategy: {sampling}")
+        sampled_indices, np_sampled_triplet_indices = self.sample_triplets(n, device)
 
         # Compute the pairwise distances
         distances = compute_pairwise_distances(embeddings[sampled_indices, :], self.manifold)
@@ -153,10 +162,14 @@ class HyperbolicHCModel(AbstractModel):
         similarties_sum = similarties.sum()
 
         # Compute the pairwise lcas
-        lcas = self.compute_lca_depth(embeddings[sampled_indices, :])
+        lca_version = 'ours'
+        if lca_version == 'chami':
+            lcas = self.compute_lca_depth_chami(embeddings[sampled_indices, :])
+        else:
+            lcas = self.compute_lca_depth(embeddings[sampled_indices, :])
 
         # Keep track of the storage of triplets
-        lookup_table = {idx: pos for pos,idx in enumerate(np_sampled_indices)}
+        lookup_table = {idx: pos for pos,idx in enumerate(sampled_indices.cpu().numpy())}
         _i, _j, _k = np_sampled_triplet_indices.T
         i = np.vectorize(lookup_table.get)(_i)
         j = np.vectorize(lookup_table.get)(_j)
@@ -202,16 +215,10 @@ class HyperbolicHCModel(AbstractModel):
         recon_loss = (x_recon_loss + x_aug_recon_loss) / 2
 
         # HypHC loss
-        z_hyphc_loss, triplet_loss, similarties_sum = self.compute_hyphc_loss(manifold_z, subsample_size=self.hyphc_triplet_subsampling_size, sampling=self.hyphc_sampling_strategy)
-        z_aug_hyphc_loss, triplet_loss_aug, similarties_sum_aug = self.compute_hyphc_loss(manifold_z_aug, subsample_size=self.hyphc_triplet_subsampling_size, sampling=self.hyphc_sampling_strategy)
+        z_hyphc_loss, triplet_loss, similarties_sum = self.compute_hyphc_loss(manifold_z)
+        z_aug_hyphc_loss, triplet_loss_aug, similarties_sum_aug = self.compute_hyphc_loss(manifold_z_aug)
         hyphc_loss = (z_hyphc_loss + z_aug_hyphc_loss) / 2
         total_loss = recon_loss + self.hyphc_weight * hyphc_loss
-
-
-        for key, value in grad_norm(self, norm_type=2).items():
-            if key == "grad_2.0_norm_total":
-                key = "grad_2.0_norm/total"
-            self.metrics.setdefault(f"{key}", []).append(value)
 
         # Logging
         self.metrics.setdefault("clustering/recon_loss", []).append(recon_loss)
@@ -228,6 +235,11 @@ class HyperbolicHCModel(AbstractModel):
         self.metrics.setdefault('clustering/dist_x2x_aug', []).append(self.manifold.dist(manifold_z, manifold_z_aug).mean())
         self.metrics.setdefault('clustering/c', []).append(self.manifold.c.item())
 
+        for key, value in grad_norm(self, norm_type=2).items():
+            if key == "grad_2.0_norm_total":
+                key = "grad_2.0_norm/total"
+            self.metrics.setdefault(f"{key}", []).append(value)
+
         return total_loss
 
     def on_train_epoch_end(self) -> None:
@@ -238,40 +250,49 @@ class HyperbolicHCModel(AbstractModel):
                 test_loader = self.trainer.datamodule.test_dataloader()
 
                 embeddings = []
+                euclidean = []###
                 labels = []
 
                 for batch_idx, (x_aug, x, y) in enumerate(test_loader):
                     x = x.view(x.size(0), -1)
-                    _, z, _ = self(x.to(self.device))
+                    _, z, tangent_z = self(x.to(self.device))
                     embeddings.append(z)
+                    euclidean.append(tangent_z)###
                     labels.append(y)
 
                 all_embeddings = torch.cat(embeddings, dim=0)
+                all_euclidean = torch.cat(euclidean, dim=0)###
                 all_labels = torch.cat(labels, dim=0)
 
                 delta, diam, rel_delta = get_delta(all_embeddings, self.manifold)
 
+                # Move to CPU for NMI and ARI calculation
+                all_embeddings_np = all_embeddings.cpu().numpy()
+                all_euclidean_np = all_euclidean.cpu().numpy()###
                 all_labels_np = all_labels.cpu().numpy()
-                
-                # Compute cosine similarity directly on hyperbolic embeddings
-                hyperbolic_embeddings_np = all_embeddings.cpu().numpy()
-                cosine_sim_matrix = cosine_similarity(hyperbolic_embeddings_np)
-                
-                # Convert to distance matrix (1 - similarity)
-                cosine_dist_matrix = 1 - cosine_sim_matrix
-                
-                # Use cosine distance with complete linkage for clustering
+
+                # Compute the pairwise distances
+                dist_version = 'euclidean_cosine_similarity'
+                if dist_version == 'euclidean_cosine_similarity':
+                    dist_matrix = 1 - cosine_similarity(all_euclidean_np)
+                elif dist_version == 'hyperbolic_cosine_similarity':
+                    dist_matrix = 1 - cosine_similarity(all_embeddings_np)
+                elif dist_version == 'geodesic':
+                    dist_matrix = compute_pairwise_distances(all_embeddings)
+                else:
+                    raise ValueError(f"Invalid pairwise distance version {dist_version}")
+
+                # Perform complete linkage clustering
                 agglomerative_clustering = AgglomerativeClustering(
-                    n_clusters=len(np.unique(all_labels_np)), 
-                    metric='precomputed', 
+                    n_clusters=len(np.unique(all_labels_np)),
+                    metric='precomputed',
                     linkage='complete'
                 )
-                
+
                 # Perform clustering with cosine similarity on hyperbolic embeddings
-                predicted_labels = agglomerative_clustering.fit_predict(cosine_dist_matrix)
+                predicted_labels = agglomerative_clustering.fit_predict(dist_matrix)
                 nmi = normalized_mutual_info_score(all_labels_np, predicted_labels)
                 ari = adjusted_rand_score(all_labels_np, predicted_labels)
-
 
                 # Create embeddings plot
                 fig = create_figure(all_embeddings, manifold=self.manifold, labels=all_labels_np)
@@ -289,5 +310,5 @@ class HyperbolicHCModel(AbstractModel):
         for key, value in self.metrics.items():
             if isinstance(value, list):
                 self.metrics[key] = sum(value) / len(value)
-        self.logger.experiment.log(self.metrics, step=self.global_epoch+self.current_epoch) # type: ignore
+        self.logger.experiment.log(self.metrics, step=self.global_epoch+self.current_epoch)
         self.metrics = {}

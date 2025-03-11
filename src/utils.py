@@ -123,9 +123,9 @@ def get_clustering_model(cfg: omegaconf.DictConfig,
             clustering_trainable_curvature=cfg.clustering_trainable_curvature,
             hyphc_weight=cfg.hyphc_weight,
             hyphc_temperature=cfg.hyphc_temperature,
+            hyphc_sampling_strategy=cfg.hyphc_sampling_strategy,
             hyphc_triplet_subsampling_size=cfg.hyphc_triplet_subsampling_size,
-            start_epoch=cfg.pretrain_epochs,
-            hyphc_sampling_strategy=cfg.hyphc_sampling_strategy
+            start_epoch=cfg.pretrain_epochs
         )
     else:
         raise ValueError("Invalid clustering model")

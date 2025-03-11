@@ -2,13 +2,13 @@
 seed: 400
 num_workers: 8
 batch_size: 512
-overwrite: False
+overwrite: True
 learning_rate: 3e-3
 ## Pretraining parameters
-pretrain_epochs: 400
+pretrain_epochs: 2
 pretrain_trainable_curvature: False
 ## Clustering parameters
-clustering_epochs: 500
+clustering_epochs: 1
 clustering_model: 'HyperbolicHC' # 'HyperbolicHC', 'HyperbolicContrastive'
 clustering_trainable_curvature: False
 ### Contrastive parameters
@@ -18,8 +18,8 @@ light_radius: 0.1
 ### HypHC parameters
 hyphc_weight: 0.0001
 hyphc_temperature: 0.05
+hyphc_sampling_strategy: 'chami' # 'all_subsample_triplets', 'random', 'chami'
 hyphc_triplet_subsampling_size: 100
-hyphc_sampling_strategy: 'chami_2'
 
 # Model architecture
 ae_type: 'feedforward' # "feedforward", "resnet18", "resnet34"
@@ -29,11 +29,11 @@ manifold_name: "PoincareBall" # "Euclidean", "Hyperboloid", "PoincareBall"
 curvature_magnitude: 1.0
 
 # Logging
-log_interval: 5
+log_interval: 2
 wandb:
   enabled: True
   project: 'hyper_clustering'
-  entity: 'kevin-sidak-team'
+  entity: 'thomas-lang'
   save_dir: './logs'
   plot_label_type: 'class'
   tags: []

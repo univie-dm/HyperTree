@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from lightning.pytorch.utilities import grad_norm
 
-
 from typing import List, Tuple
 from src.models.abstract import AbstractModel
 
@@ -86,7 +85,7 @@ class HyperbolicAE(AbstractModel):
         for key, value in grad_norm(self, norm_type=2).items():
             if key == "grad_2.0_norm_total":
                 key = "grad_2.0_norm/total"
-            self.metrics.setdefault(f"{key}", []).append(value)    
+            self.metrics.setdefault(f"{key}", []).append(value)
 
         # Logging
         self.metrics.setdefault("pretrain/x_recon_loss", []).append(x_recon_loss)
