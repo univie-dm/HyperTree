@@ -177,3 +177,4 @@ logs/
 sbatch.sh
 sbatch_array.sh
 setup.sh
+settings.json

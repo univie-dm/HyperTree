@@ -6,7 +6,7 @@ import wandb
 import matplotlib.pyplot as plt
 from lightning.pytorch.utilities import grad_norm
 from pytorch_lightning.loggers import WandbLogger
-
+from itertools import combinations
 
 from typing import Tuple, Type
 from sklearn.cluster import AgglomerativeClustering
@@ -98,52 +98,58 @@ class HyperbolicHCModel(AbstractModel):
             indices = indices[:, batch_size:]
         return lcas
 
-    def compute_hyphc_loss(self, embeddings: torch.Tensor, subsample_size: int=1000000, sampling: str="all_subsample_triplets") -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def compute_hyphc_loss(self, embeddings: torch.Tensor, subsample_size: int=1000000, sampling: str="random_triplets") -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         n = embeddings.size(0)
         device = embeddings.device
 
         # Sample triplets
-        if sampling == 'all_subsample_triplets':
-            if subsample_size < n:
-                sampled_indices = torch.unique(torch.randint(0, n, (subsample_size,), device=device))
-                np_sampled_indices = sampled_indices.cpu().numpy()
-                np_sampled_triplet_indices = torch.combinations(sampled_indices, r=3).cpu().numpy()
-            else:
-                sampled_indices = torch.arange(n, device=device)
-                np_sampled_indices = sampled_indices.cpu().numpy()
-                np_sampled_triplet_indices = torch.combinations(torch.arange(n, device=device), r=3).cpu().numpy()
-        elif sampling == 'random':
-            pass
+        if sampling == 'random_triplets':
+            subsample_size = min(subsample_size, n)
+            sampled_indices = torch.unique(torch.randint(0, n, (subsample_size,), device=device))
+            idx_combinations = torch.combinations(sampled_indices, r=3)
+            sampled_triplet_indices = idx_combinations
         elif sampling == 'chami_1':
             n_nodes = n  # Use the number of embeddings
             num_samples = min(1000, n * (n-1) // 2)  # Reasonable default
-            all_nodes = np.arange(n_nodes)
-            mesh = np.array(np.meshgrid(all_nodes, all_nodes))
-            pairs = mesh.T.reshape(-1, 2)
-            pairs = pairs[pairs[:, 0] < pairs[:, 1]]
-            n_pairs = pairs.shape[0]
-
-            print("Generating all pairs subset")
-            subset = np.random.choice(np.arange(n_pairs), num_samples, replace=False)
-            pairs = pairs[subset]
+            all_nodes = torch.arange(n_nodes, device=device)
+            
+            # Create pairs using torch operations
+            pairs_i, pairs_j = torch.meshgrid(all_nodes, all_nodes, indexing='ij')
+            mask = pairs_i < pairs_j
+            pairs = torch.stack([pairs_i[mask], pairs_j[mask]], dim=1)
+            n_pairs = pairs.size(0)
+            
+            # Sample subset of pairs
+            subset_idx = torch.randperm(n_pairs, device=device)[:num_samples]
+            pairs = pairs[subset_idx]
+            sampled_triplet_indices = pairs  # Will be handled differently later
+            sampled_indices = torch.unique(pairs)
         elif sampling == 'chami_2':
             n_nodes = n  # Use the number of embeddings
             num_samples = min(1000, n * (n-1) // 2)  # Reasonable default
-            all_nodes = np.arange(n_nodes)
-            mesh = np.array(np.meshgrid(all_nodes, all_nodes))
-            pairs = mesh.T.reshape(-1, 2)
-            pairs = pairs[pairs[:, 0] < pairs[:, 1]]
-            n_pairs = pairs.shape[0]
-
-            print("Generating all pairs superset")
+            all_nodes = torch.arange(n_nodes, device=device)
+            
+            # Create pairs using torch operations
+            pairs_i, pairs_j = torch.meshgrid(all_nodes, all_nodes, indexing='ij')
+            mask = pairs_i < pairs_j
+            pairs = torch.stack([pairs_i[mask], pairs_j[mask]], dim=1)
+            n_pairs = pairs.size(0)
+            
             k_base = int(num_samples / n_pairs)
             k_rem = num_samples - (k_base * n_pairs)
-            subset = np.random.choice(np.arange(n_pairs), k_rem, replace=False)
-            pairs_rem = pairs[subset]
-            pairs_base = np.repeat(np.expand_dims(pairs, 0), k_base, axis=0).reshape((-1, 2))
-            pairs = np.concatenate([pairs_base, pairs_rem], axis=0)
-            num_samples = pairs.shape[0]
-            triples = np.concatenate([pairs, np.random.randint(n_nodes, size=(num_samples, 1))], axis=1)
+            
+            # Sample remaining pairs
+            subset_idx = torch.randperm(n_pairs, device=device)[:k_rem]
+            pairs_rem = pairs[subset_idx]
+            
+            # Repeat base pairs
+            pairs_base = pairs.unsqueeze(0).repeat(k_base, 1, 1).reshape(-1, 2)
+            pairs = torch.cat([pairs_base, pairs_rem], dim=0)
+            
+            # Add random third node for triplets
+            third_node = torch.randint(n_nodes, (pairs.size(0),), device=device).unsqueeze(1)
+            sampled_triplet_indices = torch.cat([pairs, third_node], dim=1)
+            sampled_indices = torch.unique(sampled_triplet_indices)
         else:
             raise ValueError(f"Invalid sampling strategy: {sampling}")
 
@@ -155,13 +161,15 @@ class HyperbolicHCModel(AbstractModel):
         # Compute the pairwise lcas
         lcas = self.compute_lca_depth(embeddings[sampled_indices, :])
 
-        # Keep track of the storage of triplets
-        lookup_table = {idx: pos for pos,idx in enumerate(np_sampled_indices)}
-        _i, _j, _k = np_sampled_triplet_indices.T
-        i = np.vectorize(lookup_table.get)(_i)
-        j = np.vectorize(lookup_table.get)(_j)
-        k = np.vectorize(lookup_table.get)(_k)
-
+        # Create lookup using torch operations
+        lookup_indices = torch.arange(len(sampled_indices), device=device)
+        lookup = {idx.item(): pos.item() for idx, pos in zip(sampled_indices, lookup_indices)}
+        
+        # Get the triplet indices
+        i = torch.tensor([lookup[idx.item()] for idx in sampled_triplet_indices[:, 0]], device=device)
+        j = torch.tensor([lookup[idx.item()] for idx in sampled_triplet_indices[:, 1]], device=device)
+        k = torch.tensor([lookup[idx.item()] for idx in sampled_triplet_indices[:, 2]], device=device)
+        
         # Compute the scaled safe softmax of the lcas
         lca_triplets = torch.stack((lcas[i,j], lcas[i,k], lcas[j,k]), dim=1)
         lca_triplet_max, _ = torch.max(lca_triplets, dim=1, keepdim=True)
@@ -255,10 +263,10 @@ class HyperbolicHCModel(AbstractModel):
                 
                 # Compute cosine similarity directly on hyperbolic embeddings
                 hyperbolic_embeddings_np = all_embeddings.cpu().numpy()
-                cosine_sim_matrix = cosine_similarity(hyperbolic_embeddings_np)
+                #cosine_sim_matrix = cosine_similarity(hyperbolic_embeddings_np)
                 
                 # Convert to distance matrix (1 - similarity)
-                cosine_dist_matrix = 1 - cosine_sim_matrix
+                #cosine_dist_matrix = 1 - cosine_sim_matrix
                 
                 # Use cosine distance with complete linkage for clustering
                 agglomerative_clustering = AgglomerativeClustering(
@@ -268,7 +276,8 @@ class HyperbolicHCModel(AbstractModel):
                 )
                 
                 # Perform clustering with cosine similarity on hyperbolic embeddings
-                predicted_labels = agglomerative_clustering.fit_predict(cosine_dist_matrix)
+                pwd = compute_pairwise_distances(all_embeddings, self.manifold)
+                predicted_labels = agglomerative_clustering.fit_predict(pwd.cpu().numpy())
                 nmi = normalized_mutual_info_score(all_labels_np, predicted_labels)
                 ari = adjusted_rand_score(all_labels_np, predicted_labels)
 

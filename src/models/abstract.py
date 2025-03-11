@@ -76,10 +76,10 @@ class AbstractModel(pl.LightningModule):
                 all_labels_np = all_labels.cpu().numpy()
                 # Compute cosine similarity directly on hyperbolic embeddings
                 hyperbolic_embeddings_np = all_embeddings.cpu().numpy()
-                cosine_sim_matrix = cosine_similarity(hyperbolic_embeddings_np)
+                #cosine_sim_matrix = cosine_similarity(hyperbolic_embeddings_np)
                 
                 # Convert to distance matrix (1 - similarity)
-                cosine_dist_matrix = 1 - cosine_sim_matrix
+                #cosine_dist_matrix = 1 - cosine_sim_matrix
 
                 # Use cosine distance for clustering
                 agglomerative_clustering = AgglomerativeClustering(
@@ -87,9 +87,9 @@ class AbstractModel(pl.LightningModule):
                     metric='precomputed', 
                     linkage='complete'
                 )
-                
+                pwd = compute_pairwise_distances(all_embeddings, self.manifold)
                 # Perform clustering with cosine similarity on hyperbolic embeddings
-                predicted_labels = agglomerative_clustering.fit_predict(cosine_dist_matrix)
+                predicted_labels = agglomerative_clustering.fit_predict(pwd.cpu().numpy())
                 nmi = normalized_mutual_info_score(all_labels_np, predicted_labels)
                 ari = adjusted_rand_score(all_labels_np, predicted_labels)
 
