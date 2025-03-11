@@ -51,9 +51,6 @@ class AbstractModel(pl.LightningModule):
     def training_step(self, batch: torch.Tensor, batch_idx) -> Optional[Union[torch.Tensor, Mapping[str, Any]]]:
         pass
 
-    def on_train_epoch_start(self) -> None:
-        pass
-
     def on_train_epoch_end(self) -> None:
         if not isinstance(self.logger, pl.loggers.WandbLogger):
             return
@@ -86,7 +83,7 @@ class AbstractModel(pl.LightningModule):
 
                 # Use cosine distance for clustering
                 agglomerative_clustering = AgglomerativeClustering(
-                    n_clusters=4, 
+                    n_clusters=len(np.unique(all_labels_np)), 
                     metric='precomputed', 
                     linkage='complete'
                 )
@@ -110,15 +107,3 @@ class AbstractModel(pl.LightningModule):
                 self.metrics[key] = sum(value) / len(value)
         self.logger.experiment.log(self.metrics, step=self.current_epoch)
         self.metrics = {}
-
-    def on_validation_epoch_start(self) -> None:
-        pass
-
-    def on_validation_epoch_end(self) -> None:
-        pass
-
-    def on_test_epoch_start(self) -> None:
-        pass
-
-    def on_test_epoch_end(self) -> None:
-        pass

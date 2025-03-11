@@ -12,9 +12,9 @@ from typing import Tuple, Type
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from src.models.abstract import AbstractModel
-from ..hyperbolic_math.src.utils.helpers import get_delta, compute_pairwise_distances
-from ..hyperbolic_math.src.utils.math_utils import arsinh, sinh
-from ..hyperbolic_math.src.utils.vis_utils import create_figure
+from src.hyperbolic_math.src.utils.helpers import get_delta, compute_pairwise_distances
+from src.hyperbolic_math.src.utils.math_utils import arsinh, sinh
+from src.hyperbolic_math.src.utils.vis_utils import create_figure
 from sklearn.metrics.pairwise import cosine_similarity
 
 
@@ -27,6 +27,7 @@ class HyperbolicHCModel(AbstractModel):
         hyphc_temperature: float = 0.5,
         hyphc_triplet_subsampling_size: int = 100,
         start_epoch: int = 0,
+        hyphc_sampling_strategy: str = 'chami_2'
     ):
         super().__init__(
             manifold_name=ae_model.manifold.name,
@@ -41,7 +42,7 @@ class HyperbolicHCModel(AbstractModel):
         self.hyphc_weight = hyphc_weight
         self.hyphc_temperature = hyphc_temperature
         self.hyphc_triplet_subsampling_size = hyphc_triplet_subsampling_size
-
+        self.hyphc_sampling_strategy = hyphc_sampling_strategy
         # Load encoder, decoder, and to_tangent modules with their weights
         self.encoder = ae_model.encoder
         self.decoder = ae_model.decoder
@@ -201,8 +202,8 @@ class HyperbolicHCModel(AbstractModel):
         recon_loss = (x_recon_loss + x_aug_recon_loss) / 2
 
         # HypHC loss
-        z_hyphc_loss, triplet_loss, similarties_sum = self.compute_hyphc_loss(manifold_z, subsample_size=self.hyphc_triplet_subsampling_size)
-        z_aug_hyphc_loss, triplet_loss_aug, similarties_sum_aug = self.compute_hyphc_loss(manifold_z_aug, subsample_size=self.hyphc_triplet_subsampling_size)
+        z_hyphc_loss, triplet_loss, similarties_sum = self.compute_hyphc_loss(manifold_z, subsample_size=self.hyphc_triplet_subsampling_size, sampling=self.hyphc_sampling_strategy)
+        z_aug_hyphc_loss, triplet_loss_aug, similarties_sum_aug = self.compute_hyphc_loss(manifold_z_aug, subsample_size=self.hyphc_triplet_subsampling_size, sampling=self.hyphc_sampling_strategy)
         hyphc_loss = (z_hyphc_loss + z_aug_hyphc_loss) / 2
         total_loss = recon_loss + self.hyphc_weight * hyphc_loss
 
@@ -261,7 +262,7 @@ class HyperbolicHCModel(AbstractModel):
                 
                 # Use cosine distance with complete linkage for clustering
                 agglomerative_clustering = AgglomerativeClustering(
-                    n_clusters=10, 
+                    n_clusters=len(np.unique(all_labels_np)), 
                     metric='precomputed', 
                     linkage='complete'
                 )
