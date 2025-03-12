@@ -95,6 +95,4 @@ class HyperbolicAE(AbstractModel):
         return loss
     
     def on_train_start(self) -> None:
-        if not isinstance(self.logger, WandbLogger):
-            return
         self.orginal_input_shape = self.trainer.datamodule.train_dataloader().dataset[0][0].shape[1:]
