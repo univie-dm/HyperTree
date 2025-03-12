@@ -18,8 +18,9 @@ light_radius: 0.1
 ### HypHC parameters
 hyphc_weight: 0.0001
 hyphc_temperature: 0.05
-hyphc_triplet_subsampling_size: 100
-
+hyphc_triplet_subsampling_size: 50
+hyphc_sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'chami'
+lca_version: 'ours' # 'ours', 'chami'
 # Model architecture
 ae_type: 'feedforward' # "feedforward", "resnet18", "resnet34"
 hidden_dims: [512, 256, 128, 64, 32]
