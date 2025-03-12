@@ -21,11 +21,12 @@ hyphc_temperature: 0.05
 hyphc_triplet_subsampling_size: 50
 hyphc_sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'chami'
 lca_version: 'ours' # 'ours', 'chami'
+
 # Model architecture
-ae_type: 'feedforward' # "feedforward", "resnet18", "resnet34"
+ae_type: 'feedforward' # 'feedforward', 'resnet18', 'resnet34'
 hidden_dims: [512, 256, 128, 64, 32]
 embedding_dim: 10
-manifold_name: "PoincareBall" # "Euclidean", "Hyperboloid", "PoincareBall"
+manifold_name: 'PoincareBall' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
 curvature_magnitude: 1.0
 
 # Logging
