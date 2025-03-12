@@ -72,6 +72,7 @@ class HyperbolicAE(AbstractModel):
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug, x, _ = batch
+        self.orginal_input_shape = x.shape[1:]
         
         x_recon, _, _ = self(x)
         x_aug_recon, _, _ = self(x_aug)
@@ -93,6 +94,3 @@ class HyperbolicAE(AbstractModel):
         self.metrics.setdefault("pretrain/c", []).append(self.manifold.c.detach())
 
         return loss
-    
-    def on_train_start(self) -> None:
-        self.orginal_input_shape = self.trainer.datamodule.train_dataloader().dataset[0][0].shape[1:]

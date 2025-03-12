@@ -36,6 +36,7 @@ class AbstractModel(pl.LightningModule):
         self.latent_dim = latent_dim
         self.learning_rate = learning_rate
         self.log_interval = log_interval
+        self.stage = 'pretrain'
         self.metrics = {}
 
     def encode(self, x: torch.Tensor) -> torch.Tensor: # type: ignore
@@ -79,7 +80,7 @@ class AbstractModel(pl.LightningModule):
                 all_embeddings_np = all_embeddings.cpu().numpy()
                 all_labels_np = all_labels.cpu().numpy()
 
-                pwd = compute_pairwise_distances(all_embeddings, manifold=self.manifold)
+                #pwd = compute_pairwise_distances(all_embeddings, manifold=self.manifold)
                 cosine_sim_matrix = 1-cosine_similarity(all_embeddings_np)
 
                 # Perform complete linkage clustering
@@ -95,9 +96,9 @@ class AbstractModel(pl.LightningModule):
                 ari = adjusted_rand_score(all_labels_np, predicted_labels_cosine)
 
                 # Perform clustering with geodesic distance on hyperbolic embeddings
-                predicted_labels_geodesic = agglomerative_clustering.fit_predict(pwd.cpu().numpy())
-                nmi_geodesic = normalized_mutual_info_score(all_labels_np, predicted_labels_geodesic)
-                ari_geodesic = adjusted_rand_score(all_labels_np, predicted_labels_geodesic)
+                #predicted_labels_geodesic = agglomerative_clustering.fit_predict(pwd.cpu().numpy())
+                #nmi_geodesic = normalized_mutual_info_score(all_labels_np, predicted_labels_geodesic)
+                #ari_geodesic = adjusted_rand_score(all_labels_np, predicted_labels_geodesic)
 
                 # Create embeddings plot
                 fig = create_figure(all_embeddings, manifold=self.manifold, labels=all_labels_np)
@@ -105,15 +106,15 @@ class AbstractModel(pl.LightningModule):
                 # Log the metrics
                 self.metrics.setdefault("test/nmi_cosine", []).append(nmi)
                 self.metrics.setdefault("test/ari_cosine", []).append(ari)
-                self.metrics.setdefault("test/nmi_geodesic", []).append(nmi_geodesic)
-                self.metrics.setdefault("test/ari_geodesic", []).append(ari_geodesic)
+                #self.metrics.setdefault("test/nmi_geodesic", []).append(nmi_geodesic)
+                #self.metrics.setdefault("test/ari_geodesic", []).append(ari_geodesic)
                 self.metrics.setdefault("test/delta", []).append(delta.item())
                 self.metrics.setdefault("test/diam", []).append(diam.item())
                 self.metrics.setdefault("test/rel_delta", []).append(rel_delta.item())
                 self.metrics["test/Hyperbolic Embeddings"] = wandb.Image(fig)
                 plt.close()
 
-        self.metrics['pretrain/epoch'] = self.current_epoch
+        self.metrics[f'{self.stage}/epoch'] = self.current_epoch
         for key, value in self.metrics.items():
             if isinstance(value, list):
                 self.metrics[key] = sum(value) / len(value)
