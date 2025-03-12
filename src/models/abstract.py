@@ -37,6 +37,7 @@ class AbstractModel(pl.LightningModule):
         self.learning_rate = learning_rate
         self.log_interval = log_interval
         self.stage = 'pretrain'
+        self.global_epoch = 0
         self.metrics = {}
 
     def encode(self, x: torch.Tensor) -> torch.Tensor: # type: ignore
@@ -118,6 +119,6 @@ class AbstractModel(pl.LightningModule):
         for key, value in self.metrics.items():
             if isinstance(value, list):
                 self.metrics[key] = sum(value) / len(value)
-        self.logger.experiment.log(self.metrics, step=self.current_epoch) # type: ignore
+        self.logger.experiment.log(self.metrics, step=self.current_epoch+self.global_epoch) # type: ignore
         self.metrics = {}
 
