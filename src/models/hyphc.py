@@ -192,7 +192,7 @@ class HyperbolicHCModel(AbstractModel):
         triplet_loss = torch.sum(sim_stack * (1 - scaled_softmax))
 
         # Compute total loss
-        total_loss = triplet_loss #+ 2*similarties_sum
+        total_loss = triplet_loss + 2*similarties_sum
 
         return total_loss, triplet_loss, similarties_sum
 
