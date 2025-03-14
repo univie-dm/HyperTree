@@ -14,18 +14,20 @@ class HyperbolicContrastiveModel(AbstractModel):
         self,
         ae_model: Type[AbstractModel],
         clustering_trainable_curvature: bool = False,
+        learning_rate: float = 1e-3,
         contrastive_weight: float = 0.1,
         contrastive_temperature: float = 0.1,
         light_radius: float = 0.5,
-        start_epoch: int = 0
+        start_epoch: int = 0,
+        log_interval: int = 5
     ):
         super().__init__(
             manifold_name=ae_model.manifold.name,
             curvature_magnitude=ae_model.manifold.c,
             trainable_curvature=clustering_trainable_curvature,
             latent_dim=ae_model.latent_dim,
-            learning_rate=ae_model.learning_rate,
-            log_interval=ae_model.log_interval
+            learning_rate=learning_rate,
+            log_interval=log_interval
         )
         self.global_epoch = start_epoch
 
