@@ -11,7 +11,7 @@ from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from sklearn.metrics.pairwise import cosine_similarity
 from ..hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
 from ..hyperbolic_math.src.utils.helpers import compute_pairwise_distances, get_delta
-from src.hyperbolic_math.src.utils.vis_utils import create_figure
+from ..hyperbolic_math.src.utils.vis_utils import create_figure
 
 
 class AbstractModel(pl.LightningModule):
@@ -37,11 +37,12 @@ class AbstractModel(pl.LightningModule):
         self.learning_rate = learning_rate
         self.log_interval = log_interval
         self.metrics = {}
+        self.euclidean_manifold = Euclidean() # for logging
 
-    def encode(self, x: torch.Tensor) -> torch.Tensor: # type: ignore
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
         pass
 
-    def decode(self, manifold_z: torch.Tensor) -> torch.Tensor: # type: ignore
+    def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
         pass
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -57,39 +58,34 @@ class AbstractModel(pl.LightningModule):
             return
         if self.current_epoch % self.log_interval == 0:
             with torch.no_grad():
-                test_loader = self.trainer.datamodule.test_dataloader() # type: ignore
+                test_loader = self.trainer.datamodule.test_dataloader()
 
                 embeddings = []
-                euclidean = []###
+                euclidean = []
                 labels = []
 
                 for batch_idx, (x_aug, x, y) in enumerate(test_loader):
+                    x = x.view(x.size(0), -1)
                     _, z, tangent_z = self(x.to(self.device))
                     embeddings.append(z)
-                    euclidean.append(tangent_z)###
+                    euclidean.append(tangent_z)
                     labels.append(y)
 
                 all_embeddings = torch.cat(embeddings, dim=0)
-                all_euclidean = torch.cat(euclidean, dim=0)###
+                all_euclidean = torch.cat(euclidean, dim=0)
                 all_labels = torch.cat(labels, dim=0)
 
-                delta, diam, rel_delta = get_delta(all_embeddings, self.manifold)
+                # Compute the delta hyperbolicity
+                delta_eucl, diam_eucl, rel_delta_eucl = get_delta(all_euclidean, self.euclidean_manifold)
+                delta_hyp, diam_hyp, rel_delta_hyp = get_delta(all_embeddings, self.manifold)
 
                 # Move to CPU for NMI and ARI calculation
-                all_embeddings_np = all_embeddings.cpu().numpy()
-                all_euclidean_np = all_euclidean.cpu().numpy()###
+                all_euclidean_np = all_euclidean.cpu().numpy()
                 all_labels_np = all_labels.cpu().numpy()
 
                 # Compute the pairwise distances
-                dist_version = 'euclidean_cosine_similarity'
-                if dist_version == 'euclidean_cosine_similarity':
-                    dist_matrix = 1 - cosine_similarity(all_euclidean_np)
-                elif dist_version == 'hyperbolic_cosine_similarity':
-                    dist_matrix = 1 - cosine_similarity(all_embeddings_np)
-                elif dist_version == 'geodesic':
-                    dist_matrix = compute_pairwise_distances(all_embeddings)
-                else:
-                    raise ValueError(f"Invalid pairwise distance version {dist_version}")
+                dist_cos_sim = 1 - cosine_similarity(all_euclidean_np)
+                dist_geodesic = compute_pairwise_distances(all_embeddings, self.manifold).cpu().numpy()
 
                 # Perform complete linkage clustering
                 agglomerative_clustering = AgglomerativeClustering(
@@ -98,20 +94,34 @@ class AbstractModel(pl.LightningModule):
                     linkage='complete'
                 )
 
-                # Perform clustering with cosine similarity on hyperbolic embeddings
-                predicted_labels = agglomerative_clustering.fit_predict(dist_matrix)
-                nmi = normalized_mutual_info_score(all_labels_np, predicted_labels)
-                ari = adjusted_rand_score(all_labels_np, predicted_labels)
+                # Perform clustering with the different pairwise distances
+                pred_labels_cos_sim  = agglomerative_clustering.fit_predict(dist_cos_sim)
+                nmi_cos_sim = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim)
+                ari_cos_sim = adjusted_rand_score(all_labels_np, pred_labels_cos_sim)
+
+                pred_labels_geodesic  = agglomerative_clustering.fit_predict(dist_geodesic)
+                nmi_geodesic = normalized_mutual_info_score(all_labels_np, pred_labels_geodesic)
+                ari_geodesic = adjusted_rand_score(all_labels_np, pred_labels_geodesic)
 
                 # Create embeddings plot
                 fig = create_figure(all_embeddings, manifold=self.manifold, labels=all_labels_np)
 
                 # Log the metrics
-                self.metrics.setdefault("test/nmi", []).append(nmi)
-                self.metrics.setdefault("test/ari", []).append(ari)
-                self.metrics.setdefault("test/delta", []).append(delta.item())
-                self.metrics.setdefault("test/diam", []).append(diam.item())
-                self.metrics.setdefault("test/rel_delta", []).append(rel_delta.item())
+                ## Euclidean hyperbolicity
+                self.metrics.setdefault("test/delta_eucl", []).append(delta_eucl.item())
+                self.metrics.setdefault("test/diam_eucl", []).append(diam_eucl.item())
+                self.metrics.setdefault("test/rel_delta_eucl", []).append(rel_delta_eucl.item())
+                ## Hyperbolic hyperbolicity
+                self.metrics.setdefault("test/delta_hyp", []).append(delta_hyp.item())
+                self.metrics.setdefault("test/diam_hyp", []).append(diam_hyp.item())
+                self.metrics.setdefault("test/rel_delta_hyp", []).append(rel_delta_hyp.item())
+                ## Cosine similarity clustering
+                self.metrics.setdefault("test/nmi_cos_sim", []).append(nmi_cos_sim)
+                self.metrics.setdefault("test/ari_cos_sim", []).append(ari_cos_sim)
+                ## Hyperbolic Geodesic clustering
+                self.metrics.setdefault("test/nmi_geodesic", []).append(nmi_geodesic)
+                self.metrics.setdefault("test/ari_geodesic", []).append(ari_geodesic)
+                ## Hyperbolic Embedding plot
                 self.metrics["test/Hyperbolic Embeddings"] = wandb.Image(fig)
                 plt.close()
 
@@ -119,5 +129,5 @@ class AbstractModel(pl.LightningModule):
         for key, value in self.metrics.items():
             if isinstance(value, list):
                 self.metrics[key] = sum(value) / len(value)
-        self.logger.experiment.log(self.metrics, step=self.current_epoch) # type: ignore
+        self.logger.experiment.log(self.metrics, step=self.current_epoch)
         self.metrics = {}

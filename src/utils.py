@@ -112,20 +112,25 @@ def get_clustering_model(cfg: omegaconf.DictConfig,
         model = HyperbolicContrastiveModel(
             ae_model=pretrain_model,
             clustering_trainable_curvature=cfg.clustering_trainable_curvature,
+            learning_rate=cfg.clustering_learning_rate,
             contrastive_weight=cfg.contrastive_weight,
             contrastive_temperature=cfg.contrastive_temperature,
             light_radius=cfg.light_radius,
-            start_epoch=cfg.pretrain_epochs
+            start_epoch=cfg.pretrain_epochs,
+            log_interval=cfg.log_interval
         )
     elif cfg.clustering_model == 'HyperbolicHC':
         model = HyperbolicHCModel(
             ae_model=pretrain_model,
             clustering_trainable_curvature=cfg.clustering_trainable_curvature,
+            learning_rate=cfg.clustering_learning_rate,
             hyphc_weight=cfg.hyphc_weight,
             hyphc_temperature=cfg.hyphc_temperature,
             hyphc_sampling_strategy=cfg.hyphc_sampling_strategy,
             hyphc_triplet_subsampling_size=cfg.hyphc_triplet_subsampling_size,
-            start_epoch=cfg.pretrain_epochs
+            lca_version=cfg.lca_version,
+            start_epoch=cfg.pretrain_epochs,
+            log_interval=cfg.log_interval
         )
     else:
         raise ValueError("Invalid clustering model")

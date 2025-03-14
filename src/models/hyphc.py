@@ -12,7 +12,7 @@ from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from sklearn.metrics.pairwise import cosine_similarity
 from src.models.abstract import AbstractModel
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances, get_delta
-from src.hyperbolic_math.src.utils.math_utils import arsinh, sinh
+from src.hyperbolic_math.src.utils.math_utils import arsinh, sinh, cosh
 from src.hyperbolic_math.src.utils.vis_utils import create_figure
 
 
@@ -21,19 +21,22 @@ class HyperbolicHCModel(AbstractModel):
         self,
         ae_model: AbstractModel,
         clustering_trainable_curvature: bool = False,
+        learning_rate: float = 1e-3,
         hyphc_weight: float = 0.1,
         hyphc_temperature: float = 0.5,
         hyphc_sampling_strategy: str = 'all_subsample_triplets',
         hyphc_triplet_subsampling_size: int = 100,
-        start_epoch: int = 0
+        lca_version: str = 'ours',
+        start_epoch: int = 0,
+        log_interval: int = 5
     ):
         super().__init__(
             manifold_name=ae_model.manifold.name,
             curvature_magnitude=ae_model.manifold.c,
             trainable_curvature=clustering_trainable_curvature,
             latent_dim=ae_model.latent_dim,
-            learning_rate=ae_model.learning_rate,
-            log_interval=ae_model.log_interval
+            learning_rate=learning_rate,
+            log_interval=log_interval
         )
         self.global_epoch = start_epoch
 
@@ -41,6 +44,7 @@ class HyperbolicHCModel(AbstractModel):
         self.hyphc_temperature = hyphc_temperature
         self.hyphc_sampling_strategy = hyphc_sampling_strategy
         self.hyphc_triplet_subsampling_size = hyphc_triplet_subsampling_size
+        self.lca_version = lca_version
 
         # Load encoder, decoder, and to_tangent modules with their weights
         self.encoder = ae_model.encoder
@@ -73,44 +77,49 @@ class HyperbolicHCModel(AbstractModel):
             raise ValueError(f"Invalid sampling strategy: {self.hyphc_sampling_strategy}")
         return sampled_indices, np_sampled_triplet_indices
 
-    def compute_lca_depth(self, points: torch.Tensor, batch_size: int=1_000, debug=False) -> torch.Tensor:
-        """Corrected implementation of Chami et al. (2020) LCA depth computation."""
+    def compute_lca_depth(self, points: torch.Tensor, batch_size: int=1_000) -> torch.Tensor:
+        """Corrected implementation of Chami et al.'s (2020) LCA depth computation."""
         device = points.device
+        sqrt_c = self.manifold.c.sqrt()
         lcas = torch.zeros((points.shape[0], points.shape[0]), dtype=points.dtype).to(device)
         indices = torch.triu_indices(points.shape[0], points.shape[0], 1).to(device)
         while indices.shape[1] > 0:
             x = points[indices[0,:batch_size], :]
             y = points[indices[1,:batch_size], :]
 
+            # Compute the cosine of all angles within the triangle {origin,x,y}
+            # Alpha = subtended angle at x
+            # Beta = subtended angle at y
+            # Gamma = subtended angle at the origin
+            dist_x = self.manifold.dist_0(x)
+            dist_y = self.manifold.dist_0(y)
+            dist_xy = self.manifold.dist(x, y, backproject=False)
+
+            cosh_cx = cosh(sqrt_c * dist_x)
+            cosh_cy = cosh(sqrt_c * dist_y)
+            cosh_cxy = cosh(sqrt_c * dist_xy)
+
+            sinh_cx = sinh(sqrt_c * dist_x)
+            sinh_cy = sinh(sqrt_c * dist_y)
+            sinh_cxy = sinh(sqrt_c * dist_xy)
+
+            # Hyperbolic law of cosines
+            cos_alpha = (cosh_cx * cosh_cxy - cosh_cy) / (sinh_cx * sinh_cxy)
+            cos_beta = (cosh_cy * cosh_cxy - cosh_cx) / (sinh_cy * sinh_cxy)
+
             xy = (x * y).sum(dim=-1, keepdim=True)
-            xy_norm_prod = (x.norm(p=2, dim=-1, keepdim=True) * y.norm(p=2, dim=-1, keepdim=True)).clamp(min=1e-15)
-            sinh_x = sinh(self.manifold.dist_0(x))
-            sinh_y = sinh(self.manifold.dist_0(y))
-            sinh_xy = sinh(self.manifold.dist(x, y))
-            sin_gamma = (1 - (xy / xy_norm_prod) ** 2).clamp(min=0).sqrt()
+            xy_norm_prod = (x.norm(p=2, dim=-1, keepdim=True) * y.norm(p=2, dim=-1, keepdim=True)).clamp(min=1e-16)
+            cos_gamma = xy / xy_norm_prod
 
-            sin_alpha = sin_gamma * sinh_y / sinh_xy
-            sin_beta = sin_gamma * sinh_x / sinh_xy
+            # Compute the lca depth w.r.t. the full geodesic
+            sin_alpha = (1 - cos_alpha ** 2).clamp(min=0).sqrt()
+            # Hyperbolic law of sines
+            lca_depth = arsinh(sinh(sqrt_c * dist_x) * sin_alpha) / sqrt_c
 
-            if debug:
-                print(f"sinh_x: {sinh_x}, sinh_y: {sinh_y}, sinh_xy: {sinh_xy}")
-                print(f"sin_gamma: {sin_gamma}, sin_alpha: {sin_alpha}, sin_beta: {sin_beta}")
-
-            # LCA depth is only correct if the LCA lies on the geodesic segment connecting x and y
-            lca_depth = arsinh(sin_alpha * sinh_x)
-
-            if debug:
-                print(f"Uncorrected LCA depth: {lca_depth}")
-
-            # Take the closest point to the orthogonal projection of the origin that lies on the geodesic segment
-            lca_depth = torch.where(sin_alpha > 0, lca_depth, torch.min(self.manifold.dist_0(x), self.manifold.dist_0(y)))
-            lca_depth = torch.where(sin_beta > 0, lca_depth, torch.min(self.manifold.dist_0(x), self.manifold.dist_0(y)))
-            lca_depth = torch.where(torch.logical_and(sin_gamma == 0, xy < 0), torch.zeros_like(lca_depth), lca_depth)
-
-            if debug:
-                print(f"x_dist: {self.manifold.dist_0(x)}]")
-                print(f"y_dist: {self.manifold.dist_0(y)}]")
-                print(f"Final LCA depth: {lca_depth}")
+            # Get the lca depth w.r.t. the geodesic segment between x and y
+            lca_depth = torch.where(cos_alpha > 0, lca_depth, dist_x)
+            lca_depth = torch.where(cos_beta > 0, lca_depth, dist_y)
+            lca_depth = torch.where(cos_gamma == -1, torch.zeros_like(lca_depth), lca_depth)
 
             lca_depth = lca_depth.reshape(-1)
             lcas[indices[0,:batch_size], indices[1,:batch_size]] = lca_depth
@@ -118,7 +127,7 @@ class HyperbolicHCModel(AbstractModel):
             indices = indices[:, batch_size:]
         return lcas
 
-    def compute_lca_depth_chami(self, points: torch.Tensor, batch_size: int=1_000, debug=False) -> torch.Tensor:
+    def compute_lca_depth_chami(self, points: torch.Tensor, batch_size: int=1_000) -> torch.Tensor:
         """LCA depth computation of Chami et al. (2020)."""
         device = points.device
         lcas = torch.zeros((points.shape[0], points.shape[0]), dtype=points.dtype).to(device)
@@ -127,21 +136,28 @@ class HyperbolicHCModel(AbstractModel):
             x = points[indices[0,:batch_size], :]
             y = points[indices[1,:batch_size], :]
 
-            xy = (x * y).sum(dim=-1, keepdim=True)
-            xy_norm_prod = (x.norm(p=2, dim=-1, keepdim=True) * y.norm(p=2, dim=-1, keepdim=True)).clamp(min=1e-15)
-            sinh_x = sinh(self.manifold.dist_0(x))
-            sinh_y = sinh(self.manifold.dist_0(y))
-            sinh_xy = sinh(self.manifold.dist(x, y))
-            sin_gamma = (1 - (xy / xy_norm_prod) ** 2).clamp(min=0).sqrt()
-
-            sin_alpha = sin_gamma * sinh_y / sinh_xy
-            sin_beta = sin_gamma * sinh_x / sinh_xy
-
-            if debug:
-                print(f"sinh_x: {sinh_x}, sinh_y: {sinh_y}, sinh_xy: {sinh_xy}")
-                print(f"sin_gamma: {sin_gamma}, sin_alpha: {sin_alpha}, sin_beta: {sin_beta}")
-
-            lca_depth = arsinh(sin_alpha * sinh_x)
+            # Chami LCA computation
+            # 1) reflection_center(x)
+            r = x / torch.sum(x ** 2, dim=-1, keepdim=True)
+            # 2) isometric_transform(r, y)
+            r2 = torch.sum(r ** 2, dim=-1, keepdim=True) - 1.
+            u = y - r
+            b_inv =  r2 / torch.sum(u ** 2, dim=-1, keepdim=True) * u + r
+            # 3) Copy
+            o_inv = x
+            # 4) euc_reflection(o_inv, b_inv)
+            xTa = torch.sum(o_inv * b_inv, dim=-1, keepdim=True)
+            norm_a_sq = torch.sum(b_inv ** 2, dim=-1, keepdim=True).clamp_min(1e-15)
+            proj = xTa * b_inv / norm_a_sq
+            o_inv_ref = 2 * proj - o_inv
+            # 5) isometric_transform(r, o_inv_ref)
+            r2_ = torch.sum(r ** 2, dim=-1, keepdim=True) - 1.
+            u_ = o_inv_ref - r
+            o_ref = r2_ / torch.sum(u_ ** 2, dim=-1, keepdim=True) * u_ + r
+            # 6) _halve(o_ref)
+            proj = o_ref / (1. + torch.sqrt(1 - torch.sum(o_ref ** 2, dim=-1, keepdim=True)))
+            # 7) manifold.dist_0(proj)
+            lca_depth = self.manifold.dist_0(proj)
 
             lca_depth = lca_depth.reshape(-1)
             lcas[indices[0,:batch_size], indices[1,:batch_size]] = lca_depth
@@ -162,11 +178,12 @@ class HyperbolicHCModel(AbstractModel):
         similarties_sum = similarties.sum()
 
         # Compute the pairwise lcas
-        lca_version = 'ours'
-        if lca_version == 'chami':
+        if self.lca_version == 'ours':
+            lcas = self.compute_lca_depth(embeddings[sampled_indices, :])
+        elif self.lca_version == 'chami':
             lcas = self.compute_lca_depth_chami(embeddings[sampled_indices, :])
         else:
-            lcas = self.compute_lca_depth(embeddings[sampled_indices, :])
+            raise ValueError(f"Invalid LCA version: {self.lca_version}")
 
         # Keep track of the storage of triplets
         lookup_table = {idx: pos for pos,idx in enumerate(sampled_indices.cpu().numpy())}
@@ -186,7 +203,7 @@ class HyperbolicHCModel(AbstractModel):
         triplet_loss = torch.sum(sim_stack * (1 - scaled_softmax))
 
         # Compute total loss
-        total_loss = triplet_loss + 2*similarties_sum
+        total_loss = triplet_loss + 2 * similarties_sum
 
         return total_loss, triplet_loss, similarties_sum
 
@@ -247,40 +264,34 @@ class HyperbolicHCModel(AbstractModel):
             return
         if self.current_epoch % self.log_interval == 0:
             with torch.no_grad():
-                test_loader = self.trainer.datamodule.test_dataloader() # type: ignore
+                test_loader = self.trainer.datamodule.test_dataloader()
 
                 embeddings = []
-                euclidean = []###
+                euclidean = []
                 labels = []
 
                 for batch_idx, (x_aug, x, y) in enumerate(test_loader):
                     x = x.view(x.size(0), -1)
                     _, z, tangent_z = self(x.to(self.device))
                     embeddings.append(z)
-                    euclidean.append(tangent_z)###
+                    euclidean.append(tangent_z)
                     labels.append(y)
 
                 all_embeddings = torch.cat(embeddings, dim=0)
-                all_euclidean = torch.cat(euclidean, dim=0)###
+                all_euclidean = torch.cat(euclidean, dim=0)
                 all_labels = torch.cat(labels, dim=0)
 
-                delta, diam, rel_delta = get_delta(all_embeddings, self.manifold)
+                # Compute the delta hyperbolicity
+                delta_eucl, diam_eucl, rel_delta_eucl = get_delta(all_euclidean, self.euclidean_manifold)
+                delta_hyp, diam_hyp, rel_delta_hyp = get_delta(all_embeddings, self.manifold)
 
                 # Move to CPU for NMI and ARI calculation
-                all_embeddings_np = all_embeddings.cpu().numpy()
-                all_euclidean_np = all_euclidean.cpu().numpy()###
+                all_euclidean_np = all_euclidean.cpu().numpy()
                 all_labels_np = all_labels.cpu().numpy()
 
                 # Compute the pairwise distances
-                dist_version = 'euclidean_cosine_similarity'
-                if dist_version == 'euclidean_cosine_similarity':
-                    dist_matrix = 1 - cosine_similarity(all_euclidean_np)
-                elif dist_version == 'hyperbolic_cosine_similarity':
-                    dist_matrix = 1 - cosine_similarity(all_embeddings_np)
-                elif dist_version == 'geodesic':
-                    dist_matrix = compute_pairwise_distances(all_embeddings)
-                else:
-                    raise ValueError(f"Invalid pairwise distance version {dist_version}")
+                dist_cos_sim = 1 - cosine_similarity(all_euclidean_np)
+                dist_geodesic = compute_pairwise_distances(all_embeddings, self.manifold).cpu().numpy()
 
                 # Perform complete linkage clustering
                 agglomerative_clustering = AgglomerativeClustering(
@@ -289,20 +300,34 @@ class HyperbolicHCModel(AbstractModel):
                     linkage='complete'
                 )
 
-                # Perform clustering with cosine similarity on hyperbolic embeddings
-                predicted_labels = agglomerative_clustering.fit_predict(dist_matrix)
-                nmi = normalized_mutual_info_score(all_labels_np, predicted_labels)
-                ari = adjusted_rand_score(all_labels_np, predicted_labels)
+                # Perform clustering with the different pairwise distances
+                pred_labels_cos_sim  = agglomerative_clustering.fit_predict(dist_cos_sim)
+                nmi_cos_sim = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim)
+                ari_cos_sim = adjusted_rand_score(all_labels_np, pred_labels_cos_sim)
+
+                pred_labels_geodesic  = agglomerative_clustering.fit_predict(dist_geodesic)
+                nmi_geodesic = normalized_mutual_info_score(all_labels_np, pred_labels_geodesic)
+                ari_geodesic = adjusted_rand_score(all_labels_np, pred_labels_geodesic)
 
                 # Create embeddings plot
                 fig = create_figure(all_embeddings, manifold=self.manifold, labels=all_labels_np)
 
                 # Log the metrics
-                self.metrics.setdefault("test/nmi", []).append(nmi)
-                self.metrics.setdefault("test/ari", []).append(ari)
-                self.metrics.setdefault("test/delta", []).append(delta.item())
-                self.metrics.setdefault("test/diam", []).append(diam.item())
-                self.metrics.setdefault("test/rel_delta", []).append(rel_delta.item())
+                ## Euclidean hyperbolicity
+                self.metrics.setdefault("test/delta_eucl", []).append(delta_eucl.item())
+                self.metrics.setdefault("test/diam_eucl", []).append(diam_eucl.item())
+                self.metrics.setdefault("test/rel_delta_eucl", []).append(rel_delta_eucl.item())
+                ## Hyperbolic hyperbolicity
+                self.metrics.setdefault("test/delta_hyp", []).append(delta_hyp.item())
+                self.metrics.setdefault("test/diam_hyp", []).append(diam_hyp.item())
+                self.metrics.setdefault("test/rel_delta_hyp", []).append(rel_delta_hyp.item())
+                ## Cosine similarity clustering
+                self.metrics.setdefault("test/nmi_cos_sim", []).append(nmi_cos_sim)
+                self.metrics.setdefault("test/ari_cos_sim", []).append(ari_cos_sim)
+                ## Hyperbolic Geodesic clustering
+                self.metrics.setdefault("test/nmi_geodesic", []).append(nmi_geodesic)
+                self.metrics.setdefault("test/ari_geodesic", []).append(ari_geodesic)
+                ## Hyperbolic Embedding plot
                 self.metrics["test/Hyperbolic Embeddings"] = wandb.Image(fig)
                 plt.close()
 
