@@ -35,7 +35,7 @@ log_interval: 10
 wandb:
   enabled: True
   project: 'hyper_clustering'
-  entity: 'thomas-lang'
+  entity: 'kevin-sidak-team'
   save_dir: './logs'
   plot_label_type: 'class'
   tags: []
