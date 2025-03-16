@@ -260,7 +260,7 @@ class HyperbolicHCModel(AbstractModel):
 
         return total_loss
 
-    def on_train_start(self) -> None:
+    def on_train_epoch_end(self) -> None:
         if not isinstance(self.logger, WandbLogger):
             return
         if self.current_epoch % self.log_interval == 0:

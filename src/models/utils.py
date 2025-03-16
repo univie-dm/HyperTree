@@ -29,6 +29,7 @@ def create_label_mapping(all_embeddings_np, all_labels_np, class_names, label_ty
 
 
 # TODO:
+'''
 class ConeOverlapCalculator:
     def __init__(self, manifold, light_radius=0.5, num_samples=1000):
         self.manifold = manifold
@@ -196,3 +197,4 @@ class ConeOverlapCalculator:
             return torch.clamp(overlap, 0.0, 1.0)
         else:
             return self.monte_carlo_cone_intersection(x, x_aug)
+'''
