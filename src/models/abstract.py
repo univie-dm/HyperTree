@@ -27,7 +27,7 @@ class AbstractModel(pl.LightningModule):
         global_epoch: int = 0,
     ):
         super().__init__()
-        if manifold_name == 'Euclidean':
+        if manifold_name == 'Euclidean' or curvature_magnitude == 0:
             self.manifold = Euclidean()
         elif manifold_name == 'Hyperboloid':
             self.manifold = Hyperboloid(c=torch.tensor(curvature_magnitude), trainable_c=trainable_curvature)
