@@ -83,6 +83,8 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             latent_dim=cfg.embedding_dim,
             learning_rate=cfg.learning_rate,
             log_interval=cfg.log_interval,
+            stage='pretrain',
+            global_epoch=0,
         )
     elif cfg.ae_type == 'convolutional':
         raise NotImplementedError("Convolutional autoencoder not implemented yet")
@@ -98,7 +100,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             learning_rate=cfg.learning_rate,
             log_interval=cfg.log_interval,
             input_channels=cfg.dataset.channels,
-            output_size=cfg.dataset.resize
+            output_size=cfg.dataset.resize,
         )
     else:
         raise ValueError("Invalid autoencoder type")
@@ -130,7 +132,9 @@ def get_clustering_model(cfg: omegaconf.DictConfig,
             hyphc_triplet_subsampling_size=cfg.hyphc_triplet_subsampling_size,
             lca_version=cfg.lca_version,
             start_epoch=cfg.pretrain_epochs,
-            log_interval=cfg.log_interval
+            log_interval=cfg.log_interval,
+            stage='clustering',
+            global_epoch=cfg.pretrain_epochs,
         )
     else:
         raise ValueError("Invalid clustering model")

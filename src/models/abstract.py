@@ -22,7 +22,9 @@ class AbstractModel(pl.LightningModule):
         trainable_curvature: bool = False,
         latent_dim: int = 2,
         learning_rate: float = 1e-3,
-        log_interval: int = 5
+        log_interval: int = 5,
+        stage: str = 'pretrain',
+        global_epoch: int = 0,
     ):
         super().__init__()
         if manifold_name == 'Euclidean':
@@ -36,11 +38,12 @@ class AbstractModel(pl.LightningModule):
         self.latent_dim = latent_dim
         self.learning_rate = learning_rate
         self.log_interval = log_interval
-        self.stage = 'pretrain'
-        self.global_epoch = 0
+        self.stage = stage
+        self.global_epoch = global_epoch
         self.metrics = {}
         self.euclidean_manifold = Euclidean() # for logging
-
+        self.old_nmi = 0
+        self.old_ari = 0
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         pass
 
@@ -54,8 +57,8 @@ class AbstractModel(pl.LightningModule):
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
-
-    def on_train_epoch_end(self) -> None:
+    
+    def evaluate(self) -> None:
         if not isinstance(self.logger, WandbLogger):
             return
         if self.current_epoch % self.log_interval == 0:
@@ -102,11 +105,6 @@ class AbstractModel(pl.LightningModule):
                 pred_labels_cos_sim  = agglomerative_clustering.fit_predict(dist_cos_sim)
                 nmi_cos_sim = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim)
                 ari_cos_sim = adjusted_rand_score(all_labels_np, pred_labels_cos_sim)
-
-                pred_labels_geodesic  = agglomerative_clustering.fit_predict(dist_geodesic)
-                nmi_geodesic = normalized_mutual_info_score(all_labels_np, pred_labels_geodesic)
-                ari_geodesic = adjusted_rand_score(all_labels_np, pred_labels_geodesic)
-
                 # Create embeddings plot
                 fig = create_figure(all_embeddings, manifold=self.manifold, labels=all_labels_np)
 
@@ -122,17 +120,22 @@ class AbstractModel(pl.LightningModule):
                 ## Cosine similarity clustering
                 self.metrics.setdefault("test/nmi_cos_sim", []).append(nmi_cos_sim)
                 self.metrics.setdefault("test/ari_cos_sim", []).append(ari_cos_sim)
-                ## Hyperbolic Geodesic clustering
-                self.metrics.setdefault("test/nmi_geodesic", []).append(nmi_geodesic)
-                self.metrics.setdefault("test/ari_geodesic", []).append(ari_geodesic)
+
+                ## NMI and ARI delta
+                self.metrics.setdefault("test/nmi_delta", []).append(nmi_cos_sim - self.old_nmi)
+                self.metrics.setdefault("test/ari_delta", []).append(ari_cos_sim - self.old_ari)
+                self.old_nmi = nmi_cos_sim
+                self.old_ari = ari_cos_sim
                 ## Hyperbolic Embedding plot
                 self.metrics["test/Hyperbolic Embeddings"] = wandb.Image(fig)
                 plt.close()
 
+    def on_train_epoch_end(self) -> None:
+        self.evaluate()
         self.metrics[f'{self.stage}/epoch'] = self.current_epoch
         for key, value in self.metrics.items():
             if isinstance(value, list):
                 self.metrics[key] = sum(value) / len(value)
-        self.logger.experiment.log(self.metrics, step=self.current_epoch)
+        self.logger.experiment.log(self.metrics, step=self.current_epoch+self.global_epoch)
         self.metrics = {}
 

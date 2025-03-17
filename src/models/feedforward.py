@@ -17,7 +17,9 @@ class HyperbolicAE(AbstractModel):
         trainable_curvature: bool = False,
         latent_dim: int = 2,
         learning_rate: float = 1e-3,
-        log_interval: int = 5
+        log_interval: int = 5,
+        stage: str = 'pretrain',
+        global_epoch: int = 0,
     ):
         super().__init__(
             manifold_name=manifold_name,
@@ -25,7 +27,9 @@ class HyperbolicAE(AbstractModel):
             trainable_curvature=trainable_curvature,
             latent_dim=latent_dim,
             learning_rate=learning_rate,
-            log_interval=log_interval
+            log_interval=log_interval,
+            stage=stage,
+            global_epoch=global_epoch,
         )
         self.input_dim = input_dim
         self.save_hyperparameters()
@@ -73,7 +77,6 @@ class HyperbolicAE(AbstractModel):
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug, x, _ = batch
         self.orginal_input_shape = x.shape[1:]
-        
         x_recon, _, _ = self(x)
         x_aug_recon, _, _ = self(x_aug)
 

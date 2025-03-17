@@ -29,7 +29,9 @@ class HyperbolicHCModel(AbstractModel):
         hyphc_triplet_subsampling_size: int = 100,
         lca_version: str = 'ours',
         start_epoch: int = 0,
-        log_interval: int = 5
+        log_interval: int = 5,
+        stage: str = 'clustering',
+        global_epoch: int = 0,
     ):
         super().__init__(
             manifold_name=ae_model.manifold.name,
@@ -37,10 +39,11 @@ class HyperbolicHCModel(AbstractModel):
             trainable_curvature=clustering_trainable_curvature,
             latent_dim=ae_model.latent_dim,
             learning_rate=learning_rate,
-            log_interval=log_interval
+            log_interval=log_interval,
+            stage=stage,
+            global_epoch=global_epoch,
         )
         self.global_epoch = start_epoch
-        self.stage = 'clustering'
         self.hyphc_weight = hyphc_weight
         self.hyphc_temperature = hyphc_temperature
         self.hyphc_sampling_strategy = hyphc_sampling_strategy
@@ -260,81 +263,3 @@ class HyperbolicHCModel(AbstractModel):
 
         return total_loss
 
-    def on_train_epoch_end(self) -> None:
-        if not isinstance(self.logger, WandbLogger):
-            return
-        if self.current_epoch % self.log_interval == 0:
-            with torch.no_grad():
-                test_loader = self.trainer.datamodule.test_dataloader()
-
-                embeddings = []
-                euclidean = []
-                labels = []
-
-                for batch_idx, (x_aug, x, y) in enumerate(test_loader):
-                    x = x.view(x.size(0), -1)
-                    _, z, tangent_z = self(x.to(self.device))
-                    embeddings.append(z)
-                    euclidean.append(tangent_z)
-                    labels.append(y)
-
-                all_embeddings = torch.cat(embeddings, dim=0)
-                all_euclidean = torch.cat(euclidean, dim=0)
-                all_labels = torch.cat(labels, dim=0)
-
-                # Compute the delta hyperbolicity
-                delta_eucl, diam_eucl, rel_delta_eucl = get_delta(all_euclidean, self.euclidean_manifold)
-                delta_hyp, diam_hyp, rel_delta_hyp = get_delta(all_embeddings, self.manifold)
-
-                # Move to CPU for NMI and ARI calculation
-                all_euclidean_np = all_euclidean.cpu().numpy()
-                all_labels_np = all_labels.cpu().numpy()
-
-                # Compute the pairwise distances
-                dist_cos_sim = 1 - cosine_similarity(all_euclidean_np)
-                dist_geodesic = compute_pairwise_distances(all_embeddings, self.manifold).cpu().numpy()
-
-                # Perform complete linkage clustering
-                agglomerative_clustering = AgglomerativeClustering(
-                    n_clusters=len(np.unique(all_labels_np)),
-                    metric='precomputed',
-                    linkage='complete'
-                )
-
-                # Perform clustering with the different pairwise distances
-                pred_labels_cos_sim  = agglomerative_clustering.fit_predict(dist_cos_sim)
-                nmi_cos_sim = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim)
-                ari_cos_sim = adjusted_rand_score(all_labels_np, pred_labels_cos_sim)
-
-                pred_labels_geodesic  = agglomerative_clustering.fit_predict(dist_geodesic)
-                nmi_geodesic = normalized_mutual_info_score(all_labels_np, pred_labels_geodesic)
-                ari_geodesic = adjusted_rand_score(all_labels_np, pred_labels_geodesic)
-
-                # Create embeddings plot
-                fig = create_figure(all_embeddings, manifold=self.manifold, labels=all_labels_np)
-
-                # Log the metrics
-                ## Euclidean hyperbolicity
-                self.metrics.setdefault("test/delta_eucl", []).append(delta_eucl.item())
-                self.metrics.setdefault("test/diam_eucl", []).append(diam_eucl.item())
-                self.metrics.setdefault("test/rel_delta_eucl", []).append(rel_delta_eucl.item())
-                ## Hyperbolic hyperbolicity
-                self.metrics.setdefault("test/delta_hyp", []).append(delta_hyp.item())
-                self.metrics.setdefault("test/diam_hyp", []).append(diam_hyp.item())
-                self.metrics.setdefault("test/rel_delta_hyp", []).append(rel_delta_hyp.item())
-                ## Cosine similarity clustering
-                self.metrics.setdefault("test/nmi_cos_sim", []).append(nmi_cos_sim)
-                self.metrics.setdefault("test/ari_cos_sim", []).append(ari_cos_sim)
-                ## Hyperbolic Geodesic clustering
-                self.metrics.setdefault("test/nmi_geodesic", []).append(nmi_geodesic)
-                self.metrics.setdefault("test/ari_geodesic", []).append(ari_geodesic)
-                ## Hyperbolic Embedding plot
-                self.metrics["test/Hyperbolic Embeddings"] = wandb.Image(fig)
-                plt.close()
-
-        self.metrics['clustering/epoch'] = self.current_epoch
-        for key, value in self.metrics.items():
-            if isinstance(value, list):
-                self.metrics[key] = sum(value) / len(value)
-        self.logger.experiment.log(self.metrics, step=self.global_epoch+self.current_epoch)
-        self.metrics = {}
