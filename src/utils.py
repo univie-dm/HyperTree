@@ -135,6 +135,7 @@ def get_clustering_model(cfg: omegaconf.DictConfig,
             log_interval=cfg.log_interval,
             stage='clustering',
             global_epoch=cfg.pretrain_epochs,
+            learning_rate_scheduler=cfg.clustering_lr_scheduler,
         )
     else:
         raise ValueError("Invalid clustering model")

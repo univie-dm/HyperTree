@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 
-from typing import Tuple
+from typing import Tuple, Any
 from pytorch_lightning.loggers import WandbLogger
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
@@ -12,7 +12,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 from ..hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
 from ..hyperbolic_math.src.utils.helpers import compute_pairwise_distances, get_delta
 from ..hyperbolic_math.src.utils.vis_utils import create_figure
-
 
 class AbstractModel(pl.LightningModule):
     def __init__(
@@ -25,6 +24,7 @@ class AbstractModel(pl.LightningModule):
         log_interval: int = 5,
         stage: str = 'pretrain',
         global_epoch: int = 0,
+        learning_rate_scheduler: str | None = None,
     ):
         super().__init__()
         if manifold_name == 'Euclidean' or curvature_magnitude == 0:
@@ -40,6 +40,7 @@ class AbstractModel(pl.LightningModule):
         self.log_interval = log_interval
         self.stage = stage
         self.global_epoch = global_epoch
+        self.learning_rate_scheduler = learning_rate_scheduler
         self.metrics = {}
         self.euclidean_manifold = Euclidean() # for logging
         self.old_nmi = 0
@@ -55,8 +56,40 @@ class AbstractModel(pl.LightningModule):
         x_recon = self.decode(manifold_z)
         return x_recon, manifold_z, tangent_z
 
-    def configure_optimizers(self) -> torch.optim.Optimizer:
-        return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+    def configure_optimizers(self) -> Any:
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+        if self.learning_rate_scheduler is None:
+            return optimizer
+        elif self.learning_rate_scheduler == 'cosine':
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, 
+                T_max=self.trainer.max_epochs if self.trainer.max_epochs is not None else 100
+            )
+            return {
+                'optimizer': optimizer,
+                'lr_scheduler': {
+                    'scheduler': scheduler,
+                    'interval': 'epoch',
+                    'frequency': 1
+                }
+            }
+        elif self.learning_rate_scheduler == 'linear':
+            scheduler = torch.optim.lr_scheduler.LinearLR(
+                optimizer,
+                start_factor=1,
+                end_factor=0.1, 
+                total_iters=self.trainer.max_epochs if self.trainer.max_epochs is not None else 100
+            )
+            return {
+                'optimizer': optimizer,
+                'lr_scheduler': {
+                    'scheduler': scheduler,
+                    'interval': 'epoch',
+                    'frequency': 1
+                }
+            }
+        else:
+            raise ValueError(f"Invalid learning rate scheduler: {self.learning_rate_scheduler}")
     
     def evaluate(self) -> None:
         if not isinstance(self.logger, WandbLogger):
@@ -136,6 +169,7 @@ class AbstractModel(pl.LightningModule):
         for key, value in self.metrics.items():
             if isinstance(value, list):
                 self.metrics[key] = sum(value) / len(value)
-        self.logger.experiment.log(self.metrics, step=self.current_epoch+self.global_epoch)
+        if isinstance(self.logger, WandbLogger):
+            self.logger.experiment.log(self.metrics, step=self.current_epoch+self.global_epoch)
         self.metrics = {}
 

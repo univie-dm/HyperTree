@@ -1,21 +1,11 @@
 import torch
-import wandb
 import torch.nn.functional as F
 import numpy as np
-import matplotlib.pyplot as plt
-
 from typing import Tuple
-from pytorch_lightning.loggers import WandbLogger
 from lightning.pytorch.utilities import grad_norm
-from sklearn.cluster import AgglomerativeClustering
-from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
-from sklearn.metrics.pairwise import cosine_similarity
-from src.hyperbolic_math.src.manifolds.euclidean import Euclidean
 from src.models.abstract import AbstractModel
-from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances, get_delta
+from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.hyperbolic_math.src.utils.math_utils import arsinh, sinh, cosh
-from src.hyperbolic_math.src.utils.vis_utils import create_figure
-
 
 class HyperbolicHCModel(AbstractModel):
     def __init__(
@@ -32,6 +22,7 @@ class HyperbolicHCModel(AbstractModel):
         log_interval: int = 5,
         stage: str = 'clustering',
         global_epoch: int = 0,
+        learning_rate_scheduler: str | None = None,
     ):
         super().__init__(
             manifold_name=ae_model.manifold.name,
@@ -42,6 +33,7 @@ class HyperbolicHCModel(AbstractModel):
             log_interval=log_interval,
             stage=stage,
             global_epoch=global_epoch,
+            learning_rate_scheduler=learning_rate_scheduler,
         )
         self.global_epoch = start_epoch
         self.hyphc_weight = hyphc_weight
@@ -255,6 +247,7 @@ class HyperbolicHCModel(AbstractModel):
         self.metrics.setdefault("clustering/total_loss", []).append(total_loss)
         self.metrics.setdefault('clustering/dist_x2x_aug', []).append(self.manifold.dist(manifold_z, manifold_z_aug).mean())
         self.metrics.setdefault('clustering/c', []).append(self.manifold.c.item())
+        self.metrics.setdefault('clustering/lr', []).append(self.optimizers().param_groups[0]['lr'])
 
         for key, value in grad_norm(self, norm_type=2).items():
             if key == "grad_2.0_norm_total":
