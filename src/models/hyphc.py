@@ -53,10 +53,6 @@ class HyperbolicHCModel(AbstractModel):
         self.decoder.load_state_dict(ae_model.decoder.state_dict())
         self.to_tangent.load_state_dict(ae_model.to_tangent.state_dict())
 
-        # Freeze the encoder after loading weights
-        for param in self.encoder.parameters():
-            param.requires_grad = False
-
     def sample_triplets(self, num_pts: int, device: torch.device) -> np.ndarray:
         """Sample triplets for the HypHC loss."""
         if self.hyphc_sampling_strategy == 'all_subsample_triplets':
