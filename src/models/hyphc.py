@@ -290,7 +290,7 @@ class HyperbolicHCModel(AbstractModel):
         z_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = self.compute_normalized_hyphc_loss(manifold_z)
         z_aug_hyphc_loss, triplet_loss_aug, similarties_sum_aug, normalized_loss_aug = self.compute_normalized_hyphc_loss(manifold_z_aug)
         hyphc_loss = (z_hyphc_loss + z_aug_hyphc_loss) / 2
-        total_loss = recon_loss + hyphc_loss * self.hyphc_weight
+        total_loss = recon_loss + normalized_loss * self.hyphc_weight
 
         # Logging
         self.metrics.setdefault("clustering/recon_loss", []).append(recon_loss)
@@ -316,5 +316,5 @@ class HyperbolicHCModel(AbstractModel):
                 key = "grad_2.0_norm/total"
             self.metrics.setdefault(f"{key}", []).append(value)
 
-        return normalized_loss
+        return total_loss
 
