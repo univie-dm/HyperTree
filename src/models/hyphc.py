@@ -23,6 +23,7 @@ class HyperbolicHCModel(AbstractModel):
         stage: str = 'clustering',
         global_epoch: int = 0,
         learning_rate_scheduler: str | None = None,
+        learnable_hyphc_weight: bool = False,
     ):
         super().__init__(
             manifold_name=ae_model.manifold.name,
@@ -36,7 +37,7 @@ class HyperbolicHCModel(AbstractModel):
             learning_rate_scheduler=learning_rate_scheduler,
         )
         self.global_epoch = start_epoch
-        self.hyphc_weight = hyphc_weight
+        self.hyphc_weight = torch.nn.Parameter(torch.tensor(hyphc_weight), requires_grad=learnable_hyphc_weight)
         self.hyphc_temperature = hyphc_temperature
         self.hyphc_sampling_strategy = hyphc_sampling_strategy
         self.hyphc_triplet_subsampling_size = hyphc_triplet_subsampling_size
@@ -51,6 +52,10 @@ class HyperbolicHCModel(AbstractModel):
         self.encoder.load_state_dict(ae_model.encoder.state_dict())
         self.decoder.load_state_dict(ae_model.decoder.state_dict())
         self.to_tangent.load_state_dict(ae_model.to_tangent.state_dict())
+
+        # Freeze the encoder after loading weights
+        for param in self.encoder.parameters():
+            param.requires_grad = False
 
     def sample_triplets(self, num_pts: int, device: torch.device) -> np.ndarray:
         """Sample triplets for the HypHC loss."""
@@ -202,6 +207,60 @@ class HyperbolicHCModel(AbstractModel):
         total_loss = triplet_loss + 2 * similarties_sum
 
         return total_loss, triplet_loss, similarties_sum
+    
+
+    def compute_normalized_hyphc_loss(self, embeddings: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        n = embeddings.size(0)
+        device = embeddings.device
+
+        # Sample triplets
+        sampled_indices, np_sampled_triplet_indices = self.sample_triplets(n, device)
+
+        # Compute the pairwise distances
+        distances = compute_pairwise_distances(embeddings[sampled_indices, :], self.manifold)
+        similarties = torch.reciprocal(1 + distances)
+        similarties_sum = similarties.sum()
+
+        # Compute the pairwise lcas
+        if self.lca_version == 'ours':
+            lcas = self.compute_lca_depth(embeddings[sampled_indices, :])
+        elif self.lca_version == 'chami':
+            lcas = self.compute_lca_depth_chami(embeddings[sampled_indices, :])
+        else:
+            raise ValueError(f"Invalid LCA version: {self.lca_version}")
+
+        # Keep track of the storage of triplets
+        lookup_table = {idx: pos for pos,idx in enumerate(sampled_indices.cpu().numpy())}
+        _i, _j, _k = np_sampled_triplet_indices.T
+        i = np.vectorize(lookup_table.get)(_i)
+        j = np.vectorize(lookup_table.get)(_j)
+        k = np.vectorize(lookup_table.get)(_k)
+
+        # Compute the scaled safe softmax of the lcas
+        lca_triplets = torch.stack((lcas[i,j], lcas[i,k], lcas[j,k]), dim=1)
+        lca_triplet_max, _ = torch.max(lca_triplets, dim=1, keepdim=True)
+        scaled_softmax = torch.exp((lca_triplets - lca_triplet_max) / self.hyphc_temperature)
+        scaled_softmax = scaled_softmax / scaled_softmax.sum(dim=1, keepdim=True)
+
+        # Compute the triplet loss for the subsampled triplets
+        sim_stack = torch.stack((similarties[i,j], similarties[i,k], similarties[j,k]), dim=1)
+        sim_stack2 = torch.stack((similarties[i,j]+similarties[i,k], similarties[i,j]+similarties[j,k], similarties[i,k]+similarties[j,k]), dim=1)
+        sim_stack2_max, _ = torch.max(sim_stack2, dim=1, keepdim=False)
+        sim_stack2_min, _ = torch.min(sim_stack2, dim=1, keepdim=False)
+        triplet_loss = torch.sum(sim_stack * (1 - scaled_softmax))
+        
+        scale_min = sim_stack2_min.sum() + 2 * similarties_sum
+        scale_max = sim_stack2_max.sum() + 2 * similarties_sum
+
+        # Compute total loss
+        total_loss = triplet_loss + 2 * similarties_sum
+        normalized_loss = (total_loss - scale_min) / (scale_max - scale_min)
+
+        self.metrics.setdefault("clustering/scale_min", []).append(scale_min)
+        self.metrics.setdefault("clustering/scale_max", []).append(scale_max)
+        self.metrics.setdefault("clustering/min_max_delta", []).append(scale_max - scale_min)
+
+        return total_loss, triplet_loss, similarties_sum, normalized_loss
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         hidden = self.encoder(x)
@@ -228,10 +287,10 @@ class HyperbolicHCModel(AbstractModel):
         recon_loss = (x_recon_loss + x_aug_recon_loss) / 2
 
         # HypHC loss
-        z_hyphc_loss, triplet_loss, similarties_sum = self.compute_hyphc_loss(manifold_z)
-        z_aug_hyphc_loss, triplet_loss_aug, similarties_sum_aug = self.compute_hyphc_loss(manifold_z_aug)
+        z_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = self.compute_normalized_hyphc_loss(manifold_z)
+        z_aug_hyphc_loss, triplet_loss_aug, similarties_sum_aug, normalized_loss_aug = self.compute_normalized_hyphc_loss(manifold_z_aug)
         hyphc_loss = (z_hyphc_loss + z_aug_hyphc_loss) / 2
-        total_loss = recon_loss + self.hyphc_weight * hyphc_loss
+        total_loss = recon_loss + hyphc_loss * self.hyphc_weight
 
         # Logging
         self.metrics.setdefault("clustering/recon_loss", []).append(recon_loss)
@@ -245,14 +304,17 @@ class HyperbolicHCModel(AbstractModel):
         self.metrics.setdefault("clustering/similarties_sum", []).append(similarties_sum)
         self.metrics.setdefault("clustering/similarties_sum_aug", []).append(similarties_sum_aug)
         self.metrics.setdefault("clustering/total_loss", []).append(total_loss)
+        self.metrics.setdefault("clustering/normalized_loss", []).append(normalized_loss)
+        self.metrics.setdefault("clustering/normalized_loss_aug", []).append(normalized_loss_aug)
         self.metrics.setdefault('clustering/dist_x2x_aug', []).append(self.manifold.dist(manifold_z, manifold_z_aug).mean())
         self.metrics.setdefault('clustering/c', []).append(self.manifold.c.item())
         self.metrics.setdefault('clustering/lr', []).append(self.optimizers().param_groups[0]['lr'])
+        self.metrics.setdefault('clustering/hyphc_weight', []).append(self.hyphc_weight.item())
 
         for key, value in grad_norm(self, norm_type=2).items():
             if key == "grad_2.0_norm_total":
                 key = "grad_2.0_norm/total"
             self.metrics.setdefault(f"{key}", []).append(value)
 
-        return total_loss
+        return normalized_loss
 

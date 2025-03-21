@@ -13,6 +13,7 @@ clustering_model: 'HyperbolicHC' # 'HyperbolicHC', 'HyperbolicContrastive'
 clustering_trainable_curvature: False
 clustering_learning_rate: 1e-3
 clustering_lr_scheduler: # 'cosine', 'linear'
+learnable_hyphc_weight: False
 ### Contrastive parameters
 contrastive_weight: 1.0
 contrastive_temperature: 0.05

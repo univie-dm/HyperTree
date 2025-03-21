@@ -13,7 +13,6 @@ def get_model_path(cfg: omegaconf.DictConfig):
     attr = {
         "seed" : cfg.seed,
         "pretrain_epochs" : cfg.pretrain_epochs,
-        "clustering_epochs" : cfg.clustering_epochs,
         "embedding_dim" : cfg.embedding_dim,
         "ae_type" : cfg.ae_type,
         "hidden_dims" : cfg.hidden_dims,
@@ -136,6 +135,7 @@ def get_clustering_model(cfg: omegaconf.DictConfig,
             stage='clustering',
             global_epoch=cfg.pretrain_epochs,
             learning_rate_scheduler=cfg.clustering_lr_scheduler,
+            learnable_hyphc_weight=cfg.learnable_hyphc_weight,
         )
     else:
         raise ValueError("Invalid clustering model")
