@@ -47,7 +47,8 @@ def get_datamodule(cfg: omegaconf.DictConfig) -> Tuple[Union[TabularDataModule, 
             data_dir=cfg.dataset.data_dir,
             resize=cfg.dataset.resize,
             num_workers=cfg.num_workers,
-            selected_classes=cfg.dataset.get('selected_classes', None)
+            selected_classes=cfg.dataset.get('selected_classes', None),
+            subset=cfg.dataset.subset,
         )
         input_dim = cfg.dataset.resize * cfg.dataset.resize * cfg.dataset.channels
         is_image = True
@@ -136,6 +137,7 @@ def get_clustering_model(cfg: omegaconf.DictConfig,
             global_epoch=cfg.pretrain_epochs,
             learning_rate_scheduler=cfg.clustering_lr_scheduler,
             learnable_hyphc_weight=cfg.learnable_hyphc_weight,
+            freeze_similarities=cfg.freeze_similarities,
         )
     else:
         raise ValueError("Invalid clustering model")

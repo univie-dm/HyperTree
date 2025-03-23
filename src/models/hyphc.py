@@ -7,6 +7,7 @@ from src.models.abstract import AbstractModel
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.hyperbolic_math.src.utils.math_utils import arsinh, sinh, cosh
 
+
 class HyperbolicHCModel(AbstractModel):
     def __init__(
         self,
@@ -24,16 +25,17 @@ class HyperbolicHCModel(AbstractModel):
         global_epoch: int = 0,
         learning_rate_scheduler: str | None = None,
         learnable_hyphc_weight: bool = False,
+        freeze_similarities: bool = False,
     ):
         super().__init__(
             manifold_name=ae_model.manifold.name,
-            curvature_magnitude=ae_model.manifold.c,
+            curvature_magnitude=ae_model.manifold.c.clone().detach(),
             trainable_curvature=clustering_trainable_curvature,
             latent_dim=ae_model.latent_dim,
             learning_rate=learning_rate,
             log_interval=log_interval,
             stage=stage,
-            global_epoch=global_epoch,
+            global_epoch=global_epoch+1,
             learning_rate_scheduler=learning_rate_scheduler,
         )
         self.global_epoch = start_epoch
@@ -42,7 +44,8 @@ class HyperbolicHCModel(AbstractModel):
         self.hyphc_sampling_strategy = hyphc_sampling_strategy
         self.hyphc_triplet_subsampling_size = hyphc_triplet_subsampling_size
         self.lca_version = lca_version
-
+        self.freeze_similarities = freeze_similarities
+        self.precomputed_embeddings = None
         # Load encoder, decoder, and to_tangent modules with their weights
         self.encoder = ae_model.encoder
         self.decoder = ae_model.decoder
@@ -213,8 +216,10 @@ class HyperbolicHCModel(AbstractModel):
         sampled_indices, np_sampled_triplet_indices = self.sample_triplets(n, device)
 
         # Compute the pairwise distances
+
         distances = compute_pairwise_distances(embeddings[sampled_indices, :], self.manifold)
         similarties = torch.reciprocal(1 + distances)
+
         similarties_sum = similarties.sum()
 
         # Compute the pairwise lcas
@@ -284,6 +289,12 @@ class HyperbolicHCModel(AbstractModel):
         recon_loss = x_recon_loss
 
         # HypHC loss
+        if self.precomputed_embeddings is not None:
+            # Calculate indices for current batch
+            batch_size = x.size(0)
+            start_idx = batch_idx * batch_size
+            end_idx = start_idx + batch_size
+            manifold_z = self.precomputed_embeddings[start_idx:end_idx]
         z_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = self.compute_normalized_hyphc_loss(manifold_z)
         #z_aug_hyphc_loss, triplet_loss_aug, similarties_sum_aug, normalized_loss_aug = self.compute_normalized_hyphc_loss(manifold_z_aug)
         #hyphc_loss = (z_hyphc_loss + z_aug_hyphc_loss) / 2
@@ -315,4 +326,24 @@ class HyperbolicHCModel(AbstractModel):
             self.metrics.setdefault(f"{key}", []).append(value)
 
         return total_loss
+    
+    def on_train_start(self) -> None:
+        self.on_train_epoch_end()
+        if not self.freeze_similarities:
+            return
+
+        self.eval()
+        self.precomputed_embeddings = None
+        all_embeddings = []
+        
+        with torch.no_grad():
+            for batch in self.trainer.train_dataloader:
+                x, _, _ = batch
+                x = x.to(self.device)
+                x = x.view(x.size(0), -1)
+                manifold_z, _ = self.encode(x)
+                all_embeddings.append(manifold_z)
+            all_embeddings = torch.cat(all_embeddings, dim=0)
+            self.precomputed_embeddings = all_embeddings
+        self.train()
 

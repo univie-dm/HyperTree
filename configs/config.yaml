@@ -24,6 +24,7 @@ hyphc_temperature: 0.05
 hyphc_sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'random', 'chami'
 hyphc_triplet_subsampling_size: 100
 lca_version: 'ours' # 'ours', 'chami'
+freeze_similarities: False
 
 # Model architecture
 ae_type: 'feedforward' # 'feedforward', 'resnet18', 'resnet34'

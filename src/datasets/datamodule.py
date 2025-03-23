@@ -115,19 +115,21 @@ class ColorDataModule(pl.LightningDataModule):
             base_test.targets = [self._get_coarse_label(t) for t in base_test.targets]
 
         if self.subset == 'all':
+            self.train_dataset = MultiViewDataset(base_train, base_transform, base_transform)
+            self.test_dataset = MultiViewDataset(base_test, base_transform, base_transform)
+            self.full_dataset = torch.utils.data.ConcatDataset([self.train_dataset, self.test_dataset])
+        elif self.subset == 'smallest':
+            self.train_dataset = MultiViewDataset(base_test, base_transform, aug_transform)
+            self.test_dataset = MultiViewDataset(base_test, base_transform, base_transform)
+            self.full_dataset = self.test_dataset  # Don't concatenate for 'smallest'
+        elif self.subset == 'train':
             self.train_dataset = MultiViewDataset(base_train, base_transform, aug_transform)
             self.test_dataset = MultiViewDataset(base_test, base_transform, base_transform)
+            self.full_dataset = self.train_dataset
         else:
-            self.train_dataset = MultiViewDataset(base_train, base_transform, aug_transform)
-            self.test_dataset = MultiViewDataset(base_test, base_transform, base_transform)
-        self.full_dataset = torch.utils.data.ConcatDataset([self.train_dataset, self.test_dataset])
-        if "targets" in base_test.__dict__:
-            self.ground_truth_labels = base_test.targets
-        else:
-            labels = []
-            for _, _, label in self.test_dataset:
-                labels.append(label)
-            self.ground_truth_labels = torch.tensor(labels)
+            raise ValueError(f"Invalid subset: {self.subset}")
+
+        self.ground_truth_labels = base_test.targets
 
     def train_dataloader(self) -> DataLoader:
         if self.subset == 'all':
@@ -136,6 +138,7 @@ class ColorDataModule(pl.LightningDataModule):
             dataset = self.test_dataset
         else:
             dataset = self.train_dataset
+        
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True,
                           num_workers=self.num_workers)
 
@@ -285,19 +288,28 @@ class GrayScaleDataModule(pl.LightningDataModule):
             base_train.targets = [label for i, label in enumerate(base_train.targets) if train_mask[i]]
             base_test.data = base_test.data[test_mask]
             base_test.targets = [label for i, label in enumerate(base_test.targets) if test_mask[i]]
-
         if self.subset == 'all':
             self.train_dataset = MultiViewDataset(base_train, base_transform, base_transform)
             self.test_dataset = MultiViewDataset(base_test, base_transform, base_transform)
-        else:
+            self.full_dataset = torch.utils.data.ConcatDataset([self.train_dataset, self.test_dataset])
+        elif self.subset == 'smallest':
+            self.train_dataset = MultiViewDataset(base_test, base_transform, aug_transform)
+            self.test_dataset = MultiViewDataset(base_test, base_transform, base_transform)
+            self.full_dataset = self.test_dataset  # Don't concatenate for 'smallest'
+        elif self.subset == 'train':
             self.train_dataset = MultiViewDataset(base_train, base_transform, aug_transform)
             self.test_dataset = MultiViewDataset(base_test, base_transform, base_transform)
-        self.full_dataset = torch.utils.data.ConcatDataset([self.train_dataset, self.test_dataset])
+            self.full_dataset = self.train_dataset
+        else:
+            raise ValueError(f"Invalid subset: {self.subset}")
+
         self.ground_truth_labels = base_test.targets
 
     def train_dataloader(self) -> DataLoader:
         if self.subset == 'all':
             dataset = self.full_dataset
+        elif self.subset == 'smallest':
+            dataset = self.test_dataset
         else:
             dataset = self.train_dataset
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True,
