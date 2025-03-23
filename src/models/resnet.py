@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from typing import Tuple
 from torchvision.models import resnet18, resnet34
 from src.models.abstract import AbstractModel
-from icecream import ic
 
 
 def resize_conv3x3(in_planes: int, out_planes: int, scale: int=1):
