@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from typing import Tuple
 from torchvision.models import resnet18, resnet34
 from src.models.abstract import AbstractModel
+from icecream import ic
 
 
 def resize_conv3x3(in_planes: int, out_planes: int, scale: int=1):
@@ -146,18 +147,18 @@ class HyperbolicResNet(AbstractModel):
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug, x, _ = batch
-        
         x_recon, _, _ = self(x)
-        x_aug_recon, _, _ = self(x_aug)
+        #x_aug_recon, _, _ = self(x_aug)
 
         # Reconstruction loss
         x_recon_loss = F.mse_loss(x_recon, x)
-        x_aug_recon_loss = F.mse_loss(x_aug_recon, x_aug)
-        loss = (x_recon_loss + x_aug_recon_loss) / 2
+        #x_aug_recon_loss = F.mse_loss(x_aug_recon, x_aug)
+        #loss = (x_recon_loss + x_aug_recon_loss) / 2
+        loss = x_recon_loss
 
         # Logging
         self.metrics.setdefault("pretrain/x_recon_loss", []).append(x_recon_loss)
-        self.metrics.setdefault("pretrain/x_aug_recon_loss", []).append(x_aug_recon_loss)
+        #self.metrics.setdefault("pretrain/x_aug_recon_loss", []).append(x_aug_recon_loss)
         self.metrics.setdefault("pretrain/total_loss", []).append(loss)
         self.metrics.setdefault("pretrain/c", []).append(self.manifold.c.detach())
 

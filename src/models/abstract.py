@@ -104,7 +104,6 @@ class AbstractModel(pl.LightningModule):
                 tangents = []
 
                 for batch_idx, (x_aug, x, y) in enumerate(test_loader):
-                    x = x.view(x.size(0), -1)
                     _, z, tangent_z = self(x.to(self.device))
                     embeddings.append(z)
                     euclidean.append(tangent_z)
