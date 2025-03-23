@@ -172,4 +172,5 @@ class AbstractModel(pl.LightningModule):
         if isinstance(self.logger, WandbLogger):
             self.logger.experiment.log(self.metrics, step=self.current_epoch+self.global_epoch)
         self.metrics = {}
+        self.train()
 

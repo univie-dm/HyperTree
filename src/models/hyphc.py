@@ -272,37 +272,39 @@ class HyperbolicHCModel(AbstractModel):
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug, x, _ = batch
         x = x.view(x.size(0), -1)
-        x_aug = x_aug.view(x_aug.size(0), -1)
+        #x_aug = x_aug.view(x_aug.size(0), -1)
 
         x_recon, manifold_z, _ = self(x)
-        x_aug_recon, manifold_z_aug, _ = self(x_aug)
+        #x_aug_recon, manifold_z_aug, _ = self(x_aug)
 
         # Reconstruction loss
         x_recon_loss = F.mse_loss(x_recon, x)
-        x_aug_recon_loss = F.mse_loss(x_aug_recon, x_aug)
-        recon_loss = (x_recon_loss + x_aug_recon_loss) / 2
+        #x_aug_recon_loss = F.mse_loss(x_aug_recon, x_aug)
+        #recon_loss = (x_recon_loss + x_aug_recon_loss) / 2
+        recon_loss = x_recon_loss
 
         # HypHC loss
         z_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = self.compute_normalized_hyphc_loss(manifold_z)
-        z_aug_hyphc_loss, triplet_loss_aug, similarties_sum_aug, normalized_loss_aug = self.compute_normalized_hyphc_loss(manifold_z_aug)
-        hyphc_loss = (z_hyphc_loss + z_aug_hyphc_loss) / 2
+        #z_aug_hyphc_loss, triplet_loss_aug, similarties_sum_aug, normalized_loss_aug = self.compute_normalized_hyphc_loss(manifold_z_aug)
+        #hyphc_loss = (z_hyphc_loss + z_aug_hyphc_loss) / 2
+        hyphc_loss = z_hyphc_loss
         total_loss = recon_loss + normalized_loss * self.hyphc_weight
 
         # Logging
         self.metrics.setdefault("clustering/recon_loss", []).append(recon_loss)
         self.metrics.setdefault("clustering/x_recon_loss", []).append(x_recon_loss)
-        self.metrics.setdefault("clustering/x_aug_recon_loss", []).append(x_aug_recon_loss)
+        #self.metrics.setdefault("clustering/x_aug_recon_loss", []).append(x_aug_recon_loss)
         self.metrics.setdefault("clustering/hyphc_loss", []).append(hyphc_loss)
         self.metrics.setdefault("clustering/z_hyphc_loss", []).append(z_hyphc_loss)
-        self.metrics.setdefault("clustering/z_aug_hyphc_loss", []).append(z_aug_hyphc_loss)
+        #self.metrics.setdefault("clustering/z_aug_hyphc_loss", []).append(z_aug_hyphc_loss)
         self.metrics.setdefault("clustering/triplet_loss", []).append(triplet_loss)
-        self.metrics.setdefault("clustering/triplet_loss_aug", []).append(triplet_loss_aug)
+        #self.metrics.setdefault("clustering/triplet_loss_aug", []).append(triplet_loss_aug)
         self.metrics.setdefault("clustering/similarties_sum", []).append(similarties_sum)
-        self.metrics.setdefault("clustering/similarties_sum_aug", []).append(similarties_sum_aug)
+        #self.metrics.setdefault("clustering/similarties_sum_aug", []).append(similarties_sum_aug)
         self.metrics.setdefault("clustering/total_loss", []).append(total_loss)
         self.metrics.setdefault("clustering/normalized_loss", []).append(normalized_loss)
-        self.metrics.setdefault("clustering/normalized_loss_aug", []).append(normalized_loss_aug)
-        self.metrics.setdefault('clustering/dist_x2x_aug', []).append(self.manifold.dist(manifold_z, manifold_z_aug).mean())
+        #self.metrics.setdefault("clustering/normalized_loss_aug", []).append(normalized_loss_aug)
+        #self.metrics.setdefault('clustering/dist_x2x_aug', []).append(self.manifold.dist(manifold_z, manifold_z_aug).mean())
         self.metrics.setdefault('clustering/c', []).append(self.manifold.c.item())
         self.metrics.setdefault('clustering/lr', []).append(self.optimizers().param_groups[0]['lr'])
         self.metrics.setdefault('clustering/hyphc_weight', []).append(self.hyphc_weight.item())

@@ -78,12 +78,13 @@ class HyperbolicAE(AbstractModel):
         x_aug, x, _ = batch
         self.orginal_input_shape = x.shape[1:]
         x_recon, _, _ = self(x)
-        x_aug_recon, _, _ = self(x_aug)
+        #x_aug_recon, _, _ = self(x_aug)
 
         # Reconstruction loss
         x_recon_loss = F.mse_loss(x_recon, x)
-        x_aug_recon_loss = F.mse_loss(x_aug_recon, x_aug)
-        loss = (x_recon_loss + x_aug_recon_loss) / 2
+        #x_aug_recon_loss = F.mse_loss(x_aug_recon, x_aug)
+        #loss = (x_recon_loss + x_aug_recon_loss) / 2
+        loss = x_recon_loss
 
         for key, value in grad_norm(self, norm_type=2).items():
             if key == "grad_2.0_norm_total":
@@ -92,7 +93,7 @@ class HyperbolicAE(AbstractModel):
 
         # Logging
         self.metrics.setdefault("pretrain/x_recon_loss", []).append(x_recon_loss)
-        self.metrics.setdefault("pretrain/x_aug_recon_loss", []).append(x_aug_recon_loss)
+        #self.metrics.setdefault("pretrain/x_aug_recon_loss", []).append(x_aug_recon_loss)
         self.metrics.setdefault("pretrain/total_loss", []).append(loss)
         self.metrics.setdefault("pretrain/c", []).append(self.manifold.c.detach())
 
