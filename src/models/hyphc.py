@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Tuple
 from lightning.pytorch.utilities import grad_norm
+from src.models.resnet import HyperbolicResNet
 from src.models.abstract import AbstractModel
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.hyperbolic_math.src.utils.math_utils import arsinh, sinh, cosh
@@ -50,11 +51,19 @@ class HyperbolicHCModel(AbstractModel):
         self.encoder = ae_model.encoder
         self.decoder = ae_model.decoder
         self.to_tangent = ae_model.to_tangent
+        if isinstance(ae_model, HyperbolicResNet):
+            self.from_tangent = ae_model.from_tangent
+            self.expansion = ae_model.expansion
+        else:
+            self.from_tangent = None
+            self.expansion = None
 
         # Ensure weights are copied by loading state dict
         self.encoder.load_state_dict(ae_model.encoder.state_dict())
         self.decoder.load_state_dict(ae_model.decoder.state_dict())
         self.to_tangent.load_state_dict(ae_model.to_tangent.state_dict())
+        
+        self.orginal_input_shape = ae_model.orginal_input_shape
 
     def sample_triplets(self, num_pts: int, device: torch.device) -> np.ndarray:
         """Sample triplets for the HypHC loss."""
@@ -264,21 +273,27 @@ class HyperbolicHCModel(AbstractModel):
         return total_loss, triplet_loss, similarties_sum, normalized_loss
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self.from_tangent is None:
+            x = x.view(x.size(0), -1)
         hidden = self.encoder(x)
         tangent_z = self.to_tangent(hidden)
         manifold_z = self.manifold.expmap_0(tangent_z)
         return manifold_z, tangent_z
 
     def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
-        tangent_z = self.manifold.logmap_0(manifold_z)
-        x_recon = self.decoder(tangent_z)
+        if self.from_tangent is not None:
+            tangent_z = self.manifold.logmap_0(manifold_z)
+            x = self.from_tangent(tangent_z)
+            x = x.view(-1, 512 * self.expansion, 4, 4)
+            x_recon = self.decoder(x)
+        else:
+            tangent_z = self.manifold.logmap_0(manifold_z)
+            x_recon = self.decoder(tangent_z)
+        x_recon = x_recon.view(-1, *self.orginal_input_shape)
         return x_recon
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug, x, _ = batch
-        x = x.view(x.size(0), -1)
-        #x_aug = x_aug.view(x_aug.size(0), -1)
-
         x_recon, manifold_z, _ = self(x)
         #x_aug_recon, manifold_z_aug, _ = self(x_aug)
 
@@ -340,7 +355,6 @@ class HyperbolicHCModel(AbstractModel):
             for batch in self.trainer.train_dataloader:
                 x, _, _ = batch
                 x = x.to(self.device)
-                x = x.view(x.size(0), -1)
                 manifold_z, _ = self.encode(x)
                 all_embeddings.append(manifold_z)
             all_embeddings = torch.cat(all_embeddings, dim=0)

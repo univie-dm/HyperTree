@@ -7,7 +7,7 @@ from torchvision.models import resnet18, resnet34
 from src.models.abstract import AbstractModel
 
 
-def resize_conv3x3(in_planes: int, out_planes: int, scale: int=1):
+def resize_conv3x3(in_planes: int, out_planes: int, scale: float=1):
     """upsample + 3x3 convolution with padding to avoid checkerboard artifact."""
     if scale == 1:
         return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=1, padding=1, bias=False)
@@ -16,7 +16,7 @@ def resize_conv3x3(in_planes: int, out_planes: int, scale: int=1):
         nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=1, padding=1, bias=False)
     )
 
-def resize_conv1x1(in_planes: int, out_planes: int, scale: int=1):
+def resize_conv1x1(in_planes: int, out_planes: int, scale: float=1):
     """upsample + 1x1 convolution to avoid checkerboard artifact."""
     if scale == 1:
         return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=1, bias=False)
@@ -92,10 +92,10 @@ class HyperbolicResNet(AbstractModel):
         # Modify first conv layer to accept different number of input channels
         self.encoder.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
 
-        self.encoder_linear = nn.Linear(1000, self.latent_dim)
+        self.to_tangent = nn.Linear(1000, self.latent_dim)
 
         # Project latent vector to starting feature map
-        self.linear = nn.Linear(latent_dim, self.inplanes * 4 * 4)
+        self.from_tangent = nn.Linear(self.latent_dim, self.inplanes * 4 * 4)
 
         # Decoder
         if output_size == 28:  # For MNIST
@@ -115,7 +115,7 @@ class HyperbolicResNet(AbstractModel):
                 nn.Tanh()
             )
 
-    def _make_decoder_layer(self, planes: int, blocks: int, scale: int=1) -> nn.Sequential:
+    def _make_decoder_layer(self, planes: int, blocks: int, scale: float=1) -> nn.Sequential:
         upsample = None
         if scale != 1 or self.inplanes != planes:
             upsample = nn.Sequential(
@@ -133,19 +133,20 @@ class HyperbolicResNet(AbstractModel):
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         tangent_z = self.encoder(x)
-        tangent_z = self.encoder_linear(tangent_z)
+        tangent_z = self.to_tangent(tangent_z)
         manifold_z = self.manifold.expmap_0(tangent_z)
         return manifold_z, tangent_z
 
     def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
         tangent_z = self.manifold.logmap_0(manifold_z)
-        x = self.linear(tangent_z)
+        x = self.from_tangent(tangent_z)
         x = x.view(-1, 512 * self.expansion, 4, 4)
         x_recon = self.decoder(x)
         return x_recon
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug, x, _ = batch
+        self.orginal_input_shape = x.shape[1:]
         x_recon, _, _ = self(x)
         #x_aug_recon, _, _ = self(x_aug)
 
