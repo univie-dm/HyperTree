@@ -12,7 +12,7 @@ from ..hyperbolic_math.src.utils.helpers import get_delta
 class HyperbolicContrastiveModel(AbstractModel):
     def __init__(
         self,
-        ae_model: Type[AbstractModel],
+        ae_model: AbstractModel,
         clustering_trainable_curvature: bool = False,
         learning_rate: float = 1e-3,
         contrastive_weight: float = 0.1,
@@ -173,11 +173,11 @@ class HyperbolicContrastiveModel(AbstractModel):
         return total_loss
 
     def on_train_epoch_end(self) -> None:
-        if not isinstance(self.logger, pl.loggers.WandbLogger):
+        if not isinstance(self.logger, pl.loggers.WandbLogger): # type: ignore
             return
         if self.current_epoch % self.log_interval == 0:
             with torch.no_grad():
-                test_loader = self.trainer.datamodule.test_dataloader()
+                test_loader = self.trainer.datamodule.test_dataloader() # type: ignore
 
                 embeddings = []
                 labels = []
@@ -213,5 +213,5 @@ class HyperbolicContrastiveModel(AbstractModel):
         for key, value in self.metrics.items():
             if isinstance(value, list):
                 self.metrics[key] = sum(value) / len(value)
-        self.logger.experiment.log(self.metrics, step=self.global_epoch+self.current_epoch)
+        self.logger.experiment.log(self.metrics, step=self.global_epoch+self.current_epoch) # type: ignore
         self.metrics = {}

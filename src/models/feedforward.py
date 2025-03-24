@@ -30,6 +30,8 @@ class HyperbolicAE(AbstractModel):
             log_interval=log_interval,
             stage=stage,
             global_epoch=global_epoch,
+            learning_rate_scheduler=None,
+            lr_scheduler_params=None,
         )
         self.input_dim = input_dim
         self.save_hyperparameters()
@@ -98,3 +100,4 @@ class HyperbolicAE(AbstractModel):
         self.metrics.setdefault("pretrain/c", []).append(self.manifold.c.detach())
 
         return loss
+

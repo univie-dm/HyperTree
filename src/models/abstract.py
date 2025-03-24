@@ -25,6 +25,7 @@ class AbstractModel(pl.LightningModule):
         stage: str = 'pretrain',
         global_epoch: int = 0,
         learning_rate_scheduler: str | None = None,
+        lr_scheduler_params: dict | None = None,
     ):
         super().__init__()
         if manifold_name == 'Euclidean' or curvature_magnitude == 0:
@@ -41,15 +42,11 @@ class AbstractModel(pl.LightningModule):
         self.stage = stage
         self.global_epoch = global_epoch
         self.learning_rate_scheduler = learning_rate_scheduler
+        self.lr_scheduler_params = lr_scheduler_params or {}
         self.metrics = {}
         self.euclidean_manifold = Euclidean() # for logging
         self.old_nmi = 0
         self.old_ari = 0
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        pass
-
-    def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
-        pass
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         manifold_z, tangent_z = self.encode(x)
@@ -88,6 +85,42 @@ class AbstractModel(pl.LightningModule):
                     'frequency': 1
                 }
             }
+        elif self.learning_rate_scheduler == 'warmup_cosine':
+            # Get scheduler parameters with defaults
+            warmup_epochs = self.lr_scheduler_params.get('warmup_epochs', 10)
+            warmup_factor = self.lr_scheduler_params.get('warmup_factor', 0.1)
+            cosine_min_factor = self.lr_scheduler_params.get('cosine_min_factor', 0.01)
+            cosine_cycles = self.lr_scheduler_params.get('cosine_cycles', 1)
+            
+            # Create a warmup scheduler that linearly increases the learning rate
+            warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+                optimizer,
+                start_factor=warmup_factor,
+                end_factor=1.0,
+                total_iters=min(warmup_epochs, self.trainer.max_epochs // 10)  # Warmup for specified epochs or 10% of total epochs # type: ignore
+            )
+            
+            # Create a cosine annealing scheduler
+            cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                optimizer,
+                T_0=(self.trainer.max_epochs - warmup_scheduler.total_iters) // cosine_cycles if self.trainer.max_epochs is not None else 90,
+                T_mult=1,  # Keep the same cycle length
+                eta_min=self.learning_rate * cosine_min_factor
+            )
+            
+            # Combine the schedulers
+            return {
+                'optimizer': optimizer,
+                'lr_scheduler': {
+                    'scheduler': torch.optim.lr_scheduler.SequentialLR(
+                        optimizer,
+                        schedulers=[warmup_scheduler, cosine_scheduler],
+                        milestones=[warmup_scheduler.total_iters]
+                    ),
+                    'interval': 'epoch',
+                    'frequency': 1
+                }
+            }
         else:
             raise ValueError(f"Invalid learning rate scheduler: {self.learning_rate_scheduler}")
     
@@ -96,7 +129,7 @@ class AbstractModel(pl.LightningModule):
             return
         if self.current_epoch % self.log_interval == 0:
             with torch.no_grad():
-                test_loader = self.trainer.datamodule.test_dataloader()
+                test_loader = self.trainer.datamodule.test_dataloader() # type: ignore
 
                 embeddings = []
                 euclidean = []

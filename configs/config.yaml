@@ -12,7 +12,13 @@ clustering_epochs: 500
 clustering_model: 'HyperbolicHC' # 'HyperbolicHC', 'HyperbolicContrastive'
 clustering_trainable_curvature: False
 clustering_learning_rate: 1e-3
-clustering_lr_scheduler: # 'cosine', 'linear'
+clustering_lr_scheduler: # 'cosine', 'linear', 'warmup_cosine'
+### Learning rate scheduler parameters
+lr_scheduler:
+  warmup_epochs: 100  # Number of epochs for warmup phase
+  warmup_factor: 0.1  # Initial learning rate factor (0.1 means start at 10% of target lr)
+  cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
+  cosine_cycles: 1  # Number of cosine cycles
 learnable_hyphc_weight: False
 clustering_accumulate_gradients: False
 ### Contrastive parameters
@@ -26,6 +32,7 @@ hyphc_sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'r
 hyphc_triplet_subsampling_size: 100
 lca_version: 'ours' # 'ours', 'chami'
 freeze_similarities: False
+normalized_hyphc_loss: True
 
 # Model architecture
 ae_type: 'feedforward' # 'feedforward', 'resnet18', 'resnet34'

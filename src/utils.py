@@ -119,7 +119,7 @@ def get_clustering_model(cfg: omegaconf.DictConfig,
             contrastive_temperature=cfg.contrastive_temperature,
             light_radius=cfg.light_radius,
             start_epoch=cfg.pretrain_epochs,
-            log_interval=cfg.log_interval
+            log_interval=cfg.log_interval,
         )
     elif cfg.clustering_model == 'HyperbolicHC':
         model = HyperbolicHCModel(
@@ -136,8 +136,10 @@ def get_clustering_model(cfg: omegaconf.DictConfig,
             stage='clustering',
             global_epoch=cfg.pretrain_epochs,
             learning_rate_scheduler=cfg.clustering_lr_scheduler,
+            lr_scheduler_params=cfg.lr_scheduler if hasattr(cfg, 'lr_scheduler') else None,
             learnable_hyphc_weight=cfg.learnable_hyphc_weight,
             freeze_similarities=cfg.freeze_similarities,
+            normalized_hyphc_loss=cfg.normalized_hyphc_loss,
         )
     else:
         raise ValueError("Invalid clustering model")

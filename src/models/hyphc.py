@@ -27,6 +27,8 @@ class HyperbolicHCModel(AbstractModel):
         learning_rate_scheduler: str | None = None,
         learnable_hyphc_weight: bool = False,
         freeze_similarities: bool = False,
+        normalized_hyphc_loss: bool = False,
+        lr_scheduler_params: dict | None = None,
     ):
         super().__init__(
             manifold_name=ae_model.manifold.name,
@@ -38,6 +40,7 @@ class HyperbolicHCModel(AbstractModel):
             stage=stage,
             global_epoch=global_epoch+1,
             learning_rate_scheduler=learning_rate_scheduler,
+            lr_scheduler_params=lr_scheduler_params,
         )
         self.global_epoch = start_epoch
         self.hyphc_weight = torch.nn.Parameter(torch.tensor(hyphc_weight), requires_grad=learnable_hyphc_weight)
@@ -47,6 +50,7 @@ class HyperbolicHCModel(AbstractModel):
         self.lca_version = lca_version
         self.freeze_similarities = freeze_similarities
         self.precomputed_embeddings = None
+        self.normalized_hyphc_loss = normalized_hyphc_loss
         # Load encoder, decoder, and to_tangent modules with their weights
         self.encoder = ae_model.encoder
         self.decoder = ae_model.decoder
@@ -56,7 +60,7 @@ class HyperbolicHCModel(AbstractModel):
             self.expansion = ae_model.expansion
         else:
             self.from_tangent = None
-            self.expansion = None
+            self.expansion = 1
 
         # Ensure weights are copied by loading state dict
         self.encoder.load_state_dict(ae_model.encoder.state_dict())
@@ -65,7 +69,7 @@ class HyperbolicHCModel(AbstractModel):
         
         self.orginal_input_shape = ae_model.orginal_input_shape
 
-    def sample_triplets(self, num_pts: int, device: torch.device) -> np.ndarray:
+    def sample_triplets(self, num_pts: int, device: torch.device) -> Tuple[torch.Tensor, np.ndarray]:
         """Sample triplets for the HypHC loss."""
         if self.hyphc_sampling_strategy == 'all_subsample_triplets':
             sampled_indices = torch.randperm(num_pts, device=device)[:min(self.hyphc_triplet_subsampling_size, num_pts)]
@@ -102,7 +106,7 @@ class HyperbolicHCModel(AbstractModel):
             # Gamma = subtended angle at the origin
             dist_x = self.manifold.dist_0(x)
             dist_y = self.manifold.dist_0(y)
-            dist_xy = self.manifold.dist(x, y, backproject=False)
+            dist_xy = self.manifold.dist(x, y, backproject=False) # type: ignore
 
             cosh_cx = cosh(sqrt_c * dist_x)
             cosh_cy = cosh(sqrt_c * dist_y)
@@ -310,11 +314,17 @@ class HyperbolicHCModel(AbstractModel):
             start_idx = batch_idx * batch_size
             end_idx = start_idx + batch_size
             manifold_z = self.precomputed_embeddings[start_idx:end_idx]
-        z_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = self.compute_normalized_hyphc_loss(manifold_z)
+        if self.normalized_hyphc_loss:
+            z_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = self.compute_normalized_hyphc_loss(manifold_z)
+        else:
+            z_hyphc_loss, triplet_loss, similarties_sum = self.compute_hyphc_loss(manifold_z)
         #z_aug_hyphc_loss, triplet_loss_aug, similarties_sum_aug, normalized_loss_aug = self.compute_normalized_hyphc_loss(manifold_z_aug)
         #hyphc_loss = (z_hyphc_loss + z_aug_hyphc_loss) / 2
         hyphc_loss = z_hyphc_loss
-        total_loss = recon_loss + normalized_loss * self.hyphc_weight
+        if self.normalized_hyphc_loss:
+            total_loss = recon_loss + normalized_loss * self.hyphc_weight
+        else:
+            total_loss = recon_loss + z_hyphc_loss * self.hyphc_weight
 
         # Logging
         self.metrics.setdefault("clustering/recon_loss", []).append(recon_loss)
@@ -328,11 +338,12 @@ class HyperbolicHCModel(AbstractModel):
         self.metrics.setdefault("clustering/similarties_sum", []).append(similarties_sum)
         #self.metrics.setdefault("clustering/similarties_sum_aug", []).append(similarties_sum_aug)
         self.metrics.setdefault("clustering/total_loss", []).append(total_loss)
-        self.metrics.setdefault("clustering/normalized_loss", []).append(normalized_loss)
+        if self.normalized_hyphc_loss:
+            self.metrics.setdefault("clustering/normalized_loss", []).append(normalized_loss)
         #self.metrics.setdefault("clustering/normalized_loss_aug", []).append(normalized_loss_aug)
         #self.metrics.setdefault('clustering/dist_x2x_aug', []).append(self.manifold.dist(manifold_z, manifold_z_aug).mean())
         self.metrics.setdefault('clustering/c', []).append(self.manifold.c.item())
-        self.metrics.setdefault('clustering/lr', []).append(self.optimizers().param_groups[0]['lr'])
+        self.metrics.setdefault('clustering/lr', []).append(self.optimizers().param_groups[0]['lr']) # type: ignore
         self.metrics.setdefault('clustering/hyphc_weight', []).append(self.hyphc_weight.item())
 
         for key, value in grad_norm(self, norm_type=2).items():
@@ -352,7 +363,7 @@ class HyperbolicHCModel(AbstractModel):
         all_embeddings = []
         
         with torch.no_grad():
-            for batch in self.trainer.train_dataloader:
+            for batch in self.trainer.train_dataloader: # type: ignore
                 x, _, _ = batch
                 x = x.to(self.device)
                 manifold_z, _ = self.encode(x)
