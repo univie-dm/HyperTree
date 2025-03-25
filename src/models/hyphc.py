@@ -126,7 +126,7 @@ class HyperbolicHCModel(AbstractModel):
             cos_beta -= torch.pi
 
             xy = (x * y).sum(dim=-1, keepdim=True)
-            xy_norm_prod = (x.norm(p=2, dim=-1, keepdim=True) * y.norm(p=2, dim=-1, keepdim=True)).clamp(min=1e-4)
+            xy_norm_prod = (x.norm(p=2, dim=-1, keepdim=True) * y.norm(p=2, dim=-1, keepdim=True)).clamp(min=1e-16)
             cos_gamma = xy / xy_norm_prod
 
             # Compute the lca depth w.r.t. the full geodesic
