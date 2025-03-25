@@ -120,15 +120,20 @@ class HyperbolicHCModel(AbstractModel):
             cos_alpha = (cosh_cx * cosh_cxy - cosh_cy) / (sinh_cx * sinh_cxy)
             cos_beta = (cosh_cy * cosh_cxy - cosh_cx) / (sinh_cy * sinh_cxy)
 
+            cos_alpha -= torch.floor(cos_alpha/(torch.pi*2)) * torch.pi*2
+            cos_beta -= torch.floor(cos_beta/(torch.pi*2)) * torch.pi*2
+            cos_alpha -= torch.pi
+            cos_beta -= torch.pi
+
             xy = (x * y).sum(dim=-1, keepdim=True)
-            xy_norm_prod = (x.norm(p=2, dim=-1, keepdim=True) * y.norm(p=2, dim=-1, keepdim=True)).clamp(min=1e-16)
+            xy_norm_prod = (x.norm(p=2, dim=-1, keepdim=True) * y.norm(p=2, dim=-1, keepdim=True)).clamp(min=1e-4)
             cos_gamma = xy / xy_norm_prod
 
             # Compute the lca depth w.r.t. the full geodesic
             sin_alpha = (1 - cos_alpha ** 2).clamp(min=0).sqrt()
-            # Hyperbolic law of sines
-            lca_depth = arsinh(sinh(sqrt_c * dist_x) * sin_alpha) / sqrt_c
 
+            # Hyperbolic law of sines
+            lca_depth = arsinh(sinh_cx * sin_alpha) / sqrt_c
             # Get the lca depth w.r.t. the geodesic segment between x and y
             lca_depth = torch.where(cos_alpha > 0, lca_depth, dist_x)
             lca_depth = torch.where(cos_beta > 0, lca_depth, dist_y)
