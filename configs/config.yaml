@@ -1,6 +1,7 @@
 # Training parameters
 seed: 400
 num_workers: 8
+precision: single # 'single', 'double'
 batch_size: 512
 overwrite: False
 learning_rate: 3e-3

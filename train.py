@@ -24,7 +24,14 @@ def main(cfg: DictConfig) -> None:
         seed_everything(cfg.seed)
     else:
         print("Warning: Running without setting seed!", flush=True)
-    torch.set_float32_matmul_precision('medium')
+    if cfg.precision == 'single':
+        torch.set_float32_matmul_precision('medium')
+        torch.set_default_dtype(torch.float32)
+    elif cfg.precision == 'double':
+        torch.set_float32_matmul_precision('high')
+        torch.set_default_dtype(torch.float64)
+    else:
+        raise ValueError(f"Precision {cfg.precision} not supported")
 
     warnings.filterwarnings("ignore", ".*is smaller than the logging interval Trainer.*")
 

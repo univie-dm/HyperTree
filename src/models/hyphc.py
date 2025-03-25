@@ -106,7 +106,7 @@ class HyperbolicHCModel(AbstractModel):
             # Gamma = subtended angle at the origin
             dist_x = self.manifold.dist_0(x)
             dist_y = self.manifold.dist_0(y)
-            dist_xy = self.manifold.dist(x, y, backproject=False) # type: ignore
+            dist_xy = self.manifold.dist(x, y, backproject=True) # type: ignore
 
             cosh_cx = cosh(sqrt_c * dist_x)
             cosh_cy = cosh(sqrt_c * dist_y)
@@ -183,42 +183,45 @@ class HyperbolicHCModel(AbstractModel):
         device = embeddings.device
 
         # Sample triplets
-        sampled_indices, np_sampled_triplet_indices = self.sample_triplets(n, device)
+        sampled_indices, triplet_indices = self.sample_triplets(n, device)
+        sampled_embeddings = embeddings[sampled_indices]
+        i, j, k = triplet_indices[:, 0], triplet_indices[:, 1], triplet_indices[:, 2]
 
         # Compute the pairwise distances
-        distances = compute_pairwise_distances(embeddings[sampled_indices, :], self.manifold)
-        similarties = torch.reciprocal(1 + distances)
-        similarties_sum = similarties.sum()
+        distances = compute_pairwise_distances(sampled_embeddings, self.manifold)
+        similarities = torch.reciprocal(1 + distances)
+        similarities_sum = similarities.sum()
 
         # Compute the pairwise lcas
         if self.lca_version == 'ours':
-            lcas = self.compute_lca_depth(embeddings[sampled_indices, :])
+            lcas = self.compute_lca_depth(sampled_embeddings)
         elif self.lca_version == 'chami':
-            lcas = self.compute_lca_depth_chami(embeddings[sampled_indices, :])
+            lcas = self.compute_lca_depth_chami(sampled_embeddings)
         else:
             raise ValueError(f"Invalid LCA version: {self.lca_version}")
 
-        # Keep track of the storage of triplets
-        lookup_table = {idx: pos for pos,idx in enumerate(sampled_indices.cpu().numpy())}
-        _i, _j, _k = np_sampled_triplet_indices.T
-        i = np.vectorize(lookup_table.get)(_i)
-        j = np.vectorize(lookup_table.get)(_j)
-        k = np.vectorize(lookup_table.get)(_k)
+        indices_map = torch.full((n,), -1, dtype=torch.long, device=device)
+        indices_map[sampled_indices] = torch.arange(sampled_indices.size(0), device=device)
+        
+        # Map triplet indices to positions
+        i_pos = indices_map[i]
+        j_pos = indices_map[j]
+        k_pos = indices_map[k]
 
         # Compute the scaled safe softmax of the lcas
-        lca_triplets = torch.stack((lcas[i,j], lcas[i,k], lcas[j,k]), dim=1)
+        lca_triplets = torch.stack((lcas[i_pos, j_pos], lcas[i_pos, k_pos], lcas[j_pos, k_pos]), dim=1)
         lca_triplet_max, _ = torch.max(lca_triplets, dim=1, keepdim=True)
         scaled_softmax = torch.exp((lca_triplets - lca_triplet_max) / self.hyphc_temperature)
         scaled_softmax = scaled_softmax / scaled_softmax.sum(dim=1, keepdim=True)
 
         # Compute the triplet loss for the subsampled triplets
-        sim_stack = torch.stack((similarties[i,j], similarties[i,k], similarties[j,k]), dim=1)
+        sim_stack = torch.stack((similarities[i_pos, j_pos], similarities[i_pos, k_pos], similarities[j_pos, k_pos]), dim=1)
         triplet_loss = torch.sum(sim_stack * (1 - scaled_softmax))
 
         # Compute total loss
-        total_loss = triplet_loss + 2 * similarties_sum
+        total_loss = triplet_loss + 2 * similarities_sum
 
-        return total_loss, triplet_loss, similarties_sum
+        return total_loss, triplet_loss, similarities_sum
     
 
     def compute_normalized_hyphc_loss(self, embeddings: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:

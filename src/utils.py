@@ -24,6 +24,7 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "batch_size" : cfg.batch_size,
         "selected_classes" : cfg.dataset.selected_classes,
         "dataset_subset" : cfg.dataset.subset,
+        "precision" : cfg.precision,
         # TODO: add more identifier for saving runs
     }
     return md5(str(attr).encode()).hexdigest()
