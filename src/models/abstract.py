@@ -9,6 +9,8 @@ from pytorch_lightning.loggers import WandbLogger
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from sklearn.metrics.pairwise import cosine_similarity
+
+from src.models.utils import dendrogram_purity
 from ..hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
 from ..hyperbolic_math.src.utils.helpers import compute_pairwise_distances, get_delta
 from ..hyperbolic_math.src.utils.vis_utils import create_figure
@@ -156,20 +158,26 @@ class AbstractModel(pl.LightningModule):
                 all_labels_np = all_labels.cpu().numpy()
 
                 # Compute the pairwise distances
-                dist_cos_sim = 1 - cosine_similarity(all_euclidean_np)
-                dist_geodesic = compute_pairwise_distances(all_embeddings, self.manifold).cpu().numpy()
+                #dist_cos_sim = 1 - cosine_similarity(all_euclidean_np)
+                #dist_geodesic = compute_pairwise_distances(all_embeddings, self.manifold).cpu().numpy()
 
                 # Perform complete linkage clustering
-                agglomerative_clustering = AgglomerativeClustering(
-                    n_clusters=len(np.unique(all_labels_np)),
-                    metric='precomputed',
-                    linkage='complete'
-                )
+                #agglomerative_clustering = AgglomerativeClustering(
+                #    n_clusters=len(np.unique(all_labels_np)),
+                #    metric='precomputed',
+                #    linkage='complete'
+                #)
 
                 # Perform clustering with the different pairwise distances
-                pred_labels_cos_sim  = agglomerative_clustering.fit_predict(dist_cos_sim)
-                nmi_cos_sim = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim)
-                ari_cos_sim = adjusted_rand_score(all_labels_np, pred_labels_cos_sim)
+                #pred_labels_cos_sim  = agglomerative_clustering.fit_predict(dist_cos_sim)
+                #nmi_cos_sim = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim)
+                #ari_cos_sim = adjusted_rand_score(all_labels_np, pred_labels_cos_sim)
+                
+                dp_score = dendrogram_purity(all_embeddings, all_labels, self.manifold, "complete")
+        
+                # Compute hierarchical purity metrics
+                #purity_metrics = compute_hierarchical_purity(embeddings, labels, self.manifold, "single")
+                
                 # Create embeddings plot
                 fig = create_figure(all_embeddings, manifold=self.manifold, labels=all_labels_np)
 
@@ -183,14 +191,17 @@ class AbstractModel(pl.LightningModule):
                 self.metrics.setdefault("test/diam_hyp", []).append(diam_hyp.item())
                 self.metrics.setdefault("test/rel_delta_hyp", []).append(rel_delta_hyp.item())
                 ## Cosine similarity clustering
-                self.metrics.setdefault("test/nmi_cos_sim", []).append(nmi_cos_sim)
-                self.metrics.setdefault("test/ari_cos_sim", []).append(ari_cos_sim)
+                #self.metrics.setdefault("test/nmi_cos_sim", []).append(nmi_cos_sim)
+                #self.metrics.setdefault("test/ari_cos_sim", []).append(ari_cos_sim)
+                
+                self.metrics.setdefault("test/dp_score", []).append(dp_score)
+                #self.metrics.setdefault("test/purity_metrics", []).append(purity_metrics)
 
                 ## NMI and ARI delta
-                self.metrics.setdefault("test/nmi_delta", []).append(nmi_cos_sim - self.old_nmi)
-                self.metrics.setdefault("test/ari_delta", []).append(ari_cos_sim - self.old_ari)
-                self.old_nmi = nmi_cos_sim
-                self.old_ari = ari_cos_sim
+                #self.metrics.setdefault("test/nmi_delta", []).append(nmi_cos_sim - self.old_nmi)
+                #self.metrics.setdefault("test/ari_delta", []).append(ari_cos_sim - self.old_ari)
+                #self.old_nmi = nmi_cos_sim
+                #self.old_ari = ari_cos_sim
                 ## Hyperbolic Embedding plot
                 self.metrics["test/Hyperbolic Embeddings"] = wandb.Image(fig)
                 plt.close()
