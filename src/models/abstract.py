@@ -158,22 +158,55 @@ class AbstractModel(pl.LightningModule):
                 all_labels_np = all_labels.cpu().numpy()
 
                 # Compute the pairwise distances
-                #dist_cos_sim = 1 - cosine_similarity(all_euclidean_np)
-                #dist_geodesic = compute_pairwise_distances(all_embeddings, self.manifold).cpu().numpy()
+                dist_cos_sim = 1 - cosine_similarity(all_euclidean_np)
+                dist_geodesic = compute_pairwise_distances(all_embeddings, self.manifold).cpu().numpy()
 
                 # Perform complete linkage clustering
-                #agglomerative_clustering = AgglomerativeClustering(
-                #    n_clusters=len(np.unique(all_labels_np)),
-                #    metric='precomputed',
-                #    linkage='complete'
-                #)
-
+                agglomerative_clustering_complete = AgglomerativeClustering(
+                    n_clusters=len(np.unique(all_labels_np)),
+                    metric='precomputed',
+                    linkage='complete'
+                )
+                agglomerative_clustering_single = AgglomerativeClustering(
+                    n_clusters=len(np.unique(all_labels_np)),
+                    metric='precomputed',
+                    linkage='single'
+                )
+                agglomerative_clustering_average = AgglomerativeClustering(
+                    n_clusters=len(np.unique(all_labels_np)),
+                    metric='precomputed',
+                    linkage='average'
+                )
                 # Perform clustering with the different pairwise distances
-                #pred_labels_cos_sim  = agglomerative_clustering.fit_predict(dist_cos_sim)
-                #nmi_cos_sim = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim)
-                #ari_cos_sim = adjusted_rand_score(all_labels_np, pred_labels_cos_sim)
+                pred_labels_cos_sim  = agglomerative_clustering_complete.fit_predict(dist_cos_sim)
+                nmi_cos_sim = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim)
+                ari_cos_sim = adjusted_rand_score(all_labels_np, pred_labels_cos_sim)
+
+                pred_labels_geodesic = agglomerative_clustering_complete.fit_predict(dist_geodesic)
+                nmi_geodesic = normalized_mutual_info_score(all_labels_np, pred_labels_geodesic)
+                ari_geodesic = adjusted_rand_score(all_labels_np, pred_labels_geodesic)
+
+                pred_labels_cos_sim_single = agglomerative_clustering_single.fit_predict(dist_cos_sim)
+                nmi_cos_sim_single = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim_single)
+                ari_cos_sim_single = adjusted_rand_score(all_labels_np, pred_labels_cos_sim_single)
+
+                pred_labels_geodesic_single = agglomerative_clustering_single.fit_predict(dist_geodesic)
+                nmi_geodesic_single = normalized_mutual_info_score(all_labels_np, pred_labels_geodesic_single)
+                ari_geodesic_single = adjusted_rand_score(all_labels_np, pred_labels_geodesic_single)
+
+                pred_labels_cos_sim_average = agglomerative_clustering_average.fit_predict(dist_cos_sim)
+                nmi_cos_sim_average = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim_average)
+                ari_cos_sim_average = adjusted_rand_score(all_labels_np, pred_labels_cos_sim_average)
+
+                pred_labels_geodesic_average = agglomerative_clustering_average.fit_predict(dist_geodesic)
+                nmi_geodesic_average = normalized_mutual_info_score(all_labels_np, pred_labels_geodesic_average)
+                ari_geodesic_average = adjusted_rand_score(all_labels_np, pred_labels_geodesic_average)
+
                 
-                dp_score = dendrogram_purity(all_embeddings, all_labels, self.manifold, "complete")
+                dp_score_ward = dendrogram_purity(all_embeddings, all_labels, self.manifold, "ward")
+                dp_score_single = dendrogram_purity(all_embeddings, all_labels, self.manifold, "single")
+                dp_score_complete = dendrogram_purity(all_embeddings, all_labels, self.manifold, "complete")
+                dp_score_average = dendrogram_purity(all_embeddings, all_labels, self.manifold, "average")
         
                 # Compute hierarchical purity metrics
                 #purity_metrics = compute_hierarchical_purity(embeddings, labels, self.manifold, "single")
@@ -191,10 +224,23 @@ class AbstractModel(pl.LightningModule):
                 self.metrics.setdefault("test/diam_hyp", []).append(diam_hyp.item())
                 self.metrics.setdefault("test/rel_delta_hyp", []).append(rel_delta_hyp.item())
                 ## Cosine similarity clustering
-                #self.metrics.setdefault("test/nmi_cos_sim", []).append(nmi_cos_sim)
-                #self.metrics.setdefault("test/ari_cos_sim", []).append(ari_cos_sim)
-                
-                self.metrics.setdefault("test/dp_score", []).append(dp_score)
+                self.metrics.setdefault("test/nmi_cos_sim_complete", []).append(nmi_cos_sim)
+                self.metrics.setdefault("test/ari_cos_sim_complete", []).append(ari_cos_sim)
+                self.metrics.setdefault("test/nmi_cos_sim_single", []).append(nmi_cos_sim_single)
+                self.metrics.setdefault("test/ari_cos_sim_single", []).append(ari_cos_sim_single)
+                self.metrics.setdefault("test/nmi_cos_sim_average", []).append(nmi_cos_sim_average)
+                self.metrics.setdefault("test/ari_cos_sim_average", []).append(ari_cos_sim_average)
+                ## Geodesic clustering
+                self.metrics.setdefault("test/nmi_geodesic_complete", []).append(nmi_geodesic)
+                self.metrics.setdefault("test/ari_geodesic_complete", []).append(ari_geodesic)
+                self.metrics.setdefault("test/nmi_geodesic_single", []).append(nmi_geodesic_single)
+                self.metrics.setdefault("test/ari_geodesic_single", []).append(ari_geodesic_single)
+                self.metrics.setdefault("test/nmi_geodesic_average", []).append(nmi_geodesic_average)
+                self.metrics.setdefault("test/ari_geodesic_average", []).append(ari_geodesic_average)
+                self.metrics.setdefault("test/dp_score_ward", []).append(dp_score_ward)
+                self.metrics.setdefault("test/dp_score_single", []).append(dp_score_single)
+                self.metrics.setdefault("test/dp_score_complete", []).append(dp_score_complete)
+                self.metrics.setdefault("test/dp_score_average", []).append(dp_score_average)
                 #self.metrics.setdefault("test/purity_metrics", []).append(purity_metrics)
 
                 ## NMI and ARI delta

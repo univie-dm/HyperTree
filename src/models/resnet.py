@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from typing import Tuple
-from torchvision.models import resnet18, resnet34
+from torchvision.models import resnet18, resnet34, resnet50
 from src.models.abstract import AbstractModel
 
 
@@ -86,6 +86,8 @@ class HyperbolicResNet(AbstractModel):
             self.encoder = resnet18(weights=None)
         elif type == 'resnet34':
             self.encoder = resnet34(weights=None)
+        elif type == 'resnet50':
+            self.encoder = resnet50(weights=None)
         else:
             raise ValueError(f"Invalid model type: {type}")
 
