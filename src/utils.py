@@ -91,7 +91,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
         raise NotImplementedError("Convolutional autoencoder not implemented yet")
     elif cfg.ae_type == 'variational':
         raise NotImplementedError("Variational autoencoder not implemented yet")
-    elif cfg.ae_type == 'resnet18' or cfg.ae_type == 'resnet34':
+    elif cfg.ae_type in ['resnet18', 'resnet34', 'resnet50']:
         model = HyperbolicResNet(
             type=cfg.ae_type,
             manifold_name=cfg.manifold_name,
