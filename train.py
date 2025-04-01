@@ -57,9 +57,7 @@ def main(cfg: DictConfig) -> None:
     print("Finished pretraining", flush=True)
     print("Starting clustering", flush=True)
     
-    accumulate_grad_batches = 1
-    if cfg.clustering_accumulate_gradients:
-        accumulate_grad_batches = len(datamodule.train_dataloader())
+    accumulate_grad_batches = max(1, min(cfg.clustering_accumulate_gradients, len(datamodule.train_dataloader())))
 
     clustering_model = get_clustering_model(cfg, pretrain_model)
     trainer = pl.Trainer(logger=logger,
@@ -68,7 +66,7 @@ def main(cfg: DictConfig) -> None:
                          accelerator='auto',
                          deterministic=True,
                          enable_checkpointing=False,
-                         accumulate_grad_batches=accumulate_grad_batches,
+                         accumulate_grad_batches=(accumulate_grad_batches),
                          )
     trainer.fit(clustering_model, datamodule)
     wandb.finish()

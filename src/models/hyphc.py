@@ -29,6 +29,7 @@ class HyperbolicHCModel(AbstractModel):
         freeze_similarities: bool = False,
         normalized_hyphc_loss: bool = False,
         lr_scheduler_params: dict | None = None,
+        distances_type: str = 'geodesic',
     ):
         super().__init__(
             manifold_name=ae_model.manifold.name,
@@ -51,6 +52,7 @@ class HyperbolicHCModel(AbstractModel):
         self.freeze_similarities = freeze_similarities
         self.precomputed_embeddings = None
         self.normalized_hyphc_loss = normalized_hyphc_loss
+        self.distances_type = distances_type
         # Load encoder, decoder, and to_tangent modules with their weights
         self.encoder = ae_model.encoder
         self.decoder = ae_model.decoder
@@ -237,9 +239,15 @@ class HyperbolicHCModel(AbstractModel):
         sampled_indices, np_sampled_triplet_indices = self.sample_triplets(n, device)
 
         # Compute the pairwise distances
+        if self.distances_type == 'geodesic':
+            distances = compute_pairwise_distances(embeddings[sampled_indices, :], self.manifold)
+            similarties = torch.reciprocal(1 + distances)
+        elif self.distances_type == 'cosine_similarity':
+            distances = torch.nn.functional.cosine_similarity(embeddings[sampled_indices, :], embeddings[sampled_indices, :], dim=-1)
+            similarties = distances
+        else:
+            raise ValueError(f"Invalid distances type: {self.distances_type}")
 
-        distances = compute_pairwise_distances(embeddings[sampled_indices, :], self.manifold)
-        similarties = torch.reciprocal(1 + distances)
 
         similarties_sum = similarties.sum()
 

@@ -21,7 +21,7 @@ lr_scheduler:
   cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
   cosine_cycles: 1  # Number of cosine cycles
 learnable_hyphc_weight: False
-clustering_accumulate_gradients: False
+clustering_accumulate_gradients: 1
 ### Contrastive parameters
 contrastive_weight: 1.0
 contrastive_temperature: 0.05
@@ -34,6 +34,7 @@ hyphc_triplet_subsampling_size: 100
 lca_version: 'ours' # 'ours', 'chami'
 freeze_similarities: False
 normalized_hyphc_loss: True
+distances_type: 'geodesic' # 'geodesic', 'cosine_similarity'
 
 # Model architecture
 ae_type: 'feedforward' # 'feedforward', 'resnet18', 'resnet34'
