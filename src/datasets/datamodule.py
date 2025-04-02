@@ -34,7 +34,7 @@ class ColorDataModule(pl.LightningDataModule):
 
     def __init__(
         self,
-        dataset_name: Literal["cifar10", "cifar100", "cifar100_20", "gtsrb"] = "cifar10",
+        dataset_name: Literal["cifar10", "cifar100", "cifar100_20", "gtsrb", "imagenet"] = "cifar10",
         data_dir: str = './data',
         batch_size: int = 256,
         resize: Optional[int] = None,
@@ -52,6 +52,7 @@ class ColorDataModule(pl.LightningDataModule):
             "cifar10": datasets.CIFAR10,
             "cifar100": datasets.CIFAR100,
             "gtsrb": datasets.GTSRB,
+            "imagenet": datasets.ImageNet,
         }
         self.train_dataset = None
         self.test_dataset = None
@@ -72,10 +73,24 @@ class ColorDataModule(pl.LightningDataModule):
         base_transforms = [transforms.ToTensor()]
         if self.dataset_name == "gtsrb":
             # Force resize for GTSRB to handle inconsistent image sizes
-            base_transforms.insert(0, transforms.Resize((32, 32)))
+            base_transforms = [transforms.Resize((32, 32))] + base_transforms
             temp_dataset = dataset_class(self.data_dir, split='train',
                                          transform=transforms.Compose(base_transforms),
                                          download=True)
+        elif self.dataset_name == "imagenet":
+            # ImageNet specific preprocessing
+            base_transforms = [
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+            ]
+            try:
+                temp_dataset = dataset_class(self.data_dir, train=True,
+                                           transform=transforms.Compose(base_transforms))
+            except Exception as e:
+                print(f"Error loading ImageNet dataset: {e}")
+                print("Please make sure you have downloaded the ImageNet dataset to the specified data directory.")
+                raise
         else:
             temp_dataset = dataset_class(self.data_dir, train=True,
                                          transform=transforms.Compose(base_transforms,), download=True)
@@ -88,23 +103,42 @@ class ColorDataModule(pl.LightningDataModule):
         transform_list.extend([transforms.ToTensor(), normalize_fn])
         base_transform = transforms.Compose(transform_list)
 
-        aug_transform = transforms.Compose([
-            *transform_list[:-2],
-            transforms.RandomResizedCrop((self.resize, self.resize) if self.resize else (32, 32)),
-            transforms.RandomApply([
-                transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
-                p=0.8),
-            transforms.RandomGrayscale(p=0.2),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomSolarize(threshold=0.5, p=0.2),
-            transforms.ToTensor(),
-            normalize_fn
-        ])
+        # ImageNet specific augmentation
+        if self.dataset_name == "imagenet":
+            aug_transform = transforms.Compose([
+                transforms.RandomResizedCrop(224, scale=(0.08, 1.0)),
+                transforms.RandomHorizontalFlip(),
+                transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
+                transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
+                transforms.ToTensor(),
+                normalize_fn
+            ])
+        else:
+            aug_transform = transforms.Compose([
+                *transform_list[:-2],
+                transforms.RandomResizedCrop((self.resize, self.resize) if self.resize else (32, 32)),
+                transforms.RandomApply([
+                    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
+                    p=0.8),
+                transforms.RandomGrayscale(p=0.2),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomSolarize(threshold=0.5, p=0.2),
+                transforms.ToTensor(),
+                normalize_fn
+            ])
 
         # here we go again
         if self.dataset_name == "gtsrb":
             base_train = dataset_class(self.data_dir, split='train', transform=None, download=True)
             base_test = dataset_class(self.data_dir, split='test', transform=None, download=True)
+        elif self.dataset_name == "imagenet":
+            try:
+                base_train = dataset_class(self.data_dir, split='train', transform=None)
+                base_test = dataset_class(self.data_dir, split='val', transform=None)
+            except Exception as e:
+                print(f"Error loading ImageNet dataset: {e}")
+                print("Please make sure you have downloaded the ImageNet dataset to the specified data directory.")
+                raise
         else:
             base_train = dataset_class(self.data_dir, train=True, transform=None)
             base_test = dataset_class(self.data_dir, train=False, transform=None)
@@ -139,10 +173,15 @@ class ColorDataModule(pl.LightningDataModule):
         else:
             dataset = self.train_dataset
         
+        if dataset is None:
+            raise RuntimeError("Dataset not initialized. Please call setup() first.")
+            
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True,
                           num_workers=self.num_workers)
 
     def test_dataloader(self) -> DataLoader:
+        if self.test_dataset is None:
+            raise RuntimeError("Dataset not initialized. Please call setup() first.")
         return DataLoader(self.test_dataset, batch_size=self.batch_size,
                           num_workers=self.num_workers)
 
@@ -205,6 +244,11 @@ class ColorDataModule(pl.LightningDataModule):
 
             return {i: (fine_labels[i], coarse_labels[fine_to_coarse[fine_labels[i]]])
                     for i in range(len(fine_labels))}
+        # For ImageNet:
+        elif self.dataset_name == "imagenet":
+            # ImageNet class names are not directly available in torchvision
+            # You would need to load them from a separate file or use a mapping
+            return None
         else:
             return None
 

@@ -1,0 +1,6 @@
+name: 'imagenet'
+subset: 'all'
+data_dir: './data'
+resize: 224  # Standard ImageNet size
+channels: 3
+selected_classes:
