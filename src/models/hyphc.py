@@ -30,6 +30,8 @@ class HyperbolicHCModel(AbstractModel):
         normalized_hyphc_loss: bool = False,
         lr_scheduler_params: dict | None = None,
         distances_type: str = 'geodesic',
+        clustering_adam_momentum: Tuple[float, float] = (0.9, 0.999),
+        hyperbolic_dist_sum_loss: bool = True,
     ):
         super().__init__(
             manifold_name=ae_model.manifold.name,
@@ -70,6 +72,17 @@ class HyperbolicHCModel(AbstractModel):
         self.to_tangent.load_state_dict(ae_model.to_tangent.state_dict())
         
         self.orginal_input_shape = ae_model.orginal_input_shape
+        self.clustering_adam_momentum = clustering_adam_momentum
+        self.hyperbolic_dist_sum_loss = hyperbolic_dist_sum_loss
+
+
+    def configure_optimizers(self):
+        if isinstance(self.clustering_adam_momentum, list):
+            betas: Tuple[float, float] = (self.clustering_adam_momentum[0], self.clustering_adam_momentum[1])
+        else:
+            betas = self.clustering_adam_momentum
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate, betas=betas)
+        return optimizer
 
     def sample_triplets(self, num_pts: int, device: torch.device) -> Tuple[torch.Tensor, np.ndarray]:
         """Sample triplets for the HypHC loss."""
@@ -279,11 +292,16 @@ class HyperbolicHCModel(AbstractModel):
         sim_stack2_min, _ = torch.min(sim_stack2, dim=1, keepdim=False)
         triplet_loss = torch.sum(sim_stack * (1 - scaled_softmax))
         
-        scale_min = sim_stack2_min.sum() + 2 * similarties_sum
-        scale_max = sim_stack2_max.sum() + 2 * similarties_sum
+        scale_min = sim_stack2_min.sum()
+        scale_max = sim_stack2_max.sum()
+        if self.hyperbolic_dist_sum_loss:
+            scale_min += 2 * similarties_sum
+            scale_max += 2 * similarties_sum
 
         # Compute total loss
-        total_loss = triplet_loss + 2 * similarties_sum
+        total_loss = triplet_loss
+        if self.hyperbolic_dist_sum_loss:
+            total_loss += 2 * similarties_sum
         normalized_loss = (total_loss - scale_min) / (scale_max - scale_min)
 
         self.metrics.setdefault("clustering/scale_min", []).append(scale_min)

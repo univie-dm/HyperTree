@@ -13,6 +13,7 @@ clustering_epochs: 500
 clustering_model: 'HyperbolicHC' # 'HyperbolicHC', 'HyperbolicContrastive'
 clustering_trainable_curvature: False
 clustering_learning_rate: 1e-3
+clustering_adam_momentum: [0.9, 0.999]
 clustering_lr_scheduler: # 'cosine', 'linear', 'warmup_cosine'
 ### Learning rate scheduler parameters
 lr_scheduler:
@@ -35,6 +36,7 @@ lca_version: 'ours' # 'ours', 'chami'
 freeze_similarities: False
 normalized_hyphc_loss: True
 distances_type: 'geodesic' # 'geodesic', 'cosine_similarity'
+hyperbolic_dist_sum_loss: True
 
 # Model architecture
 ae_type: 'feedforward' # 'feedforward', 'resnet18', 'resnet34'

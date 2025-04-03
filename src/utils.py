@@ -141,6 +141,8 @@ def get_clustering_model(cfg: omegaconf.DictConfig,
             learnable_hyphc_weight=cfg.learnable_hyphc_weight,
             freeze_similarities=cfg.freeze_similarities,
             normalized_hyphc_loss=cfg.normalized_hyphc_loss,
+            clustering_adam_momentum=cfg.clustering_adam_momentum,
+            hyperbolic_dist_sum_loss=cfg.hyperbolic_dist_sum_loss,
         )
     else:
         raise ValueError("Invalid clustering model")
