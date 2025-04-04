@@ -1,0 +1,6 @@
+name: 'cifar100_20'
+subset: 'all'
+data_dir: './data'
+resize: 32
+channels: 3
+selected_classes:  # Optional: specify which of the 20 coarse classes to use 

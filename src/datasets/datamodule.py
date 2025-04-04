@@ -51,6 +51,7 @@ class ColorDataModule(pl.LightningDataModule):
         self.dataset_map = {
             "cifar10": datasets.CIFAR10,
             "cifar100": datasets.CIFAR100,
+            "cifar100_20": datasets.CIFAR100,
             "gtsrb": datasets.GTSRB,
             "imagenet": datasets.ImageNet,
         }
@@ -206,7 +207,7 @@ class ColorDataModule(pl.LightningDataModule):
             fine_labels = datasets.CIFAR10(self.data_dir, train=False).classes
             return {i: (fine_labels[i], None) for i in range(len(fine_labels))}
         # For CIFAR100:
-        elif self.dataset_name == "cifar100":
+        elif self.dataset_name in ["cifar100", "cifar100_20"]:
             fine_labels = datasets.CIFAR100(self.data_dir, train=False).classes
 
             # CIFAR100 superclass mapping
@@ -242,8 +243,13 @@ class ColorDataModule(pl.LightningDataModule):
                 'lawn_mower': 19, 'rocket': 19, 'streetcar': 19, 'tank': 19, 'tractor': 19
             }
 
-            return {i: (fine_labels[i], coarse_labels[fine_to_coarse[fine_labels[i]]])
-                    for i in range(len(fine_labels))}
+            if self.dataset_name == "cifar100_20":
+                # For CIFAR100_20, we only return the coarse labels
+                return {i: (coarse_labels[i], None) for i in range(len(coarse_labels))}
+            else:
+                # For regular CIFAR100, return both fine and coarse labels
+                return {i: (fine_labels[i], coarse_labels[fine_to_coarse[fine_labels[i]]])
+                        for i in range(len(fine_labels))}
         # For ImageNet:
         elif self.dataset_name == "imagenet":
             # ImageNet class names are not directly available in torchvision
