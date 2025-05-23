@@ -10,8 +10,6 @@ from omegaconf import DictConfig
 from threadpoolctl import threadpool_limits
 from src.utils import get_datamodule, get_pretrain_model, get_clustering_model, get_model_path, get_logger
 
-from icecream import install
-install()
 
 
 

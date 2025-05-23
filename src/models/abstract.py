@@ -167,11 +167,11 @@ class AbstractModel(pl.LightningModule):
                     metric='precomputed',
                     linkage='complete'
                 )
-                agglomerative_clustering_single = AgglomerativeClustering(
-                    n_clusters=len(np.unique(all_labels_np)),
-                    metric='precomputed',
-                    linkage='single'
-                )
+                # agglomerative_clustering_single = AgglomerativeClustering(
+                #     n_clusters=len(np.unique(all_labels_np)),
+                #     metric='precomputed',
+                #     linkage='single'
+                # )
                 agglomerative_clustering_average = AgglomerativeClustering(
                     n_clusters=len(np.unique(all_labels_np)),
                     metric='precomputed',
@@ -212,7 +212,7 @@ class AbstractModel(pl.LightningModule):
                 #purity_metrics = compute_hierarchical_purity(embeddings, labels, self.manifold, "single")
                 
                 # Create embeddings plot
-                fig = create_figure(all_embeddings, manifold=self.manifold, labels=all_labels_np)
+                fig = create_figure(all_embeddings, self.manifold, labels=all_labels_np)
 
                 # Log the metrics
                 ## Euclidean hyperbolicity
