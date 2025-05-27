@@ -2,9 +2,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
+from scipy.cluster.hierarchy import linkage
+from scipy.spatial.distance import squareform
 
 from sklearn.manifold import TSNE
-from typing import Type
+from typing import Union, Optional
 from src.hyperbolic_math.src.manifolds import Manifold
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 
@@ -28,138 +30,201 @@ def create_label_mapping(all_embeddings_np, all_labels_np, class_names, label_ty
         label_mapping = {label: str(label) for label in np.unique(all_labels_np)}
 
 
-def dendrogram_purity(embeddings, labels, manifold=None, linkage_method='average'):
+def dendrogram_purity(
+    embeddings_or_distances: Union[np.ndarray, torch.Tensor],
+    labels: Union[np.ndarray, torch.Tensor],
+    # Replace 'Any' with Union[Euclidean, Hyperboloid, PoincareBall] or your base Manifold class if available
+    manifold: Optional[Manifold] = None, 
+    linkage_method: str = 'average'
+) -> float:
     """
     Compute the dendrogram purity for hierarchical clustering evaluation.
-    
+    This version iterates through merges in the linkage matrix for efficiency.
+
+    The purity is defined as the sum of purities of the clusters where each
+    same-class pair first merges, divided by the total number of same-class pairs.
+
     Args:
-        embeddings (torch.Tensor or np.ndarray): Hyperbolic embeddings of shape (n_samples, embedding_dim)
-        labels (torch.Tensor or np.ndarray): Ground truth labels of shape (n_samples,)
-        manifold (Manifold, optional): The hyperbolic manifold used for distance computation.
-            If None, assumes embeddings are already in the form of a distance matrix.
-        linkage_method (str, optional): The linkage method for hierarchical clustering.
-            Options: 'single', 'complete', 'average', 'ward'. Default: 'average'.
-            
+        embeddings_or_distances (Union[np.ndarray, torch.Tensor]):
+            - Embeddings of shape (n_samples, embedding_dim).
+            - OR a precomputed square distance matrix of shape (n_samples, n_samples).
+            - OR a precomputed condensed distance matrix (1D array).
+        labels (Union[np.ndarray, torch.Tensor]): Ground truth labels of shape (n_samples,).
+        manifold (Optional[Any]): The manifold object (e.g., PoincareBall, Euclidean)
+            used for distance computation if embeddings are provided. If None,
+            and embeddings_or_distances is 2D and square, it's assumed to be a
+            Euclidean distance matrix. If embeddings are NxD (D!=N) and manifold is None,
+            Euclidean distances will be computed.
+        linkage_method (str): The linkage method for hierarchical clustering
+            (e.g., 'single', 'complete', 'average', 'ward').
+
     Returns:
-        float: Dendrogram purity score (between 0 and 1)
+        float: Dendrogram purity score (between 0 and 1).
     """
-    import torch
-    import numpy as np
-    from scipy.cluster.hierarchy import linkage, fcluster
-    from scipy.spatial.distance import squareform
-    
-    # Convert inputs to numpy arrays if they are torch tensors
-    if isinstance(embeddings, torch.Tensor):
-        embeddings = embeddings.detach().cpu().numpy()
+
     if isinstance(labels, torch.Tensor):
-        labels = labels.detach().cpu().numpy()
-    
-    # Compute pairwise distances if a manifold is provided
-    if manifold is not None:
-        if not isinstance(embeddings, torch.Tensor):
-            embeddings = torch.tensor(embeddings, device=manifold.c.device)
-        distances = compute_pairwise_distances(embeddings, manifold).detach().cpu().numpy()
+        labels_np = labels.detach().cpu().numpy()
+    elif isinstance(labels, np.ndarray):
+        labels_np = labels
     else:
-        # Assume embeddings is already a distance matrix
-        distances = embeddings
-    
-    # Ensure the distance matrix is symmetric
-    if not np.allclose(distances, distances.T):
-        distances = (distances + distances.T) / 2
-    
-    # Convert distance matrix to condensed form for scipy
-    condensed_distances = squareform(distances)
-    
-    # Perform hierarchical clustering
+        # Attempt conversion for other list-like inputs, e.g. Python lists
+        try:
+            labels_np = np.array(labels)
+        except Exception as e:
+            raise TypeError(f"Labels could not be converted to a NumPy array: {e}")
+
+
+    num_samples = len(labels_np)
+
+    if num_samples < 2: # Purity is typically 1.0 for less than 2 samples.
+        return 1.0
+
+    if isinstance(embeddings_or_distances, torch.Tensor):
+        input_data_np = embeddings_or_distances.detach().cpu().numpy()
+    elif isinstance(embeddings_or_distances, np.ndarray):
+        input_data_np = embeddings_or_distances
+    else:
+        raise TypeError("embeddings_or_distances must be a NumPy array or PyTorch Tensor.")
+
+    condensed_distances = None
+    if input_data_np.ndim == 1:
+        # Assume it's a condensed distance matrix
+        expected_condensed_size = num_samples * (num_samples - 1) // 2
+        if input_data_np.shape[0] == expected_condensed_size:
+            condensed_distances = input_data_np
+        else:
+            raise ValueError(
+                f"Input is 1D but not a valid condensed distance matrix for {num_samples} samples. "
+                f"Expected size {expected_condensed_size}, got {input_data_np.shape[0]}."
+            )
+    elif input_data_np.ndim == 2:
+        if input_data_np.shape[0] != num_samples:
+            raise ValueError(
+                f"Input is 2D, but number of rows ({input_data_np.shape[0]}) "
+                f"does not match number of labels ({num_samples}). Expected (N, D) embeddings or (N, N) distance matrix."
+            )
+        
+        if manifold is not None: # Assumed to be embeddings (N, D)
+            # Determine device for manifold computation, fallback to CPU
+            # This assumes manifold.c exists and is a tensor, or manifold has parameters.
+            # A more direct way might be to check manifold type or pass device explicitly.
+            target_device = 'cpu'
+            if hasattr(manifold, 'c') and isinstance(manifold.c, torch.Tensor):
+                target_device = manifold.c.device
+            elif hasattr(manifold, 'parameters'):
+                try:
+                    target_device = next(manifold.parameters()).device
+                except StopIteration: # No parameters
+                    pass
+            
+            if isinstance(embeddings_or_distances, torch.Tensor):
+                embeddings_for_manifold = embeddings_or_distances.to(target_device)
+            else: # Was numpy, convert to tensor for manifold computation
+                embeddings_for_manifold = torch.tensor(input_data_np, dtype=torch.float32, device=target_device) # Assuming float32
+            
+            square_dist_matrix = compute_pairwise_distances(embeddings_for_manifold, manifold).detach().cpu().numpy()
+            # Ensure symmetry, as numerical precision can sometimes lead to tiny differences
+            if not np.allclose(square_dist_matrix, square_dist_matrix.T, atol=1e-7):
+                 square_dist_matrix = (square_dist_matrix + square_dist_matrix.T) / 2.0
+            condensed_distances = squareform(square_dist_matrix, checks=False) # checks=False as we symmetrized
+        
+        else: # No manifold: could be NxD embeddings (use Euclidean) or NxN distance matrix
+            if input_data_np.shape[0] == input_data_np.shape[1]: # Square matrix (NxN), assume it's a distance matrix
+                square_dist_matrix = input_data_np
+                if not np.allclose(square_dist_matrix, square_dist_matrix.T, atol=1e-7):
+                     square_dist_matrix = (square_dist_matrix + square_dist_matrix.T) / 2.0
+                condensed_distances = squareform(square_dist_matrix, checks=False)
+            else: # NxD embeddings, D!=N, compute Euclidean distances
+                # Using sklearn for robust Euclidean distance calculation
+                from sklearn.metrics.pairwise import euclidean_distances 
+                square_dist_matrix = euclidean_distances(input_data_np)
+                # euclidean_distances result is already symmetric
+                condensed_distances = squareform(square_dist_matrix, checks=False)
+    else:
+        raise ValueError("embeddings_or_distances must be a 1D (condensed distance matrix) or 2D (embeddings or square distance matrix) array.")
+
+    if condensed_distances is None:
+        # This should ideally be caught by earlier checks.
+        raise ValueError("Could not determine or compute a condensed distance matrix from the input.")
+
+    # Perform hierarchical clustering using the condensed distance matrix
     Z = linkage(condensed_distances, method=linkage_method)
+
+    # cluster_to_samples_map: maps cluster ID to the set of original sample indices it contains.
+    # Leaf nodes (original samples) are IDs 0 to num_samples-1.
+    # Internal nodes (formed by merges in Z) will get IDs from num_samples upwards.
+    cluster_to_samples_map = {i: {i} for i in range(num_samples)}
     
-    # Compute dendrogram purity
-    num_samples = len(labels)
-    unique_labels = np.unique(labels)
+    # pair_purity_contributions: stores the purity for each same-class pair
+    # when they are first merged. Key: sorted tuple (original_sample_idx1, original_sample_idx2).
+    pair_purity_contributions = {}
     
-    # Create a mapping from label to a list of sample indices with that label
-    label_to_samples = {label: np.where(labels == label)[0] for label in unique_labels}
-    
-    # Compute same-class pairs
-    same_class_pairs = []
-    for label in unique_labels:
-        samples = label_to_samples[label]
-        if len(samples) > 1:
-            pairs = [(i, j) for i in samples for j in samples if i < j]
-            same_class_pairs.extend(pairs)
-    
-    if not same_class_pairs:
-        return 1.0  # Perfect purity if no same-class pairs
-    
-    # More direct approach using scipy's flat cluster assignments
-    total_purity = 0.0
-    n_pairs = len(same_class_pairs)
-    
-    # Use a range of different cluster counts to simulate different levels of the hierarchy
-    # Start with many clusters (almost like leaves) and gradually merge them
-    max_k = min(num_samples, 100)  # Don't go beyond number of samples
-    ks = [max(2, max_k - i*5) for i in range(20)]  # Different levels
-    ks = sorted(list(set(ks)))  # Remove duplicates and sort
-    
-    # Keep track of which pairs have been processed
-    processed_pairs = set()
-    
-    for k in ks:
-        # Get cluster assignments for this level of the hierarchy
-        cluster_assignments = fcluster(Z, t=k, criterion='maxclust')
+    # Iterate through each merge operation in the linkage matrix Z.
+    # Each row m in Z represents a merge. Z has (num_samples - 1) rows.
+    # Z[m, 0] and Z[m, 1] are the IDs of the clusters being merged.
+    # The new cluster formed by merge m gets ID (num_samples + m).
+    for m in range(Z.shape[0]):
+        merged_cluster_id_1 = int(Z[m, 0])
+        merged_cluster_id_2 = int(Z[m, 1])
         
-        # Create a mapping from cluster ID to its members
-        clusters = {}
-        for i, cluster_id in enumerate(cluster_assignments):
-            if cluster_id not in clusters:
-                clusters[cluster_id] = []
-            clusters[cluster_id].append(i)
+        samples_in_cluster_1 = cluster_to_samples_map[merged_cluster_id_1]
+        samples_in_cluster_2 = cluster_to_samples_map[merged_cluster_id_2]
         
-        # Compute purity for each cluster
-        cluster_purities = {}
-        for cluster_id, members in clusters.items():
-            # Count occurrences of each label in this cluster
-            label_counts = {}
-            for member in members:
-                label = labels[member]
-                label_counts[label] = label_counts.get(label, 0) + 1
+        newly_merged_samples_set = samples_in_cluster_1.union(samples_in_cluster_2)
+        new_cluster_id = num_samples + m # Assign a new ID to the merged cluster
+        cluster_to_samples_map[new_cluster_id] = newly_merged_samples_set
+        
+        # Calculate purity of this newly formed cluster
+        labels_of_samples_in_new_cluster = labels_np[list(newly_merged_samples_set)]
+        
+        purity_of_new_cluster = 0.0
+        if labels_of_samples_in_new_cluster.size > 0:
+            # np.unique also returns counts, which is efficient
+            _unique_cluster_labels, counts_in_cluster = np.unique(labels_of_samples_in_new_cluster, return_counts=True)
+            if counts_in_cluster.size > 0: # Ensure there are counts (i.e., cluster is not empty)
+                purity_of_new_cluster = np.max(counts_in_cluster) / len(labels_of_samples_in_new_cluster)
             
-            # Compute purity as ratio of most common label
-            max_count = max(label_counts.values()) if label_counts else 0
-            purity = max_count / len(members)
-            cluster_purities[cluster_id] = purity
+        # Attribute this purity to same-class pairs brought together by THIS merge
+        # These are pairs where one sample is from cluster_1 and the other from cluster_2
+        for s1_idx in samples_in_cluster_1:
+            for s2_idx in samples_in_cluster_2:
+                if labels_np[s1_idx] == labels_np[s2_idx]:
+                    # Ensure consistent key order for the pair
+                    pair_key = tuple(sorted((s1_idx, s2_idx)))
+                    # This pair is formed by this merge. Since we iterate merges
+                    # from bottom up (smallest distance first), this is where they first meet.
+                    # We only store the purity of the cluster at their first meeting point.
+                    if pair_key not in pair_purity_contributions: # Should always be true with this iterative structure
+                         pair_purity_contributions[pair_key] = purity_of_new_cluster
         
-        # For each same-class pair, if they're in the same cluster at this level, 
-        # add the purity to our total
-        remaining_pairs = []
-        for i, j in same_class_pairs:
-            if (i, j) in processed_pairs:
-                continue
-                
-            cluster_i = cluster_assignments[i]
-            cluster_j = cluster_assignments[j]
-            
-            if cluster_i == cluster_j:
-                total_purity += cluster_purities[cluster_i]
-                processed_pairs.add((i, j))
-            else:
-                remaining_pairs.append((i, j))
-        
-        # Update the list of pairs to process
-        same_class_pairs = remaining_pairs
-        
-        # If all pairs are processed, we're done
-        if not same_class_pairs:
-            break
+        # Optional: Clean up map entries for already merged clusters to save memory,
+        # especially if num_samples is very large.
+        del cluster_to_samples_map[merged_cluster_id_1]
+        del cluster_to_samples_map[merged_cluster_id_2]
+
+    # Calculate the total number of actual same-class pairs in the dataset
+    total_actual_same_class_pairs = 0
+    _unique_true_labels, true_label_counts = np.unique(labels_np, return_counts=True)
+    for count in true_label_counts:
+        # For a class with 'count' samples, there are count * (count - 1) / 2 pairs
+        total_actual_same_class_pairs += count * (count - 1) // 2
+
+    if total_actual_same_class_pairs == 0:
+        # If there are no same-class pairs (e.g., all samples belong to unique classes,
+        # or num_samples < 2 where no pairs can be formed), dendrogram purity is conventionally 1.0.
+        return 1.0
+
+    # Sum of purities for all unique same-class pairs, each considered once at their merge point.
+    sum_of_contributed_purities = sum(pair_purity_contributions.values())
     
-    # If there are any remaining pairs, assign them a default low purity value
-    # This happens if some pairs are never in the same cluster even at the root
-    if same_class_pairs:
-        for _ in same_class_pairs:
-            total_purity += 0.5  # A reasonable default value
+    # The number of entries in pair_purity_contributions should ideally equal total_actual_same_class_pairs
+    # if the hierarchy is complete and all same-class pairs are eventually merged into some cluster.
+    # If some same-class pairs are never in the same cluster (e.g. due to linkage issues or disconnected components),
+    # they won't contribute to sum_of_contributed_purities. The definition of purity might vary in such cases.
+    # This definition assumes they contribute 0 if not merged, which is implicitly handled.
     
-    # Return average purity
-    return total_purity / n_pairs
+    return sum_of_contributed_purities / total_actual_same_class_pairs
+
 
 
 def get_samples_in_cluster(Z, cluster_idx, num_samples):
