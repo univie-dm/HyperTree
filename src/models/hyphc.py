@@ -124,53 +124,42 @@ class HyperbolicHCModel(AbstractModel):
         return sampled_indices, np_sampled_triplet_indices
 
     def compute_lca_depth(self, points: torch.Tensor, batch_size: int=1_000) -> torch.Tensor:
-        """Corrected implementation of Chami et al.'s (2020) LCA depth computation."""
+        """Generalized and corrected implementation of Chami et al.'s (2020) LCA depth computation using inverse geometry."""
         device = points.device
-        sqrt_c = self.manifold.c.sqrt()
         lcas = torch.zeros((points.shape[0], points.shape[0]), dtype=points.dtype).to(device)
         indices = torch.triu_indices(points.shape[0], points.shape[0], 1).to(device)
         while indices.shape[1] > 0:
             x = points[indices[0,:batch_size], :]
             y = points[indices[1,:batch_size], :]
 
-            # Compute the cosine of all angles within the triangle {origin,x,y}
-            # Alpha = subtended angle at x
-            # Beta = subtended angle at y
-            # Gamma = subtended angle at the origin
-            dist_x = self.manifold.dist_0(x)
-            dist_y = self.manifold.dist_0(y)
-            dist_xy = self.manifold.dist(x, y, backproject=True) # type: ignore
-
-            cosh_cx = cosh(sqrt_c * dist_x)
-            cosh_cy = cosh(sqrt_c * dist_y)
-            cosh_cxy = cosh(sqrt_c * dist_xy)
-
-            sinh_cx = sinh(sqrt_c * dist_x)
-            sinh_cy = sinh(sqrt_c * dist_y)
-            sinh_cxy = sinh(sqrt_c * dist_xy)
-
-            # Hyperbolic law of cosines
-            cos_alpha = (cosh_cx * cosh_cxy - cosh_cy) / (sinh_cx * sinh_cxy)
-            cos_beta = (cosh_cy * cosh_cxy - cosh_cx) / (sinh_cy * sinh_cxy)
-
-            cos_alpha -= torch.floor(cos_alpha/(torch.pi*2)) * torch.pi*2
-            cos_beta -= torch.floor(cos_beta/(torch.pi*2)) * torch.pi*2
-            cos_alpha -= torch.pi
-            cos_beta -= torch.pi
-
+            # Compute the center of geodesic circle Gamma through x and y
+            x2 = x.pow(2).sum(dim=-1, keepdim=True)
+            y2 = y.pow(2).sum(dim=-1, keepdim=True)
             xy = (x * y).sum(dim=-1, keepdim=True)
-            xy_norm_prod = (x.norm(p=2, dim=-1, keepdim=True) * y.norm(p=2, dim=-1, keepdim=True)).clamp(min=1e-16)
-            cos_gamma = xy / xy_norm_prod
 
-            # Compute the lca depth w.r.t. the full geodesic
-            sin_alpha = (1 - cos_alpha ** 2).clamp(min=0).sqrt()
+            denom = 2 * self.manifold.c * (x2 * y2 - xy ** 2)
+            alpha = ((1 + self.manifold.c * x2) * y2 - (1 + self.manifold.c * y2) * xy) / denom
+            beta = ((1 + self.manifold.c * y2) * x2 - (1 + self.manifold.c * x2) * xy) / denom
+            z = alpha * x + beta * y
 
-            # Hyperbolic law of sines
-            lca_depth = arsinh(sinh_cx * sin_alpha) / sqrt_c
+            # Compute the lca and its distance to the origin w.r.t. the full geodesic
+            z2 = z.pow(2).sum(dim=-1, keepdim=True)
+            lca = (1 - (z2 - 1/self.manifold.c).sqrt() / z.norm(p=2, dim=-1, keepdim=True)) * z
+            lca_depth = self.manifold.dist_0(lca)
+
+            # Compute the cosine of the angles at the origin in the triangles {x, origin, c}, {y, origin, c}  {x, origin, y}
+            xlca = (x * lca).sum(dim=-1, keepdim=True)
+            ylca = (y * lca).sum(dim=-1, keepdim=True)
+            lca_norm = lca.norm(p=2, dim=-1, keepdim=True)
+
+            cos_x0c = xlca / (x2.sqrt() * lca_norm).clamp(min=1e-16)
+            cos_y0c = ylca / (y2.sqrt() * lca_norm).clamp(min=1e-16)
+            cos_x0y = xy / (x2.sqrt() * y2.sqrt()).clamp(min=1e-16)
+
             # Get the lca depth w.r.t. the geodesic segment between x and y
-            lca_depth = torch.where(cos_alpha > 0, lca_depth, dist_x)
-            lca_depth = torch.where(cos_beta > 0, lca_depth, dist_y)
-            lca_depth = torch.where(cos_gamma == -1, torch.zeros_like(lca_depth), lca_depth)
+            condition = torch.logical_or(torch.logical_or(cos_x0y > cos_x0c, cos_x0y > cos_y0c), cos_x0y == 1) # True iff the lca lies outside
+            lca_depth = torch.where(condition, torch.min(self.manifold.dist_0(x), self.manifold.dist_0(y)), lca_depth)
+            lca_depth = torch.where(cos_x0y == -1, torch.zeros_like(lca_depth), lca_depth) # Handle antipodal points
 
             lca_depth = lca_depth.reshape(-1)
             lcas[indices[0,:batch_size], indices[1,:batch_size]] = lca_depth
