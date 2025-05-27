@@ -86,7 +86,11 @@ class ColorDataModule(pl.LightningDataModule):
                 transforms.ToTensor(),
             ]
             try:
-                temp_dataset = dataset_class(self.data_dir, train=True,
+                if dataset_class == datasets.ImageNet:
+                    temp_dataset = dataset_class(self.data_dir, split='train',
+                                           transform=transforms.Compose(base_transforms))
+                else:
+                    temp_dataset = dataset_class(self.data_dir, train=True,
                                            transform=transforms.Compose(base_transforms))
             except Exception as e:
                 print(f"Error loading ImageNet dataset: {e}")

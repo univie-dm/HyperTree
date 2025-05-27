@@ -22,7 +22,7 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "pretrain_trainable_curvature" : cfg.pretrain_trainable_curvature,
         "dataset_name" : cfg.dataset.name,
         "batch_size" : cfg.batch_size,
-        "selected_classes" : cfg.dataset.selected_classes,
+        "selected_classes" : cfg.dataset.get('selected_classes', None),
         "dataset_subset" : cfg.dataset.subset,
         "precision" : cfg.precision,
         # TODO: add more identifier for saving runs
@@ -93,7 +93,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
         raise NotImplementedError("Variational autoencoder not implemented yet")
     elif cfg.ae_type in ['resnet18', 'resnet34', 'resnet50']:
         model = HyperbolicResNet(
-            type=cfg.ae_type,
+            model_type=cfg.ae_type,
             manifold_name=cfg.manifold_name,
             curvature_magnitude=cfg.curvature_magnitude,
             trainable_curvature=cfg.pretrain_trainable_curvature,
@@ -109,7 +109,10 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
     return model
 
 def get_clustering_model(cfg: omegaconf.DictConfig,
-                         pretrain_model:  Union[HyperbolicAE, HyperbolicResNet]
+                         pretrain_model:  Union[HyperbolicAE, HyperbolicResNet],
+                         use_contrastive_loss: bool = False,
+                         contrastive_weight: float = 0.5,
+                         contrastive_temperature: float = 0.05,
                          ) -> Union[HyperbolicContrastiveModel, HyperbolicHCModel]:
     if cfg.clustering_model == 'HyperbolicContrastive':
         model = HyperbolicContrastiveModel(
@@ -143,6 +146,9 @@ def get_clustering_model(cfg: omegaconf.DictConfig,
             normalized_hyphc_loss=cfg.normalized_hyphc_loss,
             clustering_adam_momentum=cfg.clustering_adam_momentum,
             hyperbolic_dist_sum_loss=cfg.hyperbolic_dist_sum_loss,
+            use_contrastive_loss=use_contrastive_loss,
+            contrastive_weight=contrastive_weight,
+            contrastive_temperature=contrastive_temperature,
         )
     else:
         raise ValueError("Invalid clustering model")

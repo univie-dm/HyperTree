@@ -15,6 +15,8 @@ clustering_trainable_curvature: False
 clustering_learning_rate: 1e-3
 clustering_adam_momentum: [0.9, 0.999]
 clustering_lr_scheduler: # 'cosine', 'linear', 'warmup_cosine'
+use_contrastive_loss: False # Whether to use contrastive loss during clustering
+contrastive_weight: 1.0 # Weight for contrastive loss when used with reconstruction
 ### Learning rate scheduler parameters
 lr_scheduler:
   warmup_epochs: 100  # Number of epochs for warmup phase
@@ -24,7 +26,6 @@ lr_scheduler:
 learnable_hyphc_weight: False
 clustering_accumulate_gradients: 1
 ### Contrastive parameters
-contrastive_weight: 1.0
 contrastive_temperature: 0.05
 light_radius: 0.1
 ### HypHC parameters

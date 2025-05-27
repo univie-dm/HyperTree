@@ -57,7 +57,7 @@ class DecoderBlock(nn.Module):
 class HyperbolicResNet(AbstractModel):
     def __init__(
         self,
-        type: str = 'resnet18',
+        model_type: str = 'resnet18',
         manifold_name: str = 'PoincareBall',
         curvature_magnitude: float = 1.0,
         trainable_curvature: bool = False,
@@ -75,21 +75,21 @@ class HyperbolicResNet(AbstractModel):
             learning_rate=learning_rate,
             log_interval=log_interval
         )
-        self.type = type
+        self.model_type: str = model_type
         self.input_channels = input_channels
         # Decoder params
         self.expansion = 1
         self.inplanes = 512 * self.expansion
 
         # Encoder
-        if type == 'resnet18':
+        if model_type == 'resnet18':
             self.encoder = resnet18(weights=None)
-        elif type == 'resnet34':
+        elif model_type == 'resnet34':
             self.encoder = resnet34(weights=None)
-        elif type == 'resnet50':
+        elif model_type == 'resnet50':
             self.encoder = resnet50(weights=None)
         else:
-            raise ValueError(f"Invalid model type: {type}")
+            raise ValueError(f"Invalid model type: {model_type}")
 
         # Modify first conv layer to accept different number of input channels
         self.encoder.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
@@ -108,6 +108,17 @@ class HyperbolicResNet(AbstractModel):
                 nn.Conv2d(64, input_channels, kernel_size=3, stride=1, padding=1, bias=False),
                 nn.Tanh()
             )
+        elif output_size == 224:  # For ImageNet
+            self.decoder = nn.Sequential(
+                self._make_decoder_layer(256, 2, scale=2),  # 8x8
+                self._make_decoder_layer(128, 2, scale=2),  # 16x16
+                self._make_decoder_layer(64, 2, scale=2),   # 32x32
+                self._make_decoder_layer(32, 2, scale=2),   # 64x64
+                self._make_decoder_layer(16, 2, scale=2),   # 128x128
+                self._make_decoder_layer(8, 2, scale=1.75), # 224x224
+                nn.Conv2d(8, input_channels, kernel_size=3, stride=1, padding=1, bias=False),
+                nn.Tanh()
+            )
         else:  # For 32x32 images
             self.decoder = nn.Sequential(
                 self._make_decoder_layer(256, 2, scale=2),  # 8x8
@@ -117,7 +128,7 @@ class HyperbolicResNet(AbstractModel):
                 nn.Tanh()
             )
 
-    def _make_decoder_layer(self, planes: int, blocks: int, scale: float=1) -> nn.Sequential:
+    def _make_decoder_layer(self, planes: int, blocks: int, scale: float = 1) -> nn.Sequential:
         upsample = None
         if scale != 1 or self.inplanes != planes:
             upsample = nn.Sequential(

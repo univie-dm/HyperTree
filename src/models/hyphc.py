@@ -32,6 +32,10 @@ class HyperbolicHCModel(AbstractModel):
         distances_type: str = 'geodesic',
         clustering_adam_momentum: Tuple[float, float] = (0.9, 0.999),
         hyperbolic_dist_sum_loss: bool = True,
+        use_contrastive_loss: bool = False,
+        contrastive_weight: float = 0.5,
+        contrastive_temperature: float = 0.05,
+        projection_dim: int = 128,
     ):
         super().__init__(
             manifold_name=ae_model.manifold.name,
@@ -55,6 +59,20 @@ class HyperbolicHCModel(AbstractModel):
         self.precomputed_embeddings = None
         self.normalized_hyphc_loss = normalized_hyphc_loss
         self.distances_type = distances_type
+        self.use_contrastive_loss = use_contrastive_loss
+        self.contrastive_weight = contrastive_weight
+        self.contrastive_temperature = contrastive_temperature
+        
+        # Add projection head for contrastive learning
+        if self.use_contrastive_loss:
+            self.projection_head = torch.nn.Sequential(
+                torch.nn.Linear(self.latent_dim, self.latent_dim),
+                torch.nn.ReLU(),
+                torch.nn.Linear(self.latent_dim, projection_dim)
+            )
+        else:
+            self.projection_head = None
+
         # Load encoder, decoder, and to_tangent modules with their weights
         self.encoder = ae_model.encoder
         self.decoder = ae_model.decoder
@@ -294,14 +312,17 @@ class HyperbolicHCModel(AbstractModel):
         
         scale_min = sim_stack2_min.sum()
         scale_max = sim_stack2_max.sum()
+        sim_sum = 0
+
         if self.hyperbolic_dist_sum_loss:
-            scale_min += 2 * similarties_sum
-            scale_max += 2 * similarties_sum
+            sim_sum = similarties_sum
+        
+        scale_min += 2 * sim_sum
+        scale_max += 2 * sim_sum
 
         # Compute total loss
-        total_loss = triplet_loss
-        if self.hyperbolic_dist_sum_loss:
-            total_loss += 2 * similarties_sum
+        total_loss = triplet_loss        
+        total_loss += 2 * sim_sum
         normalized_loss = (total_loss - scale_min) / (scale_max - scale_min)
 
         self.metrics.setdefault("clustering/scale_min", []).append(scale_min)
@@ -330,54 +351,72 @@ class HyperbolicHCModel(AbstractModel):
         x_recon = x_recon.view(-1, *self.orginal_input_shape)
         return x_recon
 
+    def compute_contrastive_loss(self, embeddings: torch.Tensor) -> torch.Tensor:
+        """Compute contrastive loss between embeddings."""
+        # Project embeddings through projection head
+        if self.projection_head is not None:
+            embeddings = self.projection_head(embeddings)
+        
+        # Normalize embeddings
+        embeddings = F.normalize(embeddings, p=2, dim=-1)
+        
+        # Compute similarity matrix
+        sim_matrix = torch.matmul(embeddings, embeddings.t())
+        
+        # Create labels for positive pairs (diagonal)
+        labels = torch.arange(embeddings.size(0), device=embeddings.device)
+        
+        # Compute logits
+        logits = sim_matrix / self.contrastive_temperature
+        
+        # Compute cross entropy loss
+        loss = F.cross_entropy(logits, labels)
+        
+        return loss
+
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug, x, _ = batch
         x_recon, manifold_z, _ = self(x)
-        #x_aug_recon, manifold_z_aug, _ = self(x_aug)
 
         # Reconstruction loss
         x_recon_loss = F.mse_loss(x_recon, x)
-        #x_aug_recon_loss = F.mse_loss(x_aug_recon, x_aug)
-        #recon_loss = (x_recon_loss + x_aug_recon_loss) / 2
         recon_loss = x_recon_loss
 
         # HypHC loss
         if self.precomputed_embeddings is not None:
-            # Calculate indices for current batch
             batch_size = x.size(0)
             start_idx = batch_idx * batch_size
             end_idx = start_idx + batch_size
             manifold_z = self.precomputed_embeddings[start_idx:end_idx]
+        
         if self.normalized_hyphc_loss:
             z_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = self.compute_normalized_hyphc_loss(manifold_z)
         else:
             z_hyphc_loss, triplet_loss, similarties_sum = self.compute_hyphc_loss(manifold_z)
-        #z_aug_hyphc_loss, triplet_loss_aug, similarties_sum_aug, normalized_loss_aug = self.compute_normalized_hyphc_loss(manifold_z_aug)
-        #hyphc_loss = (z_hyphc_loss + z_aug_hyphc_loss) / 2
+        
         hyphc_loss = z_hyphc_loss
-        if self.normalized_hyphc_loss:
-            total_loss = recon_loss + normalized_loss * self.hyphc_weight
-        else:
-            total_loss = recon_loss + z_hyphc_loss * self.hyphc_weight
+
+        # Compute total loss
+        total_loss = recon_loss + hyphc_loss * self.hyphc_weight
+
+        # Add contrastive loss if enabled
+        if self.use_contrastive_loss:
+            contrastive_loss = self.compute_contrastive_loss(manifold_z)
+            total_loss = total_loss + contrastive_loss * self.contrastive_weight
+            self.metrics.setdefault("clustering/contrastive_loss", []).append(contrastive_loss)
 
         # Logging
         self.metrics.setdefault("clustering/recon_loss", []).append(recon_loss)
         self.metrics.setdefault("clustering/x_recon_loss", []).append(x_recon_loss)
-        #self.metrics.setdefault("clustering/x_aug_recon_loss", []).append(x_aug_recon_loss)
         self.metrics.setdefault("clustering/hyphc_loss", []).append(hyphc_loss)
         self.metrics.setdefault("clustering/z_hyphc_loss", []).append(z_hyphc_loss)
-        #self.metrics.setdefault("clustering/z_aug_hyphc_loss", []).append(z_aug_hyphc_loss)
         self.metrics.setdefault("clustering/triplet_loss", []).append(triplet_loss)
-        #self.metrics.setdefault("clustering/triplet_loss_aug", []).append(triplet_loss_aug)
         self.metrics.setdefault("clustering/similarties_sum", []).append(similarties_sum)
-        #self.metrics.setdefault("clustering/similarties_sum_aug", []).append(similarties_sum_aug)
         self.metrics.setdefault("clustering/total_loss", []).append(total_loss)
         if self.normalized_hyphc_loss:
             self.metrics.setdefault("clustering/normalized_loss", []).append(normalized_loss)
-        #self.metrics.setdefault("clustering/normalized_loss_aug", []).append(normalized_loss_aug)
-        #self.metrics.setdefault('clustering/dist_x2x_aug', []).append(self.manifold.dist(manifold_z, manifold_z_aug).mean())
         self.metrics.setdefault('clustering/c', []).append(self.manifold.c.item())
-        self.metrics.setdefault('clustering/lr', []).append(self.optimizers().param_groups[0]['lr']) # type: ignore
+        self.metrics.setdefault('clustering/lr', []).append(self.optimizers().param_groups[0]['lr'])
         self.metrics.setdefault('clustering/hyphc_weight', []).append(self.hyphc_weight.item())
 
         for key, value in grad_norm(self, norm_type=2).items():

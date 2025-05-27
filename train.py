@@ -59,7 +59,10 @@ def main(cfg: DictConfig) -> None:
     
     accumulate_grad_batches = max(1, min(cfg.clustering_accumulate_gradients, len(datamodule.train_dataloader())))
 
-    clustering_model = get_clustering_model(cfg, pretrain_model)
+    clustering_model = get_clustering_model(cfg, pretrain_model, 
+                                          use_contrastive_loss=cfg.use_contrastive_loss,
+                                          contrastive_weight=cfg.contrastive_weight,
+                                          contrastive_temperature=cfg.contrastive_temperature)
     trainer = pl.Trainer(logger=logger,
                          max_epochs=cfg.clustering_epochs,
                          devices='auto',
