@@ -22,10 +22,10 @@ def main(cfg: DictConfig) -> None:
         seed_everything(cfg.seed)
     else:
         print("Warning: Running without setting seed!", flush=True)
-    if cfg.precision == 'single':
+    if cfg.precision == 'float32':
         torch.set_float32_matmul_precision('medium')
         torch.set_default_dtype(torch.float32)
-    elif cfg.precision == 'double':
+    elif cfg.precision == 'float64':
         torch.set_float32_matmul_precision('high')
         torch.set_default_dtype(torch.float64)
     else:

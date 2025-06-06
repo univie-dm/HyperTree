@@ -12,13 +12,16 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from src.models.utils import dendrogram_purity
 from ..hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
+from ..hyperbolic_math.src.optim import RiemannianAdam
 from ..hyperbolic_math.src.utils.helpers import compute_pairwise_distances, get_delta
 from ..hyperbolic_math.src.utils.vis_utils import create_figure
+
 
 class AbstractModel(pl.LightningModule):
     def __init__(
         self,
         manifold_name: str = 'PoincareBall',
+        manifold_precision: str = 'float32',
         curvature_magnitude: float = 1.0,
         trainable_curvature: bool = False,
         latent_dim: int = 2,
@@ -28,16 +31,22 @@ class AbstractModel(pl.LightningModule):
         global_epoch: int = 0,
         learning_rate_scheduler: str | None = None,
         lr_scheduler_params: dict | None = None,
+        model_type: str = None,
     ):
         super().__init__()
         if manifold_name == 'Euclidean' or curvature_magnitude == 0:
             self.manifold = Euclidean()
         elif manifold_name == 'Hyperboloid':
-            self.manifold = Hyperboloid(c=torch.tensor(curvature_magnitude), trainable_c=trainable_curvature)
+            self.manifold = Hyperboloid(c=torch.tensor(curvature_magnitude),
+                                        trainable_c=trainable_curvature,
+                                        dtype=manifold_precision)
         elif manifold_name == 'PoincareBall':
-            self.manifold = PoincareBall(c=torch.tensor(curvature_magnitude), trainable_c=trainable_curvature)
+            self.manifold = PoincareBall(c=torch.tensor(curvature_magnitude),
+                                         trainable_c=trainable_curvature,
+                                         dtype=manifold_precision)
         else:
             raise ValueError(f"Invalid manifold name: {manifold_name}")
+        self.manifold_precision = manifold_precision
         self.latent_dim = latent_dim
         self.learning_rate = learning_rate
         self.log_interval = log_interval
@@ -45,18 +54,19 @@ class AbstractModel(pl.LightningModule):
         self.global_epoch = global_epoch
         self.learning_rate_scheduler = learning_rate_scheduler
         self.lr_scheduler_params = lr_scheduler_params or {}
+        self.model_type = model_type
         self.metrics = {}
         self.euclidean_manifold = Euclidean() # for logging
         self.old_nmi = 0
         self.old_ari = 0
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        manifold_z, tangent_z = self.encode(x)
+        manifold_z = self.encode(x)
         x_recon = self.decode(manifold_z)
-        return x_recon, manifold_z, tangent_z
+        return x_recon, manifold_z
 
     def configure_optimizers(self) -> Any:
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+        optimizer = RiemannianAdam(self.parameters(), lr=self.learning_rate)
         if self.learning_rate_scheduler is None:
             return optimizer
         elif self.learning_rate_scheduler == 'cosine':
@@ -125,7 +135,7 @@ class AbstractModel(pl.LightningModule):
             }
         else:
             raise ValueError(f"Invalid learning rate scheduler: {self.learning_rate_scheduler}")
-    
+
     def evaluate(self) -> None:
         if not isinstance(self.logger, WandbLogger):
             return
@@ -134,31 +144,28 @@ class AbstractModel(pl.LightningModule):
                 test_loader = self.trainer.datamodule.test_dataloader() # type: ignore
 
                 embeddings = []
-                euclidean = []
+                embeddings_cpu = []
                 labels = []
-                tangents = []
 
                 for batch_idx, (x_aug, x, y) in enumerate(test_loader):
-                    _, z, tangent_z = self(x.to(self.device))
+                    _, z = self(x.to(self.device))
                     embeddings.append(z)
-                    euclidean.append(tangent_z)
+                    embeddings_cpu.append(z)
                     labels.append(y)
-                    tangents.append(tangent_z)
 
                 all_embeddings = torch.cat(embeddings, dim=0)
-                all_euclidean = torch.cat(euclidean, dim=0)
+                all_embeddings_cpu = torch.cat(embeddings_cpu, dim=0)
                 all_labels = torch.cat(labels, dim=0)
 
                 # Compute the delta hyperbolicity
-                delta_eucl, diam_eucl, rel_delta_eucl = get_delta(all_euclidean, self.euclidean_manifold)
                 delta_hyp, diam_hyp, rel_delta_hyp = get_delta(all_embeddings, self.manifold)
 
                 # Move to CPU for NMI and ARI calculation
-                all_euclidean_np = all_euclidean.cpu().numpy()
+                all_embeddings_np = all_embeddings_cpu.cpu().numpy()
                 all_labels_np = all_labels.cpu().numpy()
 
                 # Compute the pairwise distances
-                dist_cos_sim = 1 - cosine_similarity(all_euclidean_np)
+                dist_cos_sim = 1 - cosine_similarity(all_embeddings_np)
                 dist_geodesic = compute_pairwise_distances(all_embeddings, self.manifold).cpu().numpy()
 
                 # Perform complete linkage clustering
@@ -215,10 +222,6 @@ class AbstractModel(pl.LightningModule):
                 fig = create_figure(all_embeddings, self.manifold, labels=all_labels_np)
 
                 # Log the metrics
-                ## Euclidean hyperbolicity
-                self.metrics.setdefault("test/delta_eucl", []).append(delta_eucl.item())
-                self.metrics.setdefault("test/diam_eucl", []).append(diam_eucl.item())
-                self.metrics.setdefault("test/rel_delta_eucl", []).append(rel_delta_eucl.item())
                 ## Hyperbolic hyperbolicity
                 self.metrics.setdefault("test/delta_hyp", []).append(delta_hyp.item())
                 self.metrics.setdefault("test/diam_hyp", []).append(diam_hyp.item())
@@ -262,4 +265,3 @@ class AbstractModel(pl.LightningModule):
             self.logger.experiment.log(self.metrics, step=self.current_epoch+self.global_epoch)
         self.metrics = {}
         self.train()
-

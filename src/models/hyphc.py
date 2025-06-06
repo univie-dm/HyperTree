@@ -6,7 +6,7 @@ from lightning.pytorch.utilities import grad_norm
 from src.models.resnet import HyperbolicResNet
 from src.models.abstract import AbstractModel
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
-from src.hyperbolic_math.src.utils.math_utils import arsinh, sinh, cosh
+from src.hyperbolic_math.src.optim import RiemannianAdam
 
 
 class HyperbolicHCModel(AbstractModel):
@@ -39,6 +39,7 @@ class HyperbolicHCModel(AbstractModel):
     ):
         super().__init__(
             manifold_name=ae_model.manifold.name,
+            manifold_precision=ae_model.manifold_precision,
             curvature_magnitude=ae_model.manifold.c.clone().detach(),
             trainable_curvature=clustering_trainable_curvature,
             latent_dim=ae_model.latent_dim,
@@ -48,6 +49,7 @@ class HyperbolicHCModel(AbstractModel):
             global_epoch=global_epoch+1,
             learning_rate_scheduler=learning_rate_scheduler,
             lr_scheduler_params=lr_scheduler_params,
+            model_type=ae_model.model_type,
         )
         self.global_epoch = start_epoch
         self.hyphc_weight = torch.nn.Parameter(torch.tensor(hyphc_weight), requires_grad=learnable_hyphc_weight)
@@ -73,33 +75,32 @@ class HyperbolicHCModel(AbstractModel):
         else:
             self.projection_head = None
 
-        # Load encoder, decoder, and to_tangent modules with their weights
+        # Load encoding and decoding modules with their weights
         self.encoder = ae_model.encoder
+        self.hyperbolic_encoding_layer = ae_model.hyperbolic_encoding_layer
+        self.hyperbolic_decoding_layer = ae_model.hyperbolic_decoding_layer
         self.decoder = ae_model.decoder
-        self.to_tangent = ae_model.to_tangent
         if isinstance(ae_model, HyperbolicResNet):
-            self.from_tangent = ae_model.from_tangent
             self.expansion = ae_model.expansion
         else:
-            self.from_tangent = None
             self.expansion = 1
 
         # Ensure weights are copied by loading state dict
         self.encoder.load_state_dict(ae_model.encoder.state_dict())
+        self.hyperbolic_encoding_layer.load_state_dict(ae_model.hyperbolic_encoding_layer.state_dict())
+        self.hyperbolic_decoding_layer.load_state_dict(ae_model.hyperbolic_decoding_layer.state_dict())
         self.decoder.load_state_dict(ae_model.decoder.state_dict())
-        self.to_tangent.load_state_dict(ae_model.to_tangent.state_dict())
-        
+
         self.orginal_input_shape = ae_model.orginal_input_shape
         self.clustering_adam_momentum = clustering_adam_momentum
         self.hyperbolic_dist_sum_loss = hyperbolic_dist_sum_loss
-
 
     def configure_optimizers(self):
         if isinstance(self.clustering_adam_momentum, list):
             betas: Tuple[float, float] = (self.clustering_adam_momentum[0], self.clustering_adam_momentum[1])
         else:
             betas = self.clustering_adam_momentum
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate, betas=betas)
+        optimizer = RiemannianAdam(self.parameters(), lr=self.learning_rate, betas=betas)
         return optimizer
 
     def sample_triplets(self, num_pts: int, device: torch.device) -> Tuple[torch.Tensor, np.ndarray]:
@@ -249,7 +250,6 @@ class HyperbolicHCModel(AbstractModel):
         total_loss = triplet_loss + 2 * similarities_sum
 
         return total_loss, triplet_loss, similarities_sum
-    
 
     def compute_normalized_hyphc_loss(self, embeddings: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         n = embeddings.size(0)
@@ -267,7 +267,6 @@ class HyperbolicHCModel(AbstractModel):
             similarties = distances
         else:
             raise ValueError(f"Invalid distances type: {self.distances_type}")
-
 
         similarties_sum = similarties.sum()
 
@@ -321,22 +320,20 @@ class HyperbolicHCModel(AbstractModel):
         return total_loss, triplet_loss, similarties_sum, normalized_loss
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        if self.from_tangent is None:
+        if self.model_type == 'feedforward':
             x = x.view(x.size(0), -1)
         hidden = self.encoder(x)
-        tangent_z = self.to_tangent(hidden)
-        manifold_z = self.manifold.expmap_0(tangent_z)
-        return manifold_z, tangent_z
+        manifold_z = self.hyperbolic_encoding_layer(hidden)
+        return manifold_z
 
     def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
-        if self.from_tangent is not None:
-            tangent_z = self.manifold.logmap_0(manifold_z)
-            x = self.from_tangent(tangent_z)
+        if self.model_type == 'feedforward':
+            x_recon = self.hyperbolic_decoding_layer(manifold_z)
+            x_recon = self.decoder(x_recon)
+        else:   # 'resnet18', 'resnet34'
+            x = self.hyperbolic_decoding_layer(manifold_z)
             x = x.view(-1, 512 * self.expansion, 4, 4)
             x_recon = self.decoder(x)
-        else:
-            tangent_z = self.manifold.logmap_0(manifold_z)
-            x_recon = self.decoder(tangent_z)
         x_recon = x_recon.view(-1, *self.orginal_input_shape)
         return x_recon
 
@@ -365,7 +362,7 @@ class HyperbolicHCModel(AbstractModel):
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug, x, _ = batch
-        x_recon, manifold_z, _ = self(x)
+        x_recon, manifold_z = self(x)
 
         # Reconstruction loss
         x_recon_loss = F.mse_loss(x_recon, x)
@@ -428,9 +425,8 @@ class HyperbolicHCModel(AbstractModel):
             for batch in self.trainer.train_dataloader: # type: ignore
                 x, _, _ = batch
                 x = x.to(self.device)
-                manifold_z, _ = self.encode(x)
+                manifold_z = self.encode(x)
                 all_embeddings.append(manifold_z)
             all_embeddings = torch.cat(all_embeddings, dim=0)
             self.precomputed_embeddings = all_embeddings
         self.train()
-

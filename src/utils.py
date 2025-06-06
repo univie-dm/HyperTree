@@ -11,20 +11,26 @@ from src.models import HyperbolicContrastiveModel, HyperbolicAE, HyperbolicHCMod
 
 def get_model_path(cfg: omegaconf.DictConfig):
     attr = {
+        # Training specific attributes
         "seed" : cfg.seed,
+        "precision" : cfg.precision,
+        "batch_size" : cfg.batch_size,
+        "learning_rate" : cfg.learning_rate,
         "pretrain_epochs" : cfg.pretrain_epochs,
-        "embedding_dim" : cfg.embedding_dim,
+        "pretrain_trainable_curvature" : cfg.pretrain_trainable_curvature,
+        # Model specific attributes
         "ae_type" : cfg.ae_type,
         "hidden_dims" : cfg.hidden_dims,
-        "learning_rate" : cfg.learning_rate,
+        "embedding_dim" : cfg.embedding_dim,
+        "hyperbolic_encoding" : cfg.hyperbolic_encoding,
+        "hyperbolic_decoding" : cfg.hyperbolic_decoding,
         "manifold_name" : cfg.manifold_name,
+        "manifold_precision" : cfg.manifold_precision,
         "curvature_magnitude" : cfg.curvature_magnitude,
-        "pretrain_trainable_curvature" : cfg.pretrain_trainable_curvature,
+        # Dataset specific attributes
         "dataset_name" : cfg.dataset.name,
-        "batch_size" : cfg.batch_size,
         "selected_classes" : cfg.dataset.get('selected_classes', None),
         "dataset_subset" : cfg.dataset.subset,
-        "precision" : cfg.precision,
         # TODO: add more identifier for saving runs
     }
     return md5(str(attr).encode()).hexdigest()
@@ -78,7 +84,10 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
         model = HyperbolicAE(
             input_dim=input_dim,
             hidden_dims=cfg.hidden_dims,
+            hyperbolic_encoding=cfg.hyperbolic_encoding,
+            hyperbolic_decoding=cfg.hyperbolic_decoding,
             manifold_name=cfg.manifold_name,
+            manifold_precision=cfg.manifold_precision,
             curvature_magnitude=cfg.curvature_magnitude,
             trainable_curvature=cfg.pretrain_trainable_curvature,
             latent_dim=cfg.embedding_dim,
@@ -86,6 +95,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             log_interval=cfg.log_interval,
             stage='pretrain',
             global_epoch=0,
+            params_dtype=cfg.precision,
         )
     elif cfg.ae_type == 'convolutional':
         raise NotImplementedError("Convolutional autoencoder not implemented yet")
@@ -94,7 +104,10 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
     elif cfg.ae_type in ['resnet18', 'resnet34', 'resnet50']:
         model = HyperbolicResNet(
             model_type=cfg.ae_type,
+            hyperbolic_encoding=cfg.hyperbolic_encoding,
+            hyperbolic_decoding=cfg.hyperbolic_decoding,
             manifold_name=cfg.manifold_name,
+            manifold_precision=cfg.manifold_precision,
             curvature_magnitude=cfg.curvature_magnitude,
             trainable_curvature=cfg.pretrain_trainable_curvature,
             latent_dim=cfg.embedding_dim,
@@ -102,6 +115,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             log_interval=cfg.log_interval,
             input_channels=cfg.dataset.channels,
             output_size=cfg.dataset.resize,
+            params_dtype=cfg.precision,
         )
     else:
         raise ValueError("Invalid autoencoder type")

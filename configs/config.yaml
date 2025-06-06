@@ -1,7 +1,7 @@
 # Training parameters
 seed: 400
 num_workers: 8
-precision: single # 'single', 'double'
+precision: 'float32' # 'float32', 'float64'
 batch_size: 512
 overwrite: False
 learning_rate: 3e-3
@@ -43,7 +43,10 @@ hyperbolic_dist_sum_loss: True
 ae_type: 'feedforward' # 'feedforward', 'resnet18', 'resnet34'
 hidden_dims: [512, 256, 128, 64, 32]
 embedding_dim: 10
+hyperbolic_encoding: 'EuclideanLinear+Exp' # 'EuclideanLinear+Exp', 'HyperbolicLinear'
+hyperbolic_decoding: 'Log+EuclideanLinear' # 'Log+EuclideanLinear', 'HyperbolicLinear+Log', 'HyperbolicRegression', 'HyperbolicRegressionPP', 'HyperbolicLinearPP'
 manifold_name: 'PoincareBall' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
+manifold_precision: 'float32' # 'float16', 'float32', 'float64'
 curvature_magnitude: 1.0
 
 # Logging
