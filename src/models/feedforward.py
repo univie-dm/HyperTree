@@ -6,7 +6,7 @@ from lightning.pytorch.utilities import grad_norm
 from typing import List, Tuple
 from src.models.abstract import AbstractModel
 from src.hyperbolic_math.src.manifolds import Euclidean
-from src.hyperbolic_math.src.nn_layers import *
+from src.hyperbolic_math.src.nn_layers import Expmap_0, Logmap_0, HyperbolicLinear, HyperbolicRegressionPoincare, HyperbolicRegressionPoincarePP, HyperbolicFullyConnectedPoincarePP
 
 
 class HyperbolicAE(AbstractModel):
