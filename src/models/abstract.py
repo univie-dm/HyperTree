@@ -66,7 +66,7 @@ class AbstractModel(pl.LightningModule):
         return x_recon, manifold_z
 
     def configure_optimizers(self) -> Any:
-        optimizer = RiemannianAdam(self.parameters(), lr=self.learning_rate)
+        optimizer = RiemannianAdam(self.parameters(), lr=self.learning_rate, eps=1e-5, expmap_update=True)
         if self.learning_rate_scheduler is None:
             return optimizer
         elif self.learning_rate_scheduler == 'cosine':

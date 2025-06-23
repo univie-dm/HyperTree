@@ -7,6 +7,7 @@ from src.models.resnet import HyperbolicResNet
 from src.models.abstract import AbstractModel
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.hyperbolic_math.src.optim import RiemannianAdam
+from torchmetrics.functional.pairwise import pairwise_cosine_similarity
 
 
 class HyperbolicHCModel(AbstractModel):
@@ -257,17 +258,19 @@ class HyperbolicHCModel(AbstractModel):
 
         # Sample triplets
         sampled_indices, np_sampled_triplet_indices = self.sample_triplets(n, device)
-
         # Compute the pairwise distances
         if self.distances_type == 'geodesic':
             distances = compute_pairwise_distances(embeddings[sampled_indices, :], self.manifold)
             similarties = torch.reciprocal(1 + distances)
         elif self.distances_type == 'cosine_similarity':
-            distances = torch.nn.functional.cosine_similarity(embeddings[sampled_indices, :], embeddings[sampled_indices, :], dim=-1)
+            distances = pairwise_cosine_similarity(
+                embeddings[sampled_indices, :],
+                zero_diagonal=True,
+                reduction='none'
+            )
             similarties = distances
         else:
             raise ValueError(f"Invalid distances type: {self.distances_type}")
-
         similarties_sum = similarties.sum()
 
         # Compute the pairwise lcas

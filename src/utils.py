@@ -1,3 +1,4 @@
+from math import dist
 import omegaconf
 import os
 import torch
@@ -163,6 +164,7 @@ def get_clustering_model(cfg: omegaconf.DictConfig,
             use_contrastive_loss=use_contrastive_loss,
             contrastive_weight=contrastive_weight,
             contrastive_temperature=contrastive_temperature,
+            distances_type=cfg.distances_type,
         )
     else:
         raise ValueError("Invalid clustering model")
