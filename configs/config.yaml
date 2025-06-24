@@ -33,7 +33,7 @@ hyphc:
   loss_weight: 1.0
   temperature: 0.05
   sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'random', 'chami'
-  triplet_subsampling_size: 600
+  triplet_subsampling_size: 150
   lca_version: 'ours' # 'ours', 'chami'
   freeze_similarities: False
   normalized_loss: True
