@@ -3,6 +3,7 @@ import wandb
 import numpy as np
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
+import torch.nn as nn
 
 from typing import Tuple, Any
 from pytorch_lightning.loggers import WandbLogger
@@ -22,7 +23,7 @@ class AbstractModel(pl.LightningModule):
         self,
         manifold_name: str = 'PoincareBall',
         manifold_precision: str = 'float32',
-        curvature_magnitude: float = 1.0,
+        curvature_magnitude: float | torch.Tensor = 1.0,
         trainable_curvature: bool = False,
         latent_dim: int = 2,
         learning_rate: float = 1e-3,
@@ -31,7 +32,7 @@ class AbstractModel(pl.LightningModule):
         global_epoch: int = 0,
         learning_rate_scheduler: str | None = None,
         lr_scheduler_params: dict | None = None,
-        model_type: str = None,
+        model_type: str | None = None,
     ):
         super().__init__()
         if manifold_name == 'Euclidean' or curvature_magnitude == 0:
@@ -59,8 +60,27 @@ class AbstractModel(pl.LightningModule):
         self.euclidean_manifold = Euclidean() # for logging
         self.old_nmi = 0
         self.old_ari = 0
+        self.encoder = nn.Sequential()
+        self.decoder = nn.Sequential()
+        self.hyperbolic_encoding_layer = nn.Module()
+        self.hyperbolic_decoding_layer = nn.Module()
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Encodes the input tensor x into a manifold representation.
+        This method should be implemented by subclasses.
+        """
+        raise NotImplementedError("The encode method must be implemented by subclasses.")
+    
+    def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
+        """
+        Decodes the manifold representation back into the original input space.
+        This method should be implemented by subclasses.
+        """
+        raise NotImplementedError("The decode method must be implemented by subclasses.")
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         manifold_z = self.encode(x)
         x_recon = self.decode(manifold_z)
         return x_recon, manifold_z
@@ -210,16 +230,16 @@ class AbstractModel(pl.LightningModule):
                 #ari_geodesic_average = adjusted_rand_score(all_labels_np, pred_labels_geodesic_average)
 
                 
-                dp_score_ward = dendrogram_purity(all_embeddings, all_labels, self.manifold, "ward")
+                #dp_score_ward = dendrogram_purity(all_embeddings, all_labels, self.manifold, "ward")
                 #dp_score_single = dendrogram_purity(all_embeddings, all_labels, self.manifold, "single")
-                #dp_score_complete = dendrogram_purity(all_embeddings, all_labels, self.manifold, "complete")
+                dp_score_complete = dendrogram_purity(all_embeddings, all_labels, self.manifold, "complete")
                 #dp_score_average = dendrogram_purity(all_embeddings, all_labels, self.manifold, "average")
         
                 # Compute hierarchical purity metrics
                 #purity_metrics = compute_hierarchical_purity(embeddings, labels, self.manifold, "single")
                 
                 # Create embeddings plot
-                fig = create_figure(all_embeddings, self.manifold, labels=all_labels_np)
+                #fig = create_figure(all_embeddings, self.manifold, labels=all_labels_np)
 
                 # Log the metrics
                 ## Hyperbolic hyperbolicity
@@ -240,9 +260,9 @@ class AbstractModel(pl.LightningModule):
                 #self.metrics.setdefault("test/ari_geodesic_single", []).append(ari_geodesic_single)
                 #self.metrics.setdefault("test/nmi_geodesic_average", []).append(nmi_geodesic_average)
                 #self.metrics.setdefault("test/ari_geodesic_average", []).append(ari_geodesic_average)
-                self.metrics.setdefault("test/dp_score_ward", []).append(dp_score_ward)
+                #self.metrics.setdefault("test/dp_score_ward", []).append(dp_score_ward)
                 #self.metrics.setdefault("test/dp_score_single", []).append(dp_score_single)
-                #self.metrics.setdefault("test/dp_score_complete", []).append(dp_score_complete)
+                self.metrics.setdefault("test/dp_score_complete", []).append(dp_score_complete)
                 #self.metrics.setdefault("test/dp_score_average", []).append(dp_score_average)
                 #self.metrics.setdefault("test/purity_metrics", []).append(purity_metrics)
 
@@ -252,7 +272,7 @@ class AbstractModel(pl.LightningModule):
                 #self.old_nmi = nmi_cos_sim
                 #self.old_ari = ari_cos_sim
                 ## Hyperbolic Embedding plot
-                self.metrics["test/Hyperbolic Embeddings"] = wandb.Image(fig)
+                #self.metrics["test/Hyperbolic Embeddings"] = wandb.Image(fig)
                 plt.close()
 
     def on_train_epoch_end(self) -> None:

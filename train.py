@@ -18,24 +18,24 @@ from src.utils import get_datamodule, get_pretrain_model, get_clustering_model, 
 @threadpool_limits.wrap(limits=1, user_api="blas")
 def main(cfg: DictConfig) -> None:
     print(cfg, flush=True)
-    if cfg.seed >= 0:
-        seed_everything(cfg.seed)
+    if cfg.experiment.seed >= 0:
+        seed_everything(cfg.experiment.seed)
     else:
         print("Warning: Running without setting seed!", flush=True)
-    if cfg.precision == 'float32':
+    if cfg.architecture.precision == 'float32':
         torch.set_float32_matmul_precision('medium')
         torch.set_default_dtype(torch.float32)
-    elif cfg.precision == 'float64':
+    elif cfg.architecture.precision == 'float64':
         torch.set_float32_matmul_precision('high')
         torch.set_default_dtype(torch.float64)
     else:
-        raise ValueError(f"Precision {cfg.precision} not supported")
+        raise ValueError(f"Precision {cfg.architecture.precision} not supported")
 
     warnings.filterwarnings("ignore", ".*is smaller than the logging interval Trainer.*")
 
     logger = get_logger(cfg)
     trainer = pl.Trainer(logger=logger,
-                         max_epochs=cfg.pretrain_epochs,
+                         max_epochs=cfg.pretraining.epochs,
                          devices='auto',
                          accelerator='auto',
                          deterministic=True,
@@ -45,7 +45,7 @@ def main(cfg: DictConfig) -> None:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     pretrain_model = get_pretrain_model(cfg, input_dim)
 
-    if not os.path.exists(f"data/models/{get_model_path(cfg)}.pt") or cfg.overwrite:
+    if not os.path.exists(f"data/models/{get_model_path(cfg)}.pt") or cfg.pretraining.overwrite:
         print("Starting pretraining", flush=True)
         trainer.fit(pretrain_model, datamodule)
         torch.save(pretrain_model, f"data/models/{get_model_path(cfg)}.pt")
@@ -55,14 +55,14 @@ def main(cfg: DictConfig) -> None:
     print("Finished pretraining", flush=True)
     print("Starting clustering", flush=True)
     
-    accumulate_grad_batches = max(1, min(cfg.clustering_accumulate_gradients, len(datamodule.train_dataloader())))
+    accumulate_grad_batches = max(1, min(cfg.clustering.accumulate_gradients, len(datamodule.train_dataloader())))
 
     clustering_model = get_clustering_model(cfg, pretrain_model, 
-                                          use_contrastive_loss=cfg.use_contrastive_loss,
-                                          contrastive_weight=cfg.contrastive_weight,
-                                          contrastive_temperature=cfg.contrastive_temperature)
+                                          use_contrastive_loss=False,
+                                          contrastive_weight=0.0,
+                                          contrastive_temperature=0.0)
     trainer = pl.Trainer(logger=logger,
-                         max_epochs=cfg.clustering_epochs,
+                         max_epochs=cfg.clustering.epochs,
                          devices='auto',
                          accelerator='auto',
                          deterministic=True,

@@ -77,10 +77,10 @@ class HyperbolicHCModel(AbstractModel):
             self.projection_head = None
 
         # Load encoding and decoding modules with their weights
-        self.encoder = ae_model.encoder
-        self.hyperbolic_encoding_layer = ae_model.hyperbolic_encoding_layer
-        self.hyperbolic_decoding_layer = ae_model.hyperbolic_decoding_layer
-        self.decoder = ae_model.decoder
+        self.encoder: torch.nn.Sequential = ae_model.encoder
+        self.hyperbolic_encoding_layer: torch.nn.Module = ae_model.hyperbolic_encoding_layer
+        self.hyperbolic_decoding_layer: torch.nn.Module = ae_model.hyperbolic_decoding_layer
+        self.decoder: torch.nn.Sequential = ae_model.decoder
         if isinstance(ae_model, HyperbolicResNet):
             self.expansion = ae_model.expansion
         else:
@@ -139,14 +139,14 @@ class HyperbolicHCModel(AbstractModel):
             y2 = y.pow(2).sum(dim=-1, keepdim=True)
             xy = (x * y).sum(dim=-1, keepdim=True)
 
-            denom = 2 * self.manifold.c * (x2 * y2 - xy ** 2)
+            denom = (2 * self.manifold.c * (x2 * y2 - xy ** 2)).clamp(min=1e-15)
             alpha = ((1 + self.manifold.c * x2) * y2 - (1 + self.manifold.c * y2) * xy) / denom
             beta = ((1 + self.manifold.c * y2) * x2 - (1 + self.manifold.c * x2) * xy) / denom
             z = alpha * x + beta * y
 
             # Compute the lca and its distance to the origin w.r.t. the full geodesic
             z2 = z.pow(2).sum(dim=-1, keepdim=True)
-            lca = (1 - (z2 - 1/self.manifold.c).sqrt() / z.norm(p=2, dim=-1, keepdim=True)) * z
+            lca = (1 - (z2 - 1/self.manifold.c).clamp(min=1e-15).sqrt() / z.norm(p=2, dim=-1, keepdim=True)) * z
             lca_depth = self.manifold.dist_0(lca)
 
             # Compute the cosine of the angles at the origin in the triangles {x, origin, c}, {y, origin, c}  {x, origin, y}
@@ -207,51 +207,6 @@ class HyperbolicHCModel(AbstractModel):
             indices = indices[:, batch_size:]
         return lcas
 
-    def compute_hyphc_loss(self, embeddings: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        n = embeddings.size(0)
-        device = embeddings.device
-
-        # Sample triplets
-        sampled_indices, triplet_indices = self.sample_triplets(n, device)
-        sampled_embeddings = embeddings[sampled_indices]
-        i, j, k = triplet_indices[:, 0], triplet_indices[:, 1], triplet_indices[:, 2]
-
-        # Compute the pairwise distances
-        distances = compute_pairwise_distances(sampled_embeddings, self.manifold)
-        similarities = torch.reciprocal(1 + distances)
-        similarities_sum = similarities.sum()
-
-        # Compute the pairwise lcas
-        if self.lca_version == 'ours':
-            lcas = self.compute_lca_depth(sampled_embeddings)
-        elif self.lca_version == 'chami':
-            lcas = self.compute_lca_depth_chami(sampled_embeddings)
-        else:
-            raise ValueError(f"Invalid LCA version: {self.lca_version}")
-
-        indices_map = torch.full((n,), -1, dtype=torch.long, device=device)
-        indices_map[sampled_indices] = torch.arange(sampled_indices.size(0), device=device)
-        
-        # Map triplet indices to positions
-        i_pos = indices_map[i]
-        j_pos = indices_map[j]
-        k_pos = indices_map[k]
-
-        # Compute the scaled safe softmax of the lcas
-        lca_triplets = torch.stack((lcas[i_pos, j_pos], lcas[i_pos, k_pos], lcas[j_pos, k_pos]), dim=1)
-        lca_triplet_max, _ = torch.max(lca_triplets, dim=1, keepdim=True)
-        scaled_softmax = torch.exp((lca_triplets - lca_triplet_max) / self.hyphc_temperature)
-        scaled_softmax = scaled_softmax / scaled_softmax.sum(dim=1, keepdim=True)
-
-        # Compute the triplet loss for the subsampled triplets
-        sim_stack = torch.stack((similarities[i_pos, j_pos], similarities[i_pos, k_pos], similarities[j_pos, k_pos]), dim=1)
-        triplet_loss = torch.sum(sim_stack * (1 - scaled_softmax))
-
-        # Compute total loss
-        total_loss = triplet_loss + 2 * similarities_sum
-
-        return total_loss, triplet_loss, similarities_sum
-
     def compute_normalized_hyphc_loss(self, embeddings: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         n = embeddings.size(0)
         device = embeddings.device
@@ -265,7 +220,7 @@ class HyperbolicHCModel(AbstractModel):
         elif self.distances_type == 'cosine_similarity':
             distances = pairwise_cosine_similarity(
                 embeddings[sampled_indices, :],
-                zero_diagonal=True,
+                zero_diagonal=False,
                 reduction='none'
             )
             similarties = distances
@@ -337,7 +292,8 @@ class HyperbolicHCModel(AbstractModel):
             x = self.hyperbolic_decoding_layer(manifold_z)
             x = x.view(-1, 512 * self.expansion, 4, 4)
             x_recon = self.decoder(x)
-        x_recon = x_recon.view(-1, *self.orginal_input_shape)
+        if isinstance(self.orginal_input_shape, tuple):
+            x_recon = x_recon.view(-1, *self.orginal_input_shape)
         return x_recon
 
     def compute_contrastive_loss(self, embeddings: torch.Tensor) -> torch.Tensor:
@@ -378,12 +334,13 @@ class HyperbolicHCModel(AbstractModel):
             end_idx = start_idx + batch_size
             manifold_z = self.precomputed_embeddings[start_idx:end_idx]
         
-        if self.normalized_hyphc_loss:
-            z_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = self.compute_normalized_hyphc_loss(manifold_z)
-        else:
-            z_hyphc_loss, triplet_loss, similarties_sum = self.compute_hyphc_loss(manifold_z)
+
+        z_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = self.compute_normalized_hyphc_loss(manifold_z)
         
-        hyphc_loss = z_hyphc_loss
+        if self.normalized_hyphc_loss:
+            hyphc_loss = normalized_loss
+        else:
+            hyphc_loss = z_hyphc_loss
 
         # Compute total loss
         total_loss = recon_loss + hyphc_loss * self.hyphc_weight
