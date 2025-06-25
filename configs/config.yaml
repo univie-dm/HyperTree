@@ -3,7 +3,6 @@ experiment:
   seed: 400
   num_workers: 8
   batch_size: 512
-  log_interval: 10
 ## Pretraining parameters
 pretraining:
   epochs: 400
@@ -52,6 +51,20 @@ architecture:
   manifold_precision: 'float64' # 'float16', 'float32', 'float64'
   precision: 'float64' # 'float32', 'float64'
   curvature_magnitude: 1.0
+
+## Evaluation Metrics to be used and logged
+evalutation:
+  log_interval: 10
+  delta_hyperbolicity: False
+  dendrogram_purity_single: False
+  dendrogram_purity_complete: False
+  dendrogram_purity_average: False
+  dendrogram_purity_ward: False
+  agglomerative_clustering_single: False
+  agglomerative_clustering_complete: False
+  agglomerative_clustering_average: False
+  agglomerative_clustering_ward: False
+  visualization: False
 
 ## Logging
 wandb:

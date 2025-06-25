@@ -11,6 +11,7 @@ from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from sklearn.metrics.pairwise import cosine_similarity
 
+from evaluation import evaluation
 from src.models.utils import dendrogram_purity
 from ..hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
 from ..hyperbolic_math.src.optim import RiemannianAdam
@@ -33,6 +34,8 @@ class AbstractModel(pl.LightningModule):
         learning_rate_scheduler: str | None = None,
         lr_scheduler_params: dict | None = None,
         model_type: str | None = None,
+        distances_type: str = 'geodesic',
+        evaluation_metrics: list[str] = None,
     ):
         super().__init__()
         if manifold_name == 'Euclidean' or curvature_magnitude == 0:
@@ -64,6 +67,8 @@ class AbstractModel(pl.LightningModule):
         self.decoder = nn.Sequential()
         self.hyperbolic_encoding_layer = nn.Module()
         self.hyperbolic_decoding_layer = nn.Module()
+        self.distances_type = distances_type
+        self.evaluation_metrics = evaluation_metrics
 
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
@@ -164,115 +169,33 @@ class AbstractModel(pl.LightningModule):
                 test_loader = self.trainer.datamodule.test_dataloader() # type: ignore
 
                 embeddings = []
-                embeddings_cpu = []
                 labels = []
 
                 for batch_idx, (x_aug, x, y) in enumerate(test_loader):
                     _, z = self(x.to(self.device))
                     embeddings.append(z)
-                    embeddings_cpu.append(z)
                     labels.append(y)
 
                 all_embeddings = torch.cat(embeddings, dim=0)
-                all_embeddings_cpu = torch.cat(embeddings_cpu, dim=0)
                 all_labels = torch.cat(labels, dim=0)
 
-                # Compute the delta hyperbolicity
-                delta_hyp, diam_hyp, rel_delta_hyp = get_delta(all_embeddings, self.manifold)
-
-                # Move to CPU for NMI and ARI calculation
-                all_embeddings_np = all_embeddings_cpu.cpu().numpy()
-                all_labels_np = all_labels.cpu().numpy()
-
                 # Compute the pairwise distances
-                #dist_cos_sim = 1 - cosine_similarity(all_embeddings_np)
-                #dist_geodesic = compute_pairwise_distances(all_embeddings, self.manifold).cpu().numpy()
+                if self.distances_type == 'geodesic':
+                    distance_matrix = compute_pairwise_distances(all_embeddings, self.manifold)
+                elif self.distances_type == 'cosine':
+                    distance_matrix = torch.tensor(1 - cosine_similarity(all_embeddings.cpu().numpy()), dtype=self.manifold_precision)
+                else:
+                    raise ValueError(f"Invalid distances_type: {self.distances_type}")
 
-                # Perform complete linkage clustering
-                #agglomerative_clustering_complete = AgglomerativeClustering(
-                #    n_clusters=len(np.unique(all_labels_np)),
-                #    metric='precomputed',
-                #    linkage='complete'
-                #)
-                # agglomerative_clustering_single = AgglomerativeClustering(
-                #     n_clusters=len(np.unique(all_labels_np)),
-                #     metric='precomputed',
-                #     linkage='single'
-                # )
-                #agglomerative_clustering_average = AgglomerativeClustering(
-                #    n_clusters=len(np.unique(all_labels_np)),
-                #    metric='precomputed',
-                #    linkage='average'
-                #)
-                # Perform clustering with the different pairwise distances
-                #pred_labels_cos_sim  = agglomerative_clustering_complete.fit_predict(dist_cos_sim)
-                #nmi_cos_sim = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim)
-                #ari_cos_sim = adjusted_rand_score(all_labels_np, pred_labels_cos_sim)
-
-                #pred_labels_geodesic = agglomerative_clustering_complete.fit_predict(dist_geodesic)
-                #nmi_geodesic = normalized_mutual_info_score(all_labels_np, pred_labels_geodesic)
-                #ari_geodesic = adjusted_rand_score(all_labels_np, pred_labels_geodesic)
-
-                #pred_labels_cos_sim_single = agglomerative_clustering_single.fit_predict(dist_cos_sim)
-                #nmi_cos_sim_single = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim_single)
-                #ari_cos_sim_single = adjusted_rand_score(all_labels_np, pred_labels_cos_sim_single)
-
-                #pred_labels_geodesic_single = agglomerative_clustering_single.fit_predict(dist_geodesic)
-                #nmi_geodesic_single = normalized_mutual_info_score(all_labels_np, pred_labels_geodesic_single)
-                #ari_geodesic_single = adjusted_rand_score(all_labels_np, pred_labels_geodesic_single)
-
-                #pred_labels_cos_sim_average = agglomerative_clustering_average.fit_predict(dist_cos_sim)
-                #nmi_cos_sim_average = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim_average)
-                #ari_cos_sim_average = adjusted_rand_score(all_labels_np, pred_labels_cos_sim_average)
-
-                #pred_labels_geodesic_average = agglomerative_clustering_average.fit_predict(dist_geodesic)
-                #nmi_geodesic_average = normalized_mutual_info_score(all_labels_np, pred_labels_geodesic_average)
-                #ari_geodesic_average = adjusted_rand_score(all_labels_np, pred_labels_geodesic_average)
-
-                
-                #dp_score_ward = dendrogram_purity(all_embeddings, all_labels, self.manifold, "ward")
-                #dp_score_single = dendrogram_purity(all_embeddings, all_labels, self.manifold, "single")
-                dp_score_complete = dendrogram_purity(all_embeddings, all_labels, self.manifold, "complete")
-                #dp_score_average = dendrogram_purity(all_embeddings, all_labels, self.manifold, "average")
-        
-                # Compute hierarchical purity metrics
-                #purity_metrics = compute_hierarchical_purity(embeddings, labels, self.manifold, "single")
-                
-                # Create embeddings plot
-                #fig = create_figure(all_embeddings, self.manifold, labels=all_labels_np)
-
-                # Log the metrics
-                ## Hyperbolic hyperbolicity
-                self.metrics.setdefault("test/delta_hyp", []).append(delta_hyp.item())
-                self.metrics.setdefault("test/diam_hyp", []).append(diam_hyp.item())
-                self.metrics.setdefault("test/rel_delta_hyp", []).append(rel_delta_hyp.item())
-                ## Cosine similarity clustering
-                #self.metrics.setdefault("test/nmi_cos_sim_complete", []).append(nmi_cos_sim)
-                #self.metrics.setdefault("test/ari_cos_sim_complete", []).append(ari_cos_sim)
-                #self.metrics.setdefault("test/nmi_cos_sim_single", []).append(nmi_cos_sim_single)
-                #self.metrics.setdefault("test/ari_cos_sim_single", []).append(ari_cos_sim_single)
-                #self.metrics.setdefault("test/nmi_cos_sim_average", []).append(nmi_cos_sim_average)
-                #self.metrics.setdefault("test/ari_cos_sim_average", []).append(ari_cos_sim_average)
-                ## Geodesic clustering
-                #self.metrics.setdefault("test/nmi_geodesic_complete", []).append(nmi_geodesic)
-                #self.metrics.setdefault("test/ari_geodesic_complete", []).append(ari_geodesic)
-                #self.metrics.setdefault("test/nmi_geodesic_single", []).append(nmi_geodesic_single)
-                #self.metrics.setdefault("test/ari_geodesic_single", []).append(ari_geodesic_single)
-                #self.metrics.setdefault("test/nmi_geodesic_average", []).append(nmi_geodesic_average)
-                #self.metrics.setdefault("test/ari_geodesic_average", []).append(ari_geodesic_average)
-                #self.metrics.setdefault("test/dp_score_ward", []).append(dp_score_ward)
-                #self.metrics.setdefault("test/dp_score_single", []).append(dp_score_single)
-                self.metrics.setdefault("test/dp_score_complete", []).append(dp_score_complete)
-                #self.metrics.setdefault("test/dp_score_average", []).append(dp_score_average)
-                #self.metrics.setdefault("test/purity_metrics", []).append(purity_metrics)
-
-                ## NMI and ARI delta
-                #self.metrics.setdefault("test/nmi_delta", []).append(nmi_cos_sim - self.old_nmi)
-                #self.metrics.setdefault("test/ari_delta", []).append(ari_cos_sim - self.old_ari)
-                #self.old_nmi = nmi_cos_sim
-                #self.old_ari = ari_cos_sim
-                ## Hyperbolic Embedding plot
-                #self.metrics["test/Hyperbolic Embeddings"] = wandb.Image(fig)
+                evaluation_metrics = evaluation(
+                    X=all_embeddings,
+                    Y=all_labels,
+                    distance_matrix=distance_matrix,
+                    manifold=self.manifold,
+                    metrics=self.evaluation_metrics
+                )
+                for key, value in evaluation_metrics.items():
+                    self.metrics.setdefault(f"test/{key}", []).append(value)
                 plt.close()
 
     def on_train_epoch_end(self) -> None:

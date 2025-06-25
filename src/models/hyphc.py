@@ -37,6 +37,7 @@ class HyperbolicHCModel(AbstractModel):
         contrastive_weight: float = 0.5,
         contrastive_temperature: float = 0.05,
         projection_dim: int = 128,
+        evaluation_metrics: list[str] | None = None,
     ):
         super().__init__(
             manifold_name=ae_model.manifold.name,
@@ -51,6 +52,8 @@ class HyperbolicHCModel(AbstractModel):
             learning_rate_scheduler=learning_rate_scheduler,
             lr_scheduler_params=lr_scheduler_params,
             model_type=ae_model.model_type,
+            distances_type=distances_type,
+            evaluation_metrics=evaluation_metrics,
         )
         self.global_epoch = start_epoch
         self.hyphc_weight = torch.nn.Parameter(torch.tensor(hyphc_weight), requires_grad=learnable_hyphc_weight)
