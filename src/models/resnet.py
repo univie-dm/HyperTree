@@ -5,8 +5,8 @@ import torch.nn.functional as F
 from typing import Tuple
 from torchvision.models import resnet18, resnet34, resnet50
 from src.models.abstract import AbstractModel
+from src.models.utils import get_hyperbolic_encoding_layer_by_name, get_hyperbolic_decoding_layer_by_name
 from src.hyperbolic_math.src.manifolds import Euclidean
-from src.hyperbolic_math.src.nn_layers import *
 
 
 def resize_conv3x3(in_planes: int, out_planes: int, scale: float=1):
@@ -60,31 +60,42 @@ class HyperbolicResNet(AbstractModel):
     def __init__(
         self,
         model_type: str = 'resnet18',
-        hyperbolic_encoding: str = 'EuclideanLinear+Exp',
-        hyperbolic_decoding: str = 'Log+EuclideanLinear',
+        input_channels: int = 3,
+        hyperbolic_encoding: str = 'EuclideanLinear_Exp',
+        params_dtype: str = 'float32',
+        latent_dim: int = 2,
         manifold_name: str = 'PoincareBall',
         manifold_precision: str = 'float32',
         curvature_magnitude: float = 1.0,
         trainable_curvature: bool = False,
-        latent_dim: int = 2,
+        hyperbolic_decoding: str = 'Log_EuclideanLinear',
+        output_size: int = 32,
+        optimizer_name: str = 'RiemannianAdam',
         learning_rate: float = 1e-3,
         log_interval: int = 5,
-        input_channels: int = 3,
-        output_size: int = 32,
-        params_dtype: str = 'float32',
+        stage: str = 'pretrain',
+        global_epoch: int = 0,
     ):
         super().__init__(
+            model_type=model_type,
+            hyperbolic_encoding=hyperbolic_encoding,
+            params_dtype=params_dtype,
+            latent_dim=latent_dim,
             manifold_name=manifold_name,
             manifold_precision=manifold_precision,
             curvature_magnitude=curvature_magnitude,
             trainable_curvature=trainable_curvature,
-            latent_dim=latent_dim,
+            hyperbolic_decoding=hyperbolic_decoding,
+            optimizer_name=optimizer_name,
             learning_rate=learning_rate,
             log_interval=log_interval,
-            model_type=model_type,
+            stage=stage,
+            global_epoch=global_epoch,
         )
         self.input_channels = input_channels
-        self.params_dtype = params_dtype
+        self.output_size = output_size
+        self.save_hyperparameters()
+
         # Decoder params
         self.expansion = 1
         self.inplanes = 512 * self.expansion
@@ -103,70 +114,35 @@ class HyperbolicResNet(AbstractModel):
         self.encoder.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
 
         # Add hyperbolic encoding layer(s)
-        if isinstance(self.manifold, Euclidean):
-            print("Using Euclidean manifold, hyperbolic encoding layers will default to nn.Linear.",
-                  flush=True)
+        if isinstance(self.manifold, Euclidean) or hyperbolic_encoding is None:
+            print("Using Euclidean manifold or hyperbolic_encoding is 'None', "
+                  "hyperbolic encoding layers will default to nn.Linear.", flush=True)
             self.hyperbolic_encoding_layer = nn.Linear(1000, self.latent_dim)
-        elif hyperbolic_encoding == 'EuclideanLinear+Exp':
-            self.hyperbolic_encoding_layer = nn.Sequential(
-                nn.Linear(1000, self.latent_dim),
-                Expmap_0(manifold=self.manifold)
-            )
-        elif hyperbolic_encoding == 'HyperbolicLinear':
-            self.hyperbolic_encoding_layer = HyperbolicLinear(
+        else:
+            self.hyperbolic_encoding_layer = get_hyperbolic_encoding_layer_by_name(
+                layer_name=hyperbolic_encoding,
                 manifold=self.manifold,
                 input_dim=1000,
                 output_dim=self.latent_dim,
-                params_dtype=self.params_dtype,
-                input_space='tangent')
+                params_dtype=self.params_dtype
+            )
 
         # Add hyperbolic decoding layer(s)
-        if isinstance(self.manifold, Euclidean):
-            print("Using Euclidean manifold, hyperbolic decoding layers will default to nn.Linear.",
-                  flush=True)
+        if isinstance(self.manifold, Euclidean) or hyperbolic_decoding is None:
+            print("Using Euclidean manifold or hyperbolic_encoding is 'None', "
+                  "hyperbolic encoding layers will default to nn.Linear.", flush=True)
             self.hyperbolic_decoding_layer = nn.Linear(self.latent_dim, self.inplanes * 4 * 4)
-        elif hyperbolic_decoding == 'Log+EuclideanLinear':
-            self.hyperbolic_decoding_layer = nn.Sequential(
-                Logmap_0(manifold=self.manifold),
-                nn.Linear(self.latent_dim, self.inplanes * 4 * 4)
-            )
-        elif hyperbolic_decoding == 'HyperbolicLinear+Log':
-            self.hyperbolic_decoding_layer = nn.Sequential(
-                HyperbolicLinear(
-                    manifold=self.manifold,
-                    input_dim=self.latent_dim,
-                    output_dim=self.inplanes * 4 * 4,
-                    params_dtype=self.params_dtype,
-                    input_space='manifold'),
-                Logmap_0(manifold=self.manifold)
-            )
-        elif hyperbolic_decoding == 'HyperbolicRegression':
-            self.hyperbolic_decoding_layer = HyperbolicRegressionPoincare(
-                    manifold=self.manifold,
-                    input_dim=self.latent_dim,
-                    output_dim=self.inplanes * 4 * 4,
-                    params_dtype=self.params_dtype,
-                    input_space='manifold'
-            )
-        elif hyperbolic_decoding == 'HyperbolicRegressionPP':
-            self.hyperbolic_decoding_layer = HyperbolicRegressionPoincarePP(
-                    manifold=self.manifold,
-                    input_dim=self.latent_dim,
-                    output_dim=self.inplanes * 4 * 4,
-                    params_dtype=self.params_dtype,
-                    input_space='manifold'
-            )
-        elif hyperbolic_decoding == 'HyperbolicLinearPP':
-            self.hyperbolic_decoding_layer = HyperbolicFullyConnectedPoincarePP(
-                    manifold=self.manifold,
-                    input_dim=self.latent_dim,
-                    output_dim=self.inplanes * 4 * 4,
-                    params_dtype=self.params_dtype,
-                    input_space='manifold'
+        else:
+            self.hyperbolic_decoding_layer = get_hyperbolic_decoding_layer_by_name(
+                layer_name=hyperbolic_decoding,
+                manifold=self.manifold,
+                input_dim=self.latent_dim,
+                output_dim=self.inplanes * 4 * 4,
+                params_dtype=self.params_dtype
             )
 
         # Decoder
-        if output_size == 28:  # For MNIST
+        if self.output_size == 28:  # For MNIST
             self.decoder = nn.Sequential(
                 self._make_decoder_layer(256, 2, scale=2),  # 8x8
                 self._make_decoder_layer(128, 2, scale=2),  # 16x16
@@ -174,7 +150,7 @@ class HyperbolicResNet(AbstractModel):
                 nn.Conv2d(64, input_channels, kernel_size=3, stride=1, padding=1, bias=False),
                 nn.Tanh()
             )
-        elif output_size == 224:  # For ImageNet
+        elif self.output_size == 224:  # For ImageNet
             self.decoder = nn.Sequential(
                 self._make_decoder_layer(256, 2, scale=2),  # 8x8
                 self._make_decoder_layer(128, 2, scale=2),  # 16x16
@@ -201,13 +177,11 @@ class HyperbolicResNet(AbstractModel):
                 resize_conv1x1(self.inplanes, planes, scale),
                 nn.BatchNorm2d(planes)
             )
-
         layers = []
         layers.append(DecoderBlock(self.inplanes, planes, scale, upsample))
         self.inplanes = planes
         for _ in range(1, blocks):
             layers.append(DecoderBlock(self.inplanes, planes))
-
         return nn.Sequential(*layers)
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -217,6 +191,8 @@ class HyperbolicResNet(AbstractModel):
 
     def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
         x = self.hyperbolic_decoding_layer(manifold_z)
+        # Cast back from the manifold precision to the model's precision
+        x = x.to(dtype=self.params_dtype)
         x = x.view(-1, 512 * self.expansion, 4, 4)
         x_recon = self.decoder(x)
         return x_recon

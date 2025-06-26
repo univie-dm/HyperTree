@@ -132,7 +132,6 @@ class ColorDataModule(pl.LightningDataModule):
                 normalize_fn
             ])
 
-        # here we go again
         if self.dataset_name == "gtsrb":
             base_train = dataset_class(self.data_dir, split='train', transform=None, download=True)
             base_test = dataset_class(self.data_dir, split='test', transform=None, download=True)
@@ -177,10 +176,10 @@ class ColorDataModule(pl.LightningDataModule):
             dataset = self.test_dataset
         else:
             dataset = self.train_dataset
-        
+
         if dataset is None:
             raise RuntimeError("Dataset not initialized. Please call setup() first.")
-            
+
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True,
                           num_workers=self.num_workers)
 

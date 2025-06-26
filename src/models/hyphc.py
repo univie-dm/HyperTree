@@ -1,77 +1,86 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
+
 from typing import Tuple
 from lightning.pytorch.utilities import grad_norm
+from torchmetrics.functional.pairwise import pairwise_cosine_similarity
+
 from src.models.resnet import HyperbolicResNet
 from src.models.abstract import AbstractModel
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
-from src.hyperbolic_math.src.optim import RiemannianAdam
-from torchmetrics.functional.pairwise import pairwise_cosine_similarity
 
 
 class HyperbolicHCModel(AbstractModel):
     def __init__(
         self,
         ae_model: AbstractModel,
-        clustering_trainable_curvature: bool = False,
+        trainable_curvature: bool = False,
         learning_rate: float = 1e-3,
-        hyphc_weight: float = 0.1,
-        hyphc_temperature: float = 0.5,
+        log_interval: int = 5,
+        stage: str = 'clustering',
+        #global_epoch: int = 0, ### just renamed
+        learning_rate_scheduler: str | None = None,
+        lr_scheduler_params: dict | None = None,
+        #start_epoch: int = 0, ###
+        # HypHC parameters
+        hyphc_weight: float = 1.0,
+        hyphc_temperature: float = 0.05,
         hyphc_sampling_strategy: str = 'all_subsample_triplets',
         hyphc_triplet_subsampling_size: int = 100,
         lca_version: str = 'ours',
-        start_epoch: int = 0,
-        log_interval: int = 5,
-        stage: str = 'clustering',
-        global_epoch: int = 0,
-        learning_rate_scheduler: str | None = None,
-        learnable_hyphc_weight: bool = False,
-        freeze_similarities: bool = False,
         normalized_hyphc_loss: bool = False,
-        lr_scheduler_params: dict | None = None,
         distances_type: str = 'geodesic',
-        clustering_adam_momentum: Tuple[float, float] = (0.9, 0.999),
-        hyperbolic_dist_sum_loss: bool = True,
+        hyphc_dist_sum_loss: bool = True,
+        # Contrastive learning parameters
         use_contrastive_loss: bool = False,
         contrastive_weight: float = 0.5,
         contrastive_temperature: float = 0.05,
-        projection_dim: int = 128,
+        contrastive_projection_dim: int = 128,
     ):
         super().__init__(
-            manifold_name=ae_model.manifold.name,
-            manifold_precision=ae_model.manifold_precision,
-            curvature_magnitude=ae_model.manifold.c.clone().detach(),
-            trainable_curvature=clustering_trainable_curvature,
+            model_type=ae_model.model_type,
+            hyperbolic_encoding=ae_model.hyperbolic_encoding,
+            params_dtype=ae_model.params_dtype,
             latent_dim=ae_model.latent_dim,
+            manifold_name=ae_model.manifold_name,
+            manifold_precision=ae_model.manifold.dtype,
+            curvature_magnitude=ae_model.manifold.c.clone().detach(),
+            trainable_curvature=trainable_curvature,
+            hyperbolic_decoding=ae_model.hyperbolic_decoding,
+            optimizer_name=ae_model.optimizer_name,
             learning_rate=learning_rate,
             log_interval=log_interval,
             stage=stage,
-            global_epoch=global_epoch+1,
+            #global_epoch=global_epoch+1, ###
+            global_epoch=ae_model.global_epoch,
             learning_rate_scheduler=learning_rate_scheduler,
             lr_scheduler_params=lr_scheduler_params,
-            model_type=ae_model.model_type,
         )
-        self.global_epoch = start_epoch
-        self.hyphc_weight = torch.nn.Parameter(torch.tensor(hyphc_weight), requires_grad=learnable_hyphc_weight)
+        #self.global_epoch = start_epoch ###
+        self.orginal_input_shape = ae_model.orginal_input_shape
+        # HypHC parameters
+        self.hyphc_weight = hyphc_weight
         self.hyphc_temperature = hyphc_temperature
         self.hyphc_sampling_strategy = hyphc_sampling_strategy
         self.hyphc_triplet_subsampling_size = hyphc_triplet_subsampling_size
         self.lca_version = lca_version
-        self.freeze_similarities = freeze_similarities
-        self.precomputed_embeddings = None
         self.normalized_hyphc_loss = normalized_hyphc_loss
         self.distances_type = distances_type
+        self.hyphc_dist_sum_loss = hyphc_dist_sum_loss
+        # Contrastive learning parameters
         self.use_contrastive_loss = use_contrastive_loss
         self.contrastive_weight = contrastive_weight
         self.contrastive_temperature = contrastive_temperature
-        
+        self.contrastive_projection_dim = contrastive_projection_dim
+        self.save_hyperparameters()
+
         # Add projection head for contrastive learning
         if self.use_contrastive_loss:
             self.projection_head = torch.nn.Sequential(
                 torch.nn.Linear(self.latent_dim, self.latent_dim),
                 torch.nn.ReLU(),
-                torch.nn.Linear(self.latent_dim, projection_dim)
+                torch.nn.Linear(self.latent_dim, self.contrastive_projection_dim)
             )
         else:
             self.projection_head = None
@@ -92,34 +101,18 @@ class HyperbolicHCModel(AbstractModel):
         self.hyperbolic_decoding_layer.load_state_dict(ae_model.hyperbolic_decoding_layer.state_dict())
         self.decoder.load_state_dict(ae_model.decoder.state_dict())
 
-        self.orginal_input_shape = ae_model.orginal_input_shape
-        self.clustering_adam_momentum = clustering_adam_momentum
-        self.hyperbolic_dist_sum_loss = hyperbolic_dist_sum_loss
-
-    def configure_optimizers(self):
-        if isinstance(self.clustering_adam_momentum, list):
-            betas: Tuple[float, float] = (self.clustering_adam_momentum[0], self.clustering_adam_momentum[1])
-        else:
-            betas = self.clustering_adam_momentum
-        optimizer = RiemannianAdam(self.parameters(), lr=self.learning_rate, betas=betas)
-        return optimizer
-
     def sample_triplets(self, num_pts: int, device: torch.device) -> Tuple[torch.Tensor, np.ndarray]:
         """Sample triplets for the HypHC loss."""
         if self.hyphc_sampling_strategy == 'all_subsample_triplets':
             sampled_indices = torch.randperm(num_pts, device=device)[:min(self.hyphc_triplet_subsampling_size, num_pts)]
             np_sampled_triplet_indices = torch.combinations(sampled_indices, r=3).cpu().numpy()
-        elif self.hyphc_sampling_strategy == 'random':
-            pass
         elif self.hyphc_sampling_strategy == 'chami':
             sampled_indices = torch.randperm(num_pts, device=device)[:min(self.hyphc_triplet_subsampling_size, num_pts)]
             sampled_pair_indices = torch.combinations(sampled_indices, r=2)
-
             # Append a third random point to the torch tensor of 2-tuples
             random_indices = torch.randint(0, num_pts, (sampled_pair_indices.shape[0], 1), device=device)
             sampled_triplet_indices = torch.cat([sampled_pair_indices, random_indices], dim=1)
             np_sampled_triplet_indices = sampled_triplet_indices.cpu().numpy()
-
             sampled_indices = torch.unique(sampled_triplet_indices)
         else:
             raise ValueError(f"Invalid sampling strategy: {self.hyphc_sampling_strategy}")
@@ -154,9 +147,9 @@ class HyperbolicHCModel(AbstractModel):
             ylca = (y * lca).sum(dim=-1, keepdim=True)
             lca_norm = lca.norm(p=2, dim=-1, keepdim=True)
 
-            cos_x0c = xlca / (x2.sqrt() * lca_norm).clamp(min=1e-16)
-            cos_y0c = ylca / (y2.sqrt() * lca_norm).clamp(min=1e-16)
-            cos_x0y = xy / (x2.sqrt() * y2.sqrt()).clamp(min=1e-16)
+            cos_x0c = xlca / (x2.sqrt() * lca_norm).clamp(min=1e-15)
+            cos_y0c = ylca / (y2.sqrt() * lca_norm).clamp(min=1e-15)
+            cos_x0y = xy / (x2.sqrt() * y2.sqrt()).clamp(min=1e-15)
 
             # Get the lca depth w.r.t. the geodesic segment between x and y
             condition = torch.logical_or(torch.logical_or(cos_x0y > cos_x0c, cos_x0y > cos_y0c), cos_x0y == 1) # True iff the lca lies outside
@@ -177,7 +170,6 @@ class HyperbolicHCModel(AbstractModel):
         while indices.shape[1] > 0:
             x = points[indices[0,:batch_size], :]
             y = points[indices[1,:batch_size], :]
-
             # Chami LCA computation
             # 1) reflection_center(x)
             r = x / torch.sum(x ** 2, dim=-1, keepdim=True)
@@ -207,7 +199,7 @@ class HyperbolicHCModel(AbstractModel):
             indices = indices[:, batch_size:]
         return lcas
 
-    def compute_normalized_hyphc_loss(self, embeddings: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def compute_hyphc_loss(self, embeddings: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         n = embeddings.size(0)
         device = embeddings.device
 
@@ -215,11 +207,11 @@ class HyperbolicHCModel(AbstractModel):
         sampled_indices, np_sampled_triplet_indices = self.sample_triplets(n, device)
         # Compute the pairwise distances
         if self.distances_type == 'geodesic':
-            distances = compute_pairwise_distances(embeddings[sampled_indices, :], self.manifold)
+            distances = compute_pairwise_distances(embeddings[sampled_indices, :], self.manifold)  ## check if the same without ":"
             similarties = torch.reciprocal(1 + distances)
         elif self.distances_type == 'cosine_similarity':
             distances = pairwise_cosine_similarity(
-                embeddings[sampled_indices, :],
+                embeddings[sampled_indices, :],  ## check if the same without ":"
                 zero_diagonal=False,
                 reduction='none'
             )
@@ -230,9 +222,9 @@ class HyperbolicHCModel(AbstractModel):
 
         # Compute the pairwise lcas
         if self.lca_version == 'ours':
-            lcas = self.compute_lca_depth(embeddings[sampled_indices, :])
+            lcas = self.compute_lca_depth(embeddings[sampled_indices, :]) ## check if the same without ":"
         elif self.lca_version == 'chami':
-            lcas = self.compute_lca_depth_chami(embeddings[sampled_indices, :])
+            lcas = self.compute_lca_depth_chami(embeddings[sampled_indices, :])  ## check if the same without ":"
         else:
             raise ValueError(f"Invalid LCA version: {self.lca_version}")
 
@@ -252,22 +244,22 @@ class HyperbolicHCModel(AbstractModel):
         # Compute the triplet loss for the subsampled triplets
         sim_stack = torch.stack((similarties[i,j], similarties[i,k], similarties[j,k]), dim=1)
         sim_stack2 = torch.stack((similarties[i,j]+similarties[i,k], similarties[i,j]+similarties[j,k], similarties[i,k]+similarties[j,k]), dim=1)
-        sim_stack2_max, _ = torch.max(sim_stack2, dim=1, keepdim=False)
         sim_stack2_min, _ = torch.min(sim_stack2, dim=1, keepdim=False)
+        sim_stack2_max, _ = torch.max(sim_stack2, dim=1, keepdim=False)
         triplet_loss = torch.sum(sim_stack * (1 - scaled_softmax))
-        
+
         scale_min = sim_stack2_min.sum()
         scale_max = sim_stack2_max.sum()
         sim_sum = 0
 
-        if self.hyperbolic_dist_sum_loss:
+        if self.hyphc_dist_sum_loss:
             sim_sum = similarties_sum
-        
+
         scale_min += 2 * sim_sum
         scale_max += 2 * sim_sum
 
         # Compute total loss
-        total_loss = triplet_loss        
+        total_loss = triplet_loss
         total_loss += 2 * sim_sum
         normalized_loss = (total_loss - scale_min) / (scale_max - scale_min)
 
@@ -285,13 +277,12 @@ class HyperbolicHCModel(AbstractModel):
         return manifold_z
 
     def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
-        if self.model_type == 'feedforward':
-            x_recon = self.hyperbolic_decoding_layer(manifold_z)
-            x_recon = self.decoder(x_recon)
-        else:   # 'resnet18', 'resnet34'
-            x = self.hyperbolic_decoding_layer(manifold_z)
+        x = self.hyperbolic_decoding_layer(manifold_z)
+        # Cast back from the manifold precision to the model's precision
+        x = x.to(dtype=self.params_dtype)
+        if self.model_type in ['resnet18', 'resnet34']:
             x = x.view(-1, 512 * self.expansion, 4, 4)
-            x_recon = self.decoder(x)
+        x_recon = self.decoder(x)
         if isinstance(self.orginal_input_shape, tuple):
             x_recon = x_recon.view(-1, *self.orginal_input_shape)
         return x_recon
@@ -301,46 +292,36 @@ class HyperbolicHCModel(AbstractModel):
         # Project embeddings through projection head
         if self.projection_head is not None:
             embeddings = self.projection_head(embeddings)
-        
         # Normalize embeddings
         embeddings = F.normalize(embeddings, p=2, dim=-1)
-        
         # Compute similarity matrix
         sim_matrix = torch.matmul(embeddings, embeddings.t())
-        
         # Create labels for positive pairs (diagonal)
         labels = torch.arange(embeddings.size(0), device=embeddings.device)
-        
         # Compute logits
         logits = sim_matrix / self.contrastive_temperature
-        
         # Compute cross entropy loss
         loss = F.cross_entropy(logits, labels)
-        
         return loss
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug, x, _ = batch
         x_recon, manifold_z = self(x)
+        #x_aug_recon, manifold_z_aug = self(x_aug)
 
         # Reconstruction loss
         x_recon_loss = F.mse_loss(x_recon, x)
+        #x_aug_recon_loss = F.mse_loss(x_aug_recon, x_aug)
+        #recon_loss = (x_recon_loss + x_aug_recon_loss) / 2
         recon_loss = x_recon_loss
 
         # HypHC loss
-        if self.precomputed_embeddings is not None:
-            batch_size = x.size(0)
-            start_idx = batch_idx * batch_size
-            end_idx = start_idx + batch_size
-            manifold_z = self.precomputed_embeddings[start_idx:end_idx]
-        
+        standard_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = self.compute_hyphc_loss(manifold_z)
 
-        z_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = self.compute_normalized_hyphc_loss(manifold_z)
-        
         if self.normalized_hyphc_loss:
             hyphc_loss = normalized_loss
         else:
-            hyphc_loss = z_hyphc_loss
+            hyphc_loss = standard_hyphc_loss
 
         # Compute total loss
         total_loss = recon_loss + hyphc_loss * self.hyphc_weight
@@ -353,17 +334,14 @@ class HyperbolicHCModel(AbstractModel):
 
         # Logging
         self.metrics.setdefault("clustering/recon_loss", []).append(recon_loss)
-        self.metrics.setdefault("clustering/x_recon_loss", []).append(x_recon_loss)
         self.metrics.setdefault("clustering/hyphc_loss", []).append(hyphc_loss)
-        self.metrics.setdefault("clustering/z_hyphc_loss", []).append(z_hyphc_loss)
+        self.metrics.setdefault("clustering/standard_hyphc_loss", []).append(standard_hyphc_loss)
+        self.metrics.setdefault("clustering/normalized_loss", []).append(normalized_loss)
         self.metrics.setdefault("clustering/triplet_loss", []).append(triplet_loss)
         self.metrics.setdefault("clustering/similarties_sum", []).append(similarties_sum)
         self.metrics.setdefault("clustering/total_loss", []).append(total_loss)
-        if self.normalized_hyphc_loss:
-            self.metrics.setdefault("clustering/normalized_loss", []).append(normalized_loss)
         self.metrics.setdefault('clustering/c', []).append(self.manifold.c.item())
         self.metrics.setdefault('clustering/lr', []).append(self.optimizers().param_groups[0]['lr'])
-        self.metrics.setdefault('clustering/hyphc_weight', []).append(self.hyphc_weight.item())
 
         for key, value in grad_norm(self, norm_type=2).items():
             if key == "grad_2.0_norm_total":
@@ -371,22 +349,6 @@ class HyperbolicHCModel(AbstractModel):
             self.metrics.setdefault(f"{key}", []).append(value)
 
         return total_loss
-    
+
     def on_train_start(self) -> None:
         self.on_train_epoch_end()
-        if not self.freeze_similarities:
-            return
-
-        self.eval()
-        self.precomputed_embeddings = None
-        all_embeddings = []
-        
-        with torch.no_grad():
-            for batch in self.trainer.train_dataloader: # type: ignore
-                x, _, _ = batch
-                x = x.to(self.device)
-                manifold_z = self.encode(x)
-                all_embeddings.append(manifold_z)
-            all_embeddings = torch.cat(all_embeddings, dim=0)
-            self.precomputed_embeddings = all_embeddings
-        self.train()

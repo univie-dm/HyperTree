@@ -3,7 +3,6 @@ import wandb
 import numpy as np
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
-import torch.nn as nn
 
 from typing import Tuple, Any
 from pytorch_lightning.loggers import WandbLogger
@@ -13,7 +12,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from src.models.utils import dendrogram_purity
 from ..hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
-from ..hyperbolic_math.src.optim import RiemannianAdam
+from ..hyperbolic_math.src.optim import RiemannianAdam, RiemannianSGD
 from ..hyperbolic_math.src.utils.helpers import compute_pairwise_distances, get_delta
 from ..hyperbolic_math.src.utils.vis_utils import create_figure
 
@@ -21,20 +20,29 @@ from ..hyperbolic_math.src.utils.vis_utils import create_figure
 class AbstractModel(pl.LightningModule):
     def __init__(
         self,
+        model_type: str | None = None,
+        hyperbolic_encoding: str | None = None,
+        params_dtype: str = 'float32',
+        latent_dim: int = 2,
         manifold_name: str = 'PoincareBall',
         manifold_precision: str = 'float32',
         curvature_magnitude: float | torch.Tensor = 1.0,
         trainable_curvature: bool = False,
-        latent_dim: int = 2,
+        hyperbolic_decoding: str | None = None,
+        optimizer_name: str = 'RiemannianAdam',
         learning_rate: float = 1e-3,
         log_interval: int = 5,
         stage: str = 'pretrain',
         global_epoch: int = 0,
         learning_rate_scheduler: str | None = None,
         lr_scheduler_params: dict | None = None,
-        model_type: str | None = None,
     ):
         super().__init__()
+        self.model_type = model_type
+        self.hyperbolic_encoding = hyperbolic_encoding
+        self.params_dtype = params_dtype
+        self.latent_dim = latent_dim
+        self.manifold_name = manifold_name
         if manifold_name == 'Euclidean' or curvature_magnitude == 0:
             self.manifold = Euclidean()
         elif manifold_name == 'Hyperboloid':
@@ -47,24 +55,20 @@ class AbstractModel(pl.LightningModule):
                                          dtype=manifold_precision)
         else:
             raise ValueError(f"Invalid manifold name: {manifold_name}")
-        self.manifold_precision = manifold_precision
-        self.latent_dim = latent_dim
+        self.hyperbolic_decoding = hyperbolic_decoding
+        self.optimizer_name = optimizer_name
         self.learning_rate = learning_rate
         self.log_interval = log_interval
         self.stage = stage
         self.global_epoch = global_epoch
         self.learning_rate_scheduler = learning_rate_scheduler
         self.lr_scheduler_params = lr_scheduler_params or {}
-        self.model_type = model_type
+        self.orginal_input_shape = None
+        # Evaluation & Logging
         self.metrics = {}
-        self.euclidean_manifold = Euclidean() # for logging
+        self.euclidean_manifold = Euclidean()
         self.old_nmi = 0
         self.old_ari = 0
-        self.encoder = nn.Sequential()
-        self.decoder = nn.Sequential()
-        self.hyperbolic_encoding_layer = nn.Module()
-        self.hyperbolic_decoding_layer = nn.Module()
-
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -72,10 +76,10 @@ class AbstractModel(pl.LightningModule):
         This method should be implemented by subclasses.
         """
         raise NotImplementedError("The encode method must be implemented by subclasses.")
-    
+
     def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
         """
-        Decodes the manifold representation back into the original input space.
+        Decodes the manifold representation manifold_z back into the original input space.
         This method should be implemented by subclasses.
         """
         raise NotImplementedError("The decode method must be implemented by subclasses.")
@@ -86,12 +90,18 @@ class AbstractModel(pl.LightningModule):
         return x_recon, manifold_z
 
     def configure_optimizers(self) -> Any:
-        optimizer = RiemannianAdam(self.parameters(), lr=self.learning_rate, eps=1e-5, expmap_update=True)
+        if self.optimizer_name == 'RiemannianAdam':
+            optimizer = RiemannianAdam(self.parameters(), lr=self.learning_rate, eps=1e-5, expmap_update=True)
+        elif self.optimizer_name == 'RiemannianSGD':
+            optimizer = RiemannianSGD(self.parameters(), lr=self.learning_rate, momentum=0.9, expmap_update=True)
+        else:
+            raise ValueError(f"Invalid optimizer name: {self.optimizer_name}")
+
         if self.learning_rate_scheduler is None:
             return optimizer
         elif self.learning_rate_scheduler == 'cosine':
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, 
+                optimizer,
                 T_max=self.trainer.max_epochs if self.trainer.max_epochs is not None else 100
             )
             return {
@@ -106,7 +116,7 @@ class AbstractModel(pl.LightningModule):
             scheduler = torch.optim.lr_scheduler.LinearLR(
                 optimizer,
                 start_factor=1,
-                end_factor=0.1, 
+                end_factor=0.1,
                 total_iters=self.trainer.max_epochs if self.trainer.max_epochs is not None else 100
             )
             return {
@@ -123,23 +133,23 @@ class AbstractModel(pl.LightningModule):
             warmup_factor = self.lr_scheduler_params.get('warmup_factor', 0.1)
             cosine_min_factor = self.lr_scheduler_params.get('cosine_min_factor', 0.01)
             cosine_cycles = self.lr_scheduler_params.get('cosine_cycles', 1)
-            
+
             # Create a warmup scheduler that linearly increases the learning rate
             warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
                 optimizer,
                 start_factor=warmup_factor,
                 end_factor=1.0,
-                total_iters=min(warmup_epochs, self.trainer.max_epochs // 10)  # Warmup for specified epochs or 10% of total epochs # type: ignore
+                total_iters=min(warmup_epochs, self.trainer.max_epochs // 10) # Warmup for specified epochs or 10% of total epochs
             )
-            
+
             # Create a cosine annealing scheduler
             cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
                 optimizer,
                 T_0=(self.trainer.max_epochs - warmup_scheduler.total_iters) // cosine_cycles if self.trainer.max_epochs is not None else 90,
-                T_mult=1,  # Keep the same cycle length
+                T_mult=1, # Keep the same cycle length
                 eta_min=self.learning_rate * cosine_min_factor
             )
-            
+
             # Combine the schedulers
             return {
                 'optimizer': optimizer,
@@ -185,33 +195,33 @@ class AbstractModel(pl.LightningModule):
                 all_labels_np = all_labels.cpu().numpy()
 
                 # Compute the pairwise distances
-                #dist_cos_sim = 1 - cosine_similarity(all_embeddings_np)
-                #dist_geodesic = compute_pairwise_distances(all_embeddings, self.manifold).cpu().numpy()
+                dist_cos_sim = 1 - cosine_similarity(all_embeddings_np)
+                dist_geodesic = compute_pairwise_distances(all_embeddings, self.manifold).cpu().numpy()
 
                 # Perform complete linkage clustering
-                #agglomerative_clustering_complete = AgglomerativeClustering(
-                #    n_clusters=len(np.unique(all_labels_np)),
-                #    metric='precomputed',
-                #    linkage='complete'
-                #)
+                agglomerative_clustering_complete = AgglomerativeClustering(
+                   n_clusters=len(np.unique(all_labels_np)),
+                   metric='precomputed',
+                   linkage='complete'
+                )
                 # agglomerative_clustering_single = AgglomerativeClustering(
                 #     n_clusters=len(np.unique(all_labels_np)),
                 #     metric='precomputed',
                 #     linkage='single'
                 # )
-                #agglomerative_clustering_average = AgglomerativeClustering(
-                #    n_clusters=len(np.unique(all_labels_np)),
-                #    metric='precomputed',
-                #    linkage='average'
-                #)
+                agglomerative_clustering_average = AgglomerativeClustering(
+                   n_clusters=len(np.unique(all_labels_np)),
+                   metric='precomputed',
+                   linkage='average'
+                )
                 # Perform clustering with the different pairwise distances
-                #pred_labels_cos_sim  = agglomerative_clustering_complete.fit_predict(dist_cos_sim)
-                #nmi_cos_sim = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim)
-                #ari_cos_sim = adjusted_rand_score(all_labels_np, pred_labels_cos_sim)
+                pred_labels_cos_sim  = agglomerative_clustering_complete.fit_predict(dist_cos_sim)
+                nmi_cos_sim = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim)
+                ari_cos_sim = adjusted_rand_score(all_labels_np, pred_labels_cos_sim)
 
-                #pred_labels_geodesic = agglomerative_clustering_complete.fit_predict(dist_geodesic)
-                #nmi_geodesic = normalized_mutual_info_score(all_labels_np, pred_labels_geodesic)
-                #ari_geodesic = adjusted_rand_score(all_labels_np, pred_labels_geodesic)
+                pred_labels_geodesic = agglomerative_clustering_complete.fit_predict(dist_geodesic)
+                nmi_geodesic = normalized_mutual_info_score(all_labels_np, pred_labels_geodesic)
+                ari_geodesic = adjusted_rand_score(all_labels_np, pred_labels_geodesic)
 
                 #pred_labels_cos_sim_single = agglomerative_clustering_single.fit_predict(dist_cos_sim)
                 #nmi_cos_sim_single = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim_single)
@@ -221,25 +231,24 @@ class AbstractModel(pl.LightningModule):
                 #nmi_geodesic_single = normalized_mutual_info_score(all_labels_np, pred_labels_geodesic_single)
                 #ari_geodesic_single = adjusted_rand_score(all_labels_np, pred_labels_geodesic_single)
 
-                #pred_labels_cos_sim_average = agglomerative_clustering_average.fit_predict(dist_cos_sim)
-                #nmi_cos_sim_average = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim_average)
-                #ari_cos_sim_average = adjusted_rand_score(all_labels_np, pred_labels_cos_sim_average)
+                pred_labels_cos_sim_average = agglomerative_clustering_average.fit_predict(dist_cos_sim)
+                nmi_cos_sim_average = normalized_mutual_info_score(all_labels_np, pred_labels_cos_sim_average)
+                ari_cos_sim_average = adjusted_rand_score(all_labels_np, pred_labels_cos_sim_average)
 
-                #pred_labels_geodesic_average = agglomerative_clustering_average.fit_predict(dist_geodesic)
-                #nmi_geodesic_average = normalized_mutual_info_score(all_labels_np, pred_labels_geodesic_average)
-                #ari_geodesic_average = adjusted_rand_score(all_labels_np, pred_labels_geodesic_average)
+                pred_labels_geodesic_average = agglomerative_clustering_average.fit_predict(dist_geodesic)
+                nmi_geodesic_average = normalized_mutual_info_score(all_labels_np, pred_labels_geodesic_average)
+                ari_geodesic_average = adjusted_rand_score(all_labels_np, pred_labels_geodesic_average)
 
-                
-                #dp_score_ward = dendrogram_purity(all_embeddings, all_labels, self.manifold, "ward")
+                dp_score_ward = dendrogram_purity(all_embeddings, all_labels, self.manifold, "ward")
                 #dp_score_single = dendrogram_purity(all_embeddings, all_labels, self.manifold, "single")
                 dp_score_complete = dendrogram_purity(all_embeddings, all_labels, self.manifold, "complete")
-                #dp_score_average = dendrogram_purity(all_embeddings, all_labels, self.manifold, "average")
-        
+                dp_score_average = dendrogram_purity(all_embeddings, all_labels, self.manifold, "average")
+
                 # Compute hierarchical purity metrics
                 #purity_metrics = compute_hierarchical_purity(embeddings, labels, self.manifold, "single")
-                
+
                 # Create embeddings plot
-                #fig = create_figure(all_embeddings, self.manifold, labels=all_labels_np)
+                fig = create_figure(all_embeddings, self.manifold, labels=all_labels_np)
 
                 # Log the metrics
                 ## Hyperbolic hyperbolicity
@@ -247,23 +256,23 @@ class AbstractModel(pl.LightningModule):
                 self.metrics.setdefault("test/diam_hyp", []).append(diam_hyp.item())
                 self.metrics.setdefault("test/rel_delta_hyp", []).append(rel_delta_hyp.item())
                 ## Cosine similarity clustering
-                #self.metrics.setdefault("test/nmi_cos_sim_complete", []).append(nmi_cos_sim)
-                #self.metrics.setdefault("test/ari_cos_sim_complete", []).append(ari_cos_sim)
+                self.metrics.setdefault("test/nmi_cos_sim_complete", []).append(nmi_cos_sim)
+                self.metrics.setdefault("test/ari_cos_sim_complete", []).append(ari_cos_sim)
                 #self.metrics.setdefault("test/nmi_cos_sim_single", []).append(nmi_cos_sim_single)
                 #self.metrics.setdefault("test/ari_cos_sim_single", []).append(ari_cos_sim_single)
-                #self.metrics.setdefault("test/nmi_cos_sim_average", []).append(nmi_cos_sim_average)
-                #self.metrics.setdefault("test/ari_cos_sim_average", []).append(ari_cos_sim_average)
+                self.metrics.setdefault("test/nmi_cos_sim_average", []).append(nmi_cos_sim_average)
+                self.metrics.setdefault("test/ari_cos_sim_average", []).append(ari_cos_sim_average)
                 ## Geodesic clustering
-                #self.metrics.setdefault("test/nmi_geodesic_complete", []).append(nmi_geodesic)
-                #self.metrics.setdefault("test/ari_geodesic_complete", []).append(ari_geodesic)
+                self.metrics.setdefault("test/nmi_geodesic_complete", []).append(nmi_geodesic)
+                self.metrics.setdefault("test/ari_geodesic_complete", []).append(ari_geodesic)
                 #self.metrics.setdefault("test/nmi_geodesic_single", []).append(nmi_geodesic_single)
                 #self.metrics.setdefault("test/ari_geodesic_single", []).append(ari_geodesic_single)
-                #self.metrics.setdefault("test/nmi_geodesic_average", []).append(nmi_geodesic_average)
-                #self.metrics.setdefault("test/ari_geodesic_average", []).append(ari_geodesic_average)
-                #self.metrics.setdefault("test/dp_score_ward", []).append(dp_score_ward)
+                self.metrics.setdefault("test/nmi_geodesic_average", []).append(nmi_geodesic_average)
+                self.metrics.setdefault("test/ari_geodesic_average", []).append(ari_geodesic_average)
+                self.metrics.setdefault("test/dp_score_ward", []).append(dp_score_ward)
                 #self.metrics.setdefault("test/dp_score_single", []).append(dp_score_single)
                 self.metrics.setdefault("test/dp_score_complete", []).append(dp_score_complete)
-                #self.metrics.setdefault("test/dp_score_average", []).append(dp_score_average)
+                self.metrics.setdefault("test/dp_score_average", []).append(dp_score_average)
                 #self.metrics.setdefault("test/purity_metrics", []).append(purity_metrics)
 
                 ## NMI and ARI delta
@@ -272,7 +281,7 @@ class AbstractModel(pl.LightningModule):
                 #self.old_nmi = nmi_cos_sim
                 #self.old_ari = ari_cos_sim
                 ## Hyperbolic Embedding plot
-                #self.metrics["test/Hyperbolic Embeddings"] = wandb.Image(fig)
+                self.metrics["test/Hyperbolic Embeddings"] = wandb.Image(fig)
                 plt.close()
 
     def on_train_epoch_end(self) -> None:

@@ -11,8 +11,6 @@ from threadpoolctl import threadpool_limits
 from src.utils import get_datamodule, get_pretrain_model, get_clustering_model, get_model_path, get_logger
 
 
-
-
 @hydra.main(version_base=None, config_path="configs", config_name="config")
 @threadpool_limits.wrap(limits=45, user_api="openmp")
 @threadpool_limits.wrap(limits=1, user_api="blas")
@@ -41,8 +39,7 @@ def main(cfg: DictConfig) -> None:
                          deterministic=True,
                          enable_checkpointing=False,
                          )
-    datamodule, input_dim, is_image = get_datamodule(cfg)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    datamodule, input_dim, _ = get_datamodule(cfg)
     pretrain_model = get_pretrain_model(cfg, input_dim)
 
     if not os.path.exists(f"data/models/{get_model_path(cfg)}.pt") or cfg.pretraining.overwrite:
@@ -54,13 +51,10 @@ def main(cfg: DictConfig) -> None:
 
     print("Finished pretraining", flush=True)
     print("Starting clustering", flush=True)
-    
+
     accumulate_grad_batches = max(1, min(cfg.clustering.accumulate_gradients, len(datamodule.train_dataloader())))
 
-    clustering_model = get_clustering_model(cfg, pretrain_model, 
-                                          use_contrastive_loss=False,
-                                          contrastive_weight=0.0,
-                                          contrastive_temperature=0.0)
+    clustering_model = get_clustering_model(cfg, pretrain_model)
     trainer = pl.Trainer(logger=logger,
                          max_epochs=cfg.clustering.epochs,
                          devices='auto',

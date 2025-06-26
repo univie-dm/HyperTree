@@ -9,6 +9,7 @@ from src.models.abstract import AbstractModel
 from ..hyperbolic_math.src.utils.helpers import get_delta
 
 
+#TODO: Unsupported
 class HyperbolicContrastiveModel(AbstractModel):
     def __init__(
         self,
