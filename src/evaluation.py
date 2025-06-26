@@ -6,7 +6,7 @@ import torch
 import wandb
 from src.hyperbolic_math.src.utils.helpers import get_delta
 from src.hyperbolic_math.src.utils.vis_utils import create_figure
-from models.utils import dendrogram_purity
+from src.models.utils import dendrogram_purity
 from src.hyperbolic_math.src.manifolds import Manifold
 
 def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, manifold: Manifold, metrics: List[str] = None) -> dict:

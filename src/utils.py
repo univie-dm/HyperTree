@@ -113,7 +113,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             trainable_curvature=cfg.pretraining.trainable_curvature,
             latent_dim=cfg.architecture.embedding_dim,
             learning_rate=cfg.pretraining.learning_rate,
-            log_interval=cfg.evaluation.log_interval,
+            log_interval=cfg.evalutation.log_interval,
             input_channels=cfg.dataset.channels,
             output_size=cfg.dataset.resize,
             params_dtype=cfg.architecture.precision,

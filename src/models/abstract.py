@@ -11,7 +11,7 @@ from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from sklearn.metrics.pairwise import cosine_similarity
 
-from evaluation import evaluation
+from src.evaluation import evaluation
 from src.models.utils import dendrogram_purity
 from ..hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
 from ..hyperbolic_math.src.optim import RiemannianAdam
