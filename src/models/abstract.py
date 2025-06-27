@@ -1,5 +1,4 @@
 import torch
-from torch import nn
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 
@@ -22,7 +21,7 @@ class AbstractModel(pl.LightningModule):
         params_dtype: str = 'float32',
         latent_dim: int = 2,
         manifold_name: str = 'PoincareBall',
-        manifold_precision: str = 'float32',
+        manifold_precision: str | torch.dtype = 'float32',
         curvature_magnitude: float | torch.Tensor = 1.0,
         trainable_curvature: bool = False,
         hyperbolic_decoding: str | None = None,
@@ -40,17 +39,23 @@ class AbstractModel(pl.LightningModule):
         self.model_type = model_type
         self.hyperbolic_encoding = hyperbolic_encoding
         self.params_dtype = params_dtype
-        self.manifold_precision = manifold_precision
         self.latent_dim = latent_dim
         self.manifold_name = manifold_name
+
+        if isinstance(curvature_magnitude, torch.Tensor):
+            # Ensure we have our own copy
+            c_tensor = curvature_magnitude.clone().detach()
+        else:
+            c_tensor = torch.tensor(curvature_magnitude)
+
         if manifold_name == 'Euclidean' or curvature_magnitude == 0:
             self.manifold = Euclidean()
         elif manifold_name == 'Hyperboloid':
-            self.manifold = Hyperboloid(c=torch.tensor(curvature_magnitude),
+            self.manifold = Hyperboloid(c=c_tensor,
                                         trainable_c=trainable_curvature,
                                         dtype=manifold_precision)
         elif manifold_name == 'PoincareBall':
-            self.manifold = PoincareBall(c=torch.tensor(curvature_magnitude),
+            self.manifold = PoincareBall(c=c_tensor,
                                          trainable_c=trainable_curvature,
                                          dtype=manifold_precision)
         else:
@@ -69,10 +74,6 @@ class AbstractModel(pl.LightningModule):
         self.euclidean_manifold = Euclidean()
         self.old_nmi = 0
         self.old_ari = 0
-        self.encoder = nn.Sequential()
-        self.decoder = nn.Sequential()
-        self.hyperbolic_encoding_layer = nn.Module()
-        self.hyperbolic_decoding_layer = nn.Module()
         self.distances_type = distances_type
         self.evaluation_metrics = evaluation_metrics
 
@@ -194,8 +195,8 @@ class AbstractModel(pl.LightningModule):
                 # Compute the pairwise distances
                 if self.distances_type == 'geodesic':
                     distance_matrix = compute_pairwise_distances(all_embeddings, self.manifold)
-                elif self.distances_type == 'cosine':
-                    distance_matrix = torch.tensor(1 - cosine_similarity(all_embeddings.cpu().numpy()), dtype=get_dtype_from_precision(self.manifold_precision))
+                elif self.distances_type == 'cosine_similarity':
+                    distance_matrix = torch.tensor(1 - cosine_similarity(all_embeddings.cpu().numpy()), dtype=self.manifold.dtype)
                 else:
                     raise ValueError(f"Invalid distances_type: {self.distances_type}")
 

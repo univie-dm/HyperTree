@@ -6,9 +6,9 @@ from typing import Tuple
 from lightning.pytorch.utilities import grad_norm
 from torchmetrics.functional.pairwise import pairwise_cosine_similarity
 
-from src.models.utils import get_dtype_from_precision
-from src.models.resnet import HyperbolicResNet
 from src.models.abstract import AbstractModel
+from src.models.resnet import HyperbolicResNet
+from src.models.utils import get_dtype_from_precision
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 
 
@@ -20,10 +20,9 @@ class HyperbolicHCModel(AbstractModel):
         learning_rate: float = 1e-3,
         log_interval: int = 5,
         stage: str = 'clustering',
-        #global_epoch: int = 0, ### just renamed
+        global_epoch: int = 0,
         learning_rate_scheduler: str | None = None,
         lr_scheduler_params: dict | None = None,
-        #start_epoch: int = 0, ###
         # HypHC parameters
         hyphc_weight: float = 1.0,
         hyphc_temperature: float = 0.05,
@@ -34,7 +33,6 @@ class HyperbolicHCModel(AbstractModel):
         distances_type: str = 'geodesic',
         hyphc_dist_sum_loss: bool = True,
         evaluation_metrics: list[str] | None = None,
-        start_epoch: int = 0,  # This is used to set the global_epoch in the parent class
     ):
         super().__init__(
             model_type=ae_model.model_type,
@@ -42,21 +40,20 @@ class HyperbolicHCModel(AbstractModel):
             params_dtype=ae_model.params_dtype,
             latent_dim=ae_model.latent_dim,
             manifold_name=ae_model.manifold_name,
-            manifold_precision=ae_model.manifold_precision,
-            curvature_magnitude=ae_model.manifold.c.clone().detach(),
+            manifold_precision=ae_model.manifold.dtype,
+            curvature_magnitude=ae_model.manifold.c,
             trainable_curvature=trainable_curvature,
             hyperbolic_decoding=ae_model.hyperbolic_decoding,
             optimizer_name=ae_model.optimizer_name,
             learning_rate=learning_rate,
             log_interval=log_interval,
             stage=stage,
-            global_epoch=start_epoch,
+            global_epoch=global_epoch,
             learning_rate_scheduler=learning_rate_scheduler,
             lr_scheduler_params=lr_scheduler_params,
             distances_type=distances_type,
             evaluation_metrics=evaluation_metrics,
         )
-        #self.global_epoch = start_epoch ###
         self.orginal_input_shape = ae_model.orginal_input_shape
         # HypHC parameters
         self.hyphc_weight = hyphc_weight
@@ -194,7 +191,7 @@ class HyperbolicHCModel(AbstractModel):
         if self.distances_type == 'geodesic':
             distances = compute_pairwise_distances(embeddings[sampled_indices, :], self.manifold)  ## check if the same without ":"
             similarties = torch.reciprocal(1 + distances)
-        elif self.distances_type == 'cosine':
+        elif self.distances_type == 'cosine_similarity':
             distances = pairwise_cosine_similarity(
                 embeddings[sampled_indices, :],  ## check if the same without ":"
                 zero_diagonal=False,

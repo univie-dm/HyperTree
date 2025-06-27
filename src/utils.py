@@ -82,7 +82,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
         model = torch.load(f"data/models/{get_model_path(cfg)}.pt", weights_only=False)
         print("Loaded model from {}".format(f"data/models/{get_model_path(cfg)}.pt"))
     elif cfg.architecture.ae_type == 'feedforward':
-        model = HyperbolicAE( 
+        model = HyperbolicAE(
             input_dim=input_dim,
             hidden_dims=cfg.architecture.hidden_dims,
             hyperbolic_encoding=cfg.architecture.hyperbolic_encoding,
@@ -120,29 +120,26 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
         raise ValueError("Invalid autoencoder type")
     return model
 
-def get_clustering_model(cfg: omegaconf.DictConfig,
-                         pretrain_model:  Union[HyperbolicAE, HyperbolicResNet],
-                         ) -> Union[ HyperbolicHCModel]:
+def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[HyperbolicAE, HyperbolicResNet]) -> HyperbolicHCModel:
     model = HyperbolicHCModel(
         ae_model=pretrain_model,
         trainable_curvature=cfg.clustering.trainable_curvature,
         learning_rate=cfg.clustering.learning_rate,
+        log_interval=cfg.experiment.log_interval,
+        stage='clustering',
+        global_epoch=cfg.pretraining.epochs,
+        learning_rate_scheduler=cfg.clustering.lr_scheduler.type,
+        lr_scheduler_params=cfg.clustering.lr_scheduler if hasattr(cfg.clustering, 'lr_scheduler') else None,
         hyphc_weight=cfg.hyphc.loss_weight,
         hyphc_temperature=cfg.hyphc.temperature,
         hyphc_sampling_strategy=cfg.hyphc.sampling_strategy,
         hyphc_triplet_subsampling_size=cfg.hyphc.triplet_subsampling_size,
         lca_version=cfg.hyphc.lca_version,
-        log_interval=cfg.experiment.log_interval,
-        stage='clustering',
-        learning_rate_scheduler=cfg.clustering.lr_scheduler.type,
-        lr_scheduler_params=cfg.clustering.lr_scheduler if hasattr(cfg.clustering, 'lr_scheduler') else None,
         normalized_hyphc_loss=cfg.hyphc.normalized_loss,
-        hyphc_dist_sum_loss=cfg.hyphc.dist_sum_loss,
         distances_type=cfg.hyphc.distances_type,
+        hyphc_dist_sum_loss=cfg.hyphc.dist_sum_loss,
         evaluation_metrics=cfg.evaluation,
-        start_epoch=cfg.pretraining.epochs,
     )
-
     return model
 
 def get_logger(cfg: omegaconf.DictConfig) -> Union[WandbLogger, CSVLogger]:
