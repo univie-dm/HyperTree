@@ -3,7 +3,6 @@ import wandb
 import numpy as np
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
-import torch.nn as nn
 
 from typing import Tuple, Any
 from pytorch_lightning.loggers import WandbLogger
@@ -14,7 +13,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from src.evaluation import evaluation
 from src.models.utils import dendrogram_purity
 from ..hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
-from ..hyperbolic_math.src.optim import RiemannianAdam
+from ..hyperbolic_math.src.optim import RiemannianAdam, RiemannianSGD
 from ..hyperbolic_math.src.utils.helpers import compute_pairwise_distances, get_delta
 from ..hyperbolic_math.src.utils.vis_utils import create_figure
 
@@ -22,22 +21,31 @@ from ..hyperbolic_math.src.utils.vis_utils import create_figure
 class AbstractModel(pl.LightningModule):
     def __init__(
         self,
+        model_type: str | None = None,
+        hyperbolic_encoding: str | None = None,
+        params_dtype: str = 'float32',
+        latent_dim: int = 2,
         manifold_name: str = 'PoincareBall',
         manifold_precision: str = 'float32',
         curvature_magnitude: float | torch.Tensor = 1.0,
         trainable_curvature: bool = False,
-        latent_dim: int = 2,
+        hyperbolic_decoding: str | None = None,
+        optimizer_name: str = 'RiemannianAdam',
         learning_rate: float = 1e-3,
         log_interval: int = 5,
         stage: str = 'pretrain',
         global_epoch: int = 0,
         learning_rate_scheduler: str | None = None,
         lr_scheduler_params: dict | None = None,
-        model_type: str | None = None,
         distances_type: str = 'geodesic',
         evaluation_metrics: list[str] = None,
     ):
         super().__init__()
+        self.model_type = model_type
+        self.hyperbolic_encoding = hyperbolic_encoding
+        self.params_dtype = params_dtype
+        self.latent_dim = latent_dim
+        self.manifold_name = manifold_name
         if manifold_name == 'Euclidean' or curvature_magnitude == 0:
             self.manifold = Euclidean()
         elif manifold_name == 'Hyperboloid':
@@ -50,17 +58,18 @@ class AbstractModel(pl.LightningModule):
                                          dtype=manifold_precision)
         else:
             raise ValueError(f"Invalid manifold name: {manifold_name}")
-        self.manifold_precision = manifold_precision
-        self.latent_dim = latent_dim
+        self.hyperbolic_decoding = hyperbolic_decoding
+        self.optimizer_name = optimizer_name
         self.learning_rate = learning_rate
         self.log_interval = log_interval
         self.stage = stage
         self.global_epoch = global_epoch
         self.learning_rate_scheduler = learning_rate_scheduler
         self.lr_scheduler_params = lr_scheduler_params or {}
-        self.model_type = model_type
+        self.orginal_input_shape = None
+        # Evaluation & Logging
         self.metrics = {}
-        self.euclidean_manifold = Euclidean() # for logging
+        self.euclidean_manifold = Euclidean()
         self.old_nmi = 0
         self.old_ari = 0
         self.encoder = nn.Sequential()
@@ -77,10 +86,10 @@ class AbstractModel(pl.LightningModule):
         This method should be implemented by subclasses.
         """
         raise NotImplementedError("The encode method must be implemented by subclasses.")
-    
+
     def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
         """
-        Decodes the manifold representation back into the original input space.
+        Decodes the manifold representation manifold_z back into the original input space.
         This method should be implemented by subclasses.
         """
         raise NotImplementedError("The decode method must be implemented by subclasses.")
@@ -91,12 +100,18 @@ class AbstractModel(pl.LightningModule):
         return x_recon, manifold_z
 
     def configure_optimizers(self) -> Any:
-        optimizer = RiemannianAdam(self.parameters(), lr=self.learning_rate, eps=1e-5, expmap_update=True)
+        if self.optimizer_name == 'RiemannianAdam':
+            optimizer = RiemannianAdam(self.parameters(), lr=self.learning_rate, eps=1e-5, expmap_update=True)
+        elif self.optimizer_name == 'RiemannianSGD':
+            optimizer = RiemannianSGD(self.parameters(), lr=self.learning_rate, momentum=0.9, expmap_update=True)
+        else:
+            raise ValueError(f"Invalid optimizer name: {self.optimizer_name}")
+
         if self.learning_rate_scheduler is None:
             return optimizer
         elif self.learning_rate_scheduler == 'cosine':
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, 
+                optimizer,
                 T_max=self.trainer.max_epochs if self.trainer.max_epochs is not None else 100
             )
             return {
@@ -111,7 +126,7 @@ class AbstractModel(pl.LightningModule):
             scheduler = torch.optim.lr_scheduler.LinearLR(
                 optimizer,
                 start_factor=1,
-                end_factor=0.1, 
+                end_factor=0.1,
                 total_iters=self.trainer.max_epochs if self.trainer.max_epochs is not None else 100
             )
             return {
@@ -128,23 +143,23 @@ class AbstractModel(pl.LightningModule):
             warmup_factor = self.lr_scheduler_params.get('warmup_factor', 0.1)
             cosine_min_factor = self.lr_scheduler_params.get('cosine_min_factor', 0.01)
             cosine_cycles = self.lr_scheduler_params.get('cosine_cycles', 1)
-            
+
             # Create a warmup scheduler that linearly increases the learning rate
             warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
                 optimizer,
                 start_factor=warmup_factor,
                 end_factor=1.0,
-                total_iters=min(warmup_epochs, self.trainer.max_epochs // 10)  # Warmup for specified epochs or 10% of total epochs # type: ignore
+                total_iters=min(warmup_epochs, self.trainer.max_epochs // 10) # Warmup for specified epochs or 10% of total epochs
             )
-            
+
             # Create a cosine annealing scheduler
             cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
                 optimizer,
                 T_0=(self.trainer.max_epochs - warmup_scheduler.total_iters) // cosine_cycles if self.trainer.max_epochs is not None else 90,
-                T_mult=1,  # Keep the same cycle length
+                T_mult=1, # Keep the same cycle length
                 eta_min=self.learning_rate * cosine_min_factor
             )
-            
+
             # Combine the schedulers
             return {
                 'optimizer': optimizer,

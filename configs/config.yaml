@@ -3,53 +3,57 @@ experiment:
   seed: 400
   num_workers: 8
   batch_size: 512
+  log_interval: 10
+  optimizer: 'RiemannianAdam' # 'RiemannianAdam', 'RiemannianSGD'
+
 ## Pretraining parameters
 pretraining:
   epochs: 400
-  trainable_curvature: False
   learning_rate: 3e-3
+  trainable_curvature: False
   overwrite: False
+
 ## Clustering parameters
 clustering:
   epochs: 500
-  model: 'HyperbolicHC' # 'HyperbolicHC', 'HyperbolicContrastive'
   trainable_curvature: False
+  accumulate_gradients: 1000
   learning_rate: 1e-3
-  adam_momentum: [0.9, 0.999]
-  lr_scheduler: # 'cosine', 'linear', 'warmup_cosine'
+  # Learning rate scheduler
+  lr_scheduler:
+    type: # 'cosine', 'linear', 'warmup_cosine'
+    warmup_epochs: 100  # Number of epochs for warmup phase
+    warmup_factor: 0.1  # Initial learning rate factor (0.1 means start at 10% of target lr)
+    cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
+    cosine_cycles: 1  # Number of cosine cycles
+  # Contrastive loss parameters
   use_contrastive_loss: False # Whether to use contrastive loss during clustering
   contrastive_weight: 1.0 # Weight for contrastive loss when used with reconstruction
-  accumulate_gradients: 1000
-### Learning rate scheduler parameters
-lr_scheduler:
-  warmup_epochs: 100  # Number of epochs for warmup phase
-  warmup_factor: 0.1  # Initial learning rate factor (0.1 means start at 10% of target lr)
-  cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
-  cosine_cycles: 1  # Number of cosine cycles
+  contrastive_temperature: 0.05 # Temperature for contrastive loss
+  contrastive_projection_dim: 128 # Dimension of the projection head for contrastive loss
 
-### HypHC parameters
+## HypHC parameters
 hyphc:
   loss_weight: 1.0
   temperature: 0.05
-  sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'random', 'chami'
+  sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'chami'
   triplet_subsampling_size: 150
   lca_version: 'ours' # 'ours', 'chami'
-  freeze_similarities: False
   normalized_loss: True
   distances_type: 'geodesic' # 'geodesic', 'cosine_similarity'
   dist_sum_loss: True
-  learnable_hyphc_weight: False
 
 ## Model architecture
 architecture:
-  ae_type: 'feedforward' # 'feedforward', 'resnet18', 'resnet34'
+  ae_type: 'feedforward' # 'feedforward', 'resnet18', 'resnet34', 'resnet50'
   hidden_dims: [512, 256, 128, 64, 32]
-  embedding_dim: 10
-  hyperbolic_encoding: 'EuclideanLinear+Exp' # 'EuclideanLinear+Exp', 'HyperbolicLinear'
-  hyperbolic_decoding: 'Log+EuclideanLinear' # 'Log+EuclideanLinear', 'HyperbolicLinear+Log', 'HyperbolicRegression', 'HyperbolicRegressionPP', 'HyperbolicLinearPP'
+  latent_dim: 10
+  hyperbolic_encoding: 'EuclideanLinear_Exp' # 'EuclideanLinear_Exp', 'HyperbolicLinear', 'HyperbolicLinearPP'
+  hyperbolic_decoding: 'Log_EuclideanLinear' # 'Log_EuclideanLinear', 'HyperbolicLinear_Log', 'HyperbolicLinearPP_Log',
+                                             # 'HyperbolicRegression', 'HyperbolicRegressionPP'
+  precision: 'float64' # 'float32', 'float64'
   manifold_name: 'PoincareBall' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
   manifold_precision: 'float64' # 'float16', 'float32', 'float64'
-  precision: 'float64' # 'float32', 'float64'
   curvature_magnitude: 1.0
 
 ## Evaluation Metrics to be used and logged
@@ -72,7 +76,6 @@ wandb:
   project: 'hyper_clustering'
   entity: 'kevin-sidak-team'
   save_dir: './logs'
-  plot_label_type: 'class'
   tags: []
 
 ## Hydra specifics

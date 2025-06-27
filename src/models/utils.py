@@ -1,39 +1,125 @@
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
-import torch.nn.functional as F
+import torch.nn as nn
+import numpy as np
 from scipy.cluster.hierarchy import linkage
 from scipy.spatial.distance import squareform
 
-from sklearn.manifold import TSNE
-from typing import Union, Optional
-from src.hyperbolic_math.src.manifolds import Manifold
+from typing import Dict, Union, Optional
+from src.hyperbolic_math.src.manifolds import Manifold, PoincareBall
+from src.hyperbolic_math.src.nn_layers import *
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 
 
-# TODO:
-def create_label_mapping(all_embeddings_np, all_labels_np, class_names, label_type='class'):
-    # Create label mappings
-    if class_names and isinstance(class_names[0], tuple):
-        label_mapping = {}
-        superclass_mapping = {}
-        for label in np.unique(all_labels_np):
-            class_name, superclass = class_names[label]
-            superclass_mapping[label] = superclass if superclass else class_name
-            if label_type == 'super':
-                label_mapping[label] = superclass
-            elif label_type == 'class':
-                label_mapping[label] = class_name
-            elif label_type == 'both':
-                label_mapping[label] = f"{class_name} ({superclass})"
-    else:
-        label_mapping = {label: str(label) for label in np.unique(all_labels_np)}
+def get_dtype_from_precision(precision: str) -> torch.dtype:
+    DTYPE_MAP: Dict[str, torch.dtype] = {
+        "float16": torch.float16,
+        "float32": torch.float32,
+        "float64": torch.float64,
+    }
+    if precision not in DTYPE_MAP:
+        raise ValueError(f"Unsupported precision: {precision}. Supported precisions are: {list(DTYPE_MAP.keys())}.")
+    return DTYPE_MAP[precision]
 
+def get_hyperbolic_encoding_layer_by_name(
+    layer_name: str,
+    manifold: Manifold,
+    input_dim: int,
+    output_dim: int,
+    params_dtype: str = 'float32'
+) -> Union[nn.Sequential, HyperbolicLinear, HyperbolicFullyConnectedPoincarePP]:
+    if layer_name =='EuclideanLinear_Exp':
+        layer = nn.Sequential(
+            nn.Linear(input_dim, output_dim),
+                Expmap_0(manifold=manifold)
+            )
+    elif layer_name == 'HyperbolicLinear':
+        layer = HyperbolicLinear(
+                manifold=manifold,
+                input_dim=input_dim,
+                output_dim=output_dim,
+                params_dtype=params_dtype,
+                input_space='tangent')
+    elif layer_name == 'HyperbolicLinearPP' and isinstance(manifold, PoincareBall):
+        layer = HyperbolicFullyConnectedPoincarePP(
+            manifold=manifold,
+            input_dim=input_dim,
+            output_dim=output_dim,
+            params_dtype=params_dtype,
+            input_space='tangent')
+    else:
+        raise ValueError(f"Unknown hyperbolic layer name: {layer_name}. "
+                         "Available options are: 'EuclideanLinear_Exp', 'HyperbolicLinear', 'HyperbolicLinearPP'.")
+    return layer
+
+def get_hyperbolic_decoding_layer_by_name(
+    layer_name: str,
+    manifold: Manifold,
+    input_dim: int,
+    output_dim: int,
+    params_dtype: str = 'float32'
+) -> nn.Sequential:
+    if layer_name == 'Log_EuclideanLinear':
+        layer = nn.Sequential(
+            Logmap_0(manifold=manifold),
+            nn.Linear(input_dim, output_dim),
+            nn.BatchNorm1d(output_dim),
+            nn.ReLU()
+        )
+    elif layer_name == 'HyperbolicLinear_Log':
+        layer = nn.Sequential(
+            HyperbolicLinear(
+                manifold=manifold,
+                input_dim=input_dim,
+                output_dim=output_dim,
+                params_dtype=params_dtype,
+                input_space='manifold'),
+            Logmap_0(manifold=manifold),
+            nn.BatchNorm1d(output_dim),
+            nn.ReLU()
+        )
+    elif layer_name == 'HyperbolicLinearPP_Log' and isinstance(manifold, PoincareBall):
+        layer = nn.Sequential(
+            HyperbolicFullyConnectedPoincarePP(
+                manifold=manifold,
+                input_dim=input_dim,
+                output_dim=output_dim,
+                params_dtype=params_dtype,
+                input_space='manifold'),
+            Logmap_0(manifold=manifold),
+            nn.BatchNorm1d(output_dim),
+            nn.ReLU()
+        )
+    elif layer_name == 'HyperbolicRegression' and isinstance(manifold, PoincareBall):
+        layer = nn.Sequential(
+            HyperbolicRegressionPoincare(
+                manifold=manifold,
+                input_dim=input_dim,
+                output_dim=output_dim,
+                params_dtype=params_dtype,
+                input_space='manifold'),
+            nn.BatchNorm1d(output_dim),
+            nn.ReLU()
+        )
+    elif layer_name == 'HyperbolicRegressionPP' and isinstance(manifold, PoincareBall):
+        layer = nn.Sequential(
+            HyperbolicRegressionPoincarePP(
+                manifold=manifold,
+                input_dim=input_dim,
+                output_dim=output_dim,
+                params_dtype=params_dtype,
+                input_space='manifold'),
+            nn.BatchNorm1d(output_dim),
+            nn.ReLU()
+        )
+    else:
+        raise ValueError(f"Unknown hyperbolic layer name: {layer_name}. "
+                         "Available options are: 'Log_EuclideanLinear', 'HyperbolicLinear_Log', 'HyperbolicLinearPP_Log', "
+                         "'HyperbolicRegression', 'HyperbolicRegressionPP'.")
+    return layer
 
 def dendrogram_purity(
     embeddings_or_distances: Union[np.ndarray, torch.Tensor],
     labels: Union[np.ndarray, torch.Tensor],
-    # Replace 'Any' with Union[Euclidean, Hyperboloid, PoincareBall] or your base Manifold class if available
     manifold: Optional[Manifold] = None, 
     linkage_method: str = 'average'
 ) -> float:
@@ -44,24 +130,27 @@ def dendrogram_purity(
     The purity is defined as the sum of purities of the clusters where each
     same-class pair first merges, divided by the total number of same-class pairs.
 
-    Args:
-        embeddings_or_distances (Union[np.ndarray, torch.Tensor]):
-            - Embeddings of shape (n_samples, embedding_dim).
-            - OR a precomputed square distance matrix of shape (n_samples, n_samples).
-            - OR a precomputed condensed distance matrix (1D array).
-        labels (Union[np.ndarray, torch.Tensor]): Ground truth labels of shape (n_samples,).
-        manifold (Optional[Any]): The manifold object (e.g., PoincareBall, Euclidean)
-            used for distance computation if embeddings are provided. If None,
-            and embeddings_or_distances is 2D and square, it's assumed to be a
-            Euclidean distance matrix. If embeddings are NxD (D!=N) and manifold is None,
-            Euclidean distances will be computed.
-        linkage_method (str): The linkage method for hierarchical clustering
-            (e.g., 'single', 'complete', 'average', 'ward').
+    Parameters
+    ----------
+    embeddings_or_distances : Union[np.ndarray, torch.Tensor]
+        - Embeddings of shape (n_samples, embedding_dim)
+        - OR a precomputed square distance matrix of shape (n_samples, n_samples)
+        - OR a precomputed condensed distance matrix (1D array)
+    labels : Union[np.ndarray, torch.Tensor]
+        Ground truth labels of shape (n_samples,)
+    manifold : Manifold (optional)
+        The manifold object (e.g. Euclidean, Hyperboloid, PoincareBall)
+        used for distance computation if embeddings are provided.
+        If None, and embeddings_or_distances is 2D and square, it's assumed to be a
+        Euclidean distance matrix. If embeddings are NxD (D!=N) and manifold is None,
+        Euclidean distances will be computed.
+    linkage_method : str
+        The linkage method for hierarchical clustering (e.g. 'single', 'complete', 'average', 'ward')
 
-    Returns:
+    Returns
+    -------
         float: Dendrogram purity score (between 0 and 1).
     """
-
     if isinstance(labels, torch.Tensor):
         labels_np = labels.detach().cpu().numpy()
     elif isinstance(labels, np.ndarray):
@@ -73,10 +162,9 @@ def dendrogram_purity(
         except Exception as e:
             raise TypeError(f"Labels could not be converted to a NumPy array: {e}")
 
-
     num_samples = len(labels_np)
 
-    if num_samples < 2: # Purity is typically 1.0 for less than 2 samples.
+    if num_samples < 2: # Purity is typically 1.0 for less than 2 samples
         return 1.0
 
     if isinstance(embeddings_or_distances, torch.Tensor):
@@ -103,7 +191,7 @@ def dendrogram_purity(
                 f"Input is 2D, but number of rows ({input_data_np.shape[0]}) "
                 f"does not match number of labels ({num_samples}). Expected (N, D) embeddings or (N, N) distance matrix."
             )
-        
+
         if manifold is not None: # Assumed to be embeddings (N, D)
             # Determine device for manifold computation, fallback to CPU
             # This assumes manifold.c exists and is a tensor, or manifold has parameters.
@@ -116,18 +204,17 @@ def dendrogram_purity(
                     target_device = next(manifold.parameters()).device
                 except StopIteration: # No parameters
                     pass
-            
+
             if isinstance(embeddings_or_distances, torch.Tensor):
                 embeddings_for_manifold = embeddings_or_distances.to(target_device)
             else: # Was numpy, convert to tensor for manifold computation
-                embeddings_for_manifold = torch.tensor(input_data_np, dtype=torch.float32, device=target_device) # Assuming float32
-            
+                embeddings_for_manifold = torch.tensor(input_data_np, device=target_device)
+
             square_dist_matrix = compute_pairwise_distances(embeddings_for_manifold, manifold).detach().cpu().numpy()
             # Ensure symmetry, as numerical precision can sometimes lead to tiny differences
             if not np.allclose(square_dist_matrix, square_dist_matrix.T, atol=1e-7):
                  square_dist_matrix = (square_dist_matrix + square_dist_matrix.T) / 2.0
             condensed_distances = squareform(square_dist_matrix, checks=False) # checks=False as we symmetrized
-        
         else: # No manifold: could be NxD embeddings (use Euclidean) or NxN distance matrix
             if input_data_np.shape[0] == input_data_np.shape[1]: # Square matrix (NxN), assume it's a distance matrix
                 square_dist_matrix = input_data_np
@@ -136,7 +223,7 @@ def dendrogram_purity(
                 condensed_distances = squareform(square_dist_matrix, checks=False)
             else: # NxD embeddings, D!=N, compute Euclidean distances
                 # Using sklearn for robust Euclidean distance calculation
-                from sklearn.metrics.pairwise import euclidean_distances 
+                from sklearn.metrics.pairwise import euclidean_distances
                 square_dist_matrix = euclidean_distances(input_data_np)
                 # euclidean_distances result is already symmetric
                 condensed_distances = squareform(square_dist_matrix, checks=False)
@@ -154,11 +241,11 @@ def dendrogram_purity(
     # Leaf nodes (original samples) are IDs 0 to num_samples-1.
     # Internal nodes (formed by merges in Z) will get IDs from num_samples upwards.
     cluster_to_samples_map = {i: {i} for i in range(num_samples)}
-    
+
     # pair_purity_contributions: stores the purity for each same-class pair
     # when they are first merged. Key: sorted tuple (original_sample_idx1, original_sample_idx2).
     pair_purity_contributions = {}
-    
+
     # Iterate through each merge operation in the linkage matrix Z.
     # Each row m in Z represents a merge. Z has (num_samples - 1) rows.
     # Z[m, 0] and Z[m, 1] are the IDs of the clusters being merged.
@@ -166,24 +253,24 @@ def dendrogram_purity(
     for m in range(Z.shape[0]):
         merged_cluster_id_1 = int(Z[m, 0])
         merged_cluster_id_2 = int(Z[m, 1])
-        
+
         samples_in_cluster_1 = cluster_to_samples_map[merged_cluster_id_1]
         samples_in_cluster_2 = cluster_to_samples_map[merged_cluster_id_2]
-        
+
         newly_merged_samples_set = samples_in_cluster_1.union(samples_in_cluster_2)
         new_cluster_id = num_samples + m # Assign a new ID to the merged cluster
         cluster_to_samples_map[new_cluster_id] = newly_merged_samples_set
-        
+
         # Calculate purity of this newly formed cluster
         labels_of_samples_in_new_cluster = labels_np[list(newly_merged_samples_set)]
-        
+
         purity_of_new_cluster = 0.0
         if labels_of_samples_in_new_cluster.size > 0:
             # np.unique also returns counts, which is efficient
             _unique_cluster_labels, counts_in_cluster = np.unique(labels_of_samples_in_new_cluster, return_counts=True)
             if counts_in_cluster.size > 0: # Ensure there are counts (i.e., cluster is not empty)
                 purity_of_new_cluster = np.max(counts_in_cluster) / len(labels_of_samples_in_new_cluster)
-            
+
         # Attribute this purity to same-class pairs brought together by THIS merge
         # These are pairs where one sample is from cluster_1 and the other from cluster_2
         for s1_idx in samples_in_cluster_1:
@@ -196,7 +283,7 @@ def dendrogram_purity(
                     # We only store the purity of the cluster at their first meeting point.
                     if pair_key not in pair_purity_contributions: # Should always be true with this iterative structure
                          pair_purity_contributions[pair_key] = purity_of_new_cluster
-        
+
         # Optional: Clean up map entries for already merged clusters to save memory,
         # especially if num_samples is very large.
         del cluster_to_samples_map[merged_cluster_id_1]
@@ -216,16 +303,112 @@ def dendrogram_purity(
 
     # Sum of purities for all unique same-class pairs, each considered once at their merge point.
     sum_of_contributed_purities = sum(pair_purity_contributions.values())
-    
+
     # The number of entries in pair_purity_contributions should ideally equal total_actual_same_class_pairs
     # if the hierarchy is complete and all same-class pairs are eventually merged into some cluster.
     # If some same-class pairs are never in the same cluster (e.g. due to linkage issues or disconnected components),
     # they won't contribute to sum_of_contributed_purities. The definition of purity might vary in such cases.
     # This definition assumes they contribute 0 if not merged, which is implicitly handled.
-    
     return sum_of_contributed_purities / total_actual_same_class_pairs
 
+def compute_hierarchical_purity(embeddings, labels, manifold=None, linkage_method='average'):
+    """
+    A simpler version of dendrogram purity that uses scikit-learn's implementation.
+    This is more efficient but slightly less informative than the full dendrogram purity.
 
+    Args:
+        embeddings (torch.Tensor or np.ndarray): Hyperbolic embeddings
+        labels (torch.Tensor or np.ndarray): Ground truth labels
+        manifold (Manifold, optional): The hyperbolic manifold for distance computation
+        linkage_method (str, optional): Linkage method for hierarchical clustering
+
+    Returns:
+        dict: A dictionary with purity scores at different levels of the hierarchy
+    """
+    import torch
+    import numpy as np
+    from scipy.cluster.hierarchy import linkage, fcluster
+    from scipy.spatial.distance import squareform
+    from sklearn.metrics import normalized_mutual_info_score
+
+    # Convert to numpy if needed
+    if isinstance(embeddings, torch.Tensor):
+        embeddings = embeddings.detach().cpu().numpy()
+    if isinstance(labels, torch.Tensor):
+        labels = labels.detach().cpu().numpy()
+
+    # Compute distances
+    if manifold is not None:
+        if not isinstance(embeddings, torch.Tensor):
+            embeddings = torch.tensor(embeddings, device=manifold.c.device)
+        distances = compute_pairwise_distances(embeddings, manifold).detach().cpu().numpy()
+    else:
+        distances = embeddings
+
+    # Ensure symmetric
+    if not np.allclose(distances, distances.T):
+        distances = (distances + distances.T) / 2
+
+    # Convert to condensed form
+    condensed_distances = squareform(distances)
+
+    # Perform hierarchical clustering
+    Z = linkage(condensed_distances, method=linkage_method)
+
+    # Compute purity at different levels by varying the distance threshold
+    num_clusters_list = [2, 5, 10, 20, 50, 100]  # Adjust based on your dataset size
+    result = {}
+
+    for num_clusters in num_clusters_list:
+        if num_clusters >= len(labels):
+            continue
+
+        # Cut the dendrogram to get the specified number of clusters
+        predicted_labels = fcluster(Z, t=num_clusters, criterion='maxclust')
+
+        # Compute NMI score
+        nmi = normalized_mutual_info_score(labels, predicted_labels)
+        result[f'nmi_{num_clusters}'] = nmi
+
+        # Compute purity for each cluster
+        cluster_purities = []
+        for cluster_id in np.unique(predicted_labels):
+            cluster_indices = np.where(predicted_labels == cluster_id)[0]
+            cluster_labels = labels[cluster_indices]
+
+            # Count occurrences of each label
+            label_counts = np.bincount(cluster_labels, minlength=len(np.unique(labels)))
+            cluster_purity = np.max(label_counts) / len(cluster_indices)
+            cluster_purities.append(cluster_purity)
+
+        # Average purity weighted by cluster size
+        result[f'purity_{num_clusters}'] = np.mean(cluster_purities)
+
+    # Overall average purity
+    result['avg_purity'] = np.mean([value for key, value in result.items() if key.startswith('purity_')])
+    result['avg_nmi'] = np.mean([value for key, value in result.items() if key.startswith('nmi_')])
+    return result
+
+############################################
+############## Unused Methods ##############
+
+# TODO:
+def create_label_mapping(all_embeddings_np, all_labels_np, class_names, label_type='class'):
+    # Create label mappings
+    if class_names and isinstance(class_names[0], tuple):
+        label_mapping = {}
+        superclass_mapping = {}
+        for label in np.unique(all_labels_np):
+            class_name, superclass = class_names[label]
+            superclass_mapping[label] = superclass if superclass else class_name
+            if label_type == 'super':
+                label_mapping[label] = superclass
+            elif label_type == 'class':
+                label_mapping[label] = class_name
+            elif label_type == 'both':
+                label_mapping[label] = f"{class_name} ({superclass})"
+    else:
+        label_mapping = {label: str(label) for label in np.unique(all_labels_np)}
 
 def get_samples_in_cluster(Z, cluster_idx, num_samples):
     """
@@ -253,87 +436,6 @@ def get_samples_in_cluster(Z, cluster_idx, num_samples):
             to_process.append(left_child)
     
     return result
-
-
-def compute_hierarchical_purity(embeddings, labels, manifold=None, linkage_method='average'):
-    """
-    A simpler version of dendrogram purity that uses scikit-learn's implementation.
-    This is more efficient but slightly less informative than the full dendrogram purity.
-    
-    Args:
-        embeddings (torch.Tensor or np.ndarray): Hyperbolic embeddings
-        labels (torch.Tensor or np.ndarray): Ground truth labels
-        manifold (Manifold, optional): The hyperbolic manifold for distance computation
-        linkage_method (str, optional): Linkage method for hierarchical clustering
-        
-    Returns:
-        dict: A dictionary with purity scores at different levels of the hierarchy
-    """
-    import torch
-    import numpy as np
-    from scipy.cluster.hierarchy import linkage, fcluster
-    from scipy.spatial.distance import squareform
-    from sklearn.metrics import normalized_mutual_info_score
-    
-    # Convert to numpy if needed
-    if isinstance(embeddings, torch.Tensor):
-        embeddings = embeddings.detach().cpu().numpy()
-    if isinstance(labels, torch.Tensor):
-        labels = labels.detach().cpu().numpy()
-    
-    # Compute distances
-    if manifold is not None:
-        if not isinstance(embeddings, torch.Tensor):
-            embeddings = torch.tensor(embeddings, device=manifold.c.device)
-        distances = compute_pairwise_distances(embeddings, manifold).detach().cpu().numpy()
-    else:
-        distances = embeddings
-    
-    # Ensure symmetric
-    if not np.allclose(distances, distances.T):
-        distances = (distances + distances.T) / 2
-    
-    # Convert to condensed form
-    condensed_distances = squareform(distances)
-    
-    # Perform hierarchical clustering
-    Z = linkage(condensed_distances, method=linkage_method)
-    
-    # Compute purity at different levels by varying the distance threshold
-    num_clusters_list = [2, 5, 10, 20, 50, 100]  # Adjust based on your dataset size
-    result = {}
-    
-    for num_clusters in num_clusters_list:
-        if num_clusters >= len(labels):
-            continue
-            
-        # Cut the dendrogram to get the specified number of clusters
-        predicted_labels = fcluster(Z, t=num_clusters, criterion='maxclust')
-        
-        # Compute NMI score
-        nmi = normalized_mutual_info_score(labels, predicted_labels)
-        result[f'nmi_{num_clusters}'] = nmi
-        
-        # Compute purity for each cluster
-        cluster_purities = []
-        for cluster_id in np.unique(predicted_labels):
-            cluster_indices = np.where(predicted_labels == cluster_id)[0]
-            cluster_labels = labels[cluster_indices]
-            
-            # Count occurrences of each label
-            label_counts = np.bincount(cluster_labels, minlength=len(np.unique(labels)))
-            cluster_purity = np.max(label_counts) / len(cluster_indices)
-            cluster_purities.append(cluster_purity)
-        
-        # Average purity weighted by cluster size
-        result[f'purity_{num_clusters}'] = np.mean(cluster_purities)
-    
-    # Overall average purity
-    result['avg_purity'] = np.mean([value for key, value in result.items() if key.startswith('purity_')])
-    result['avg_nmi'] = np.mean([value for key, value in result.items() if key.startswith('nmi_')])
-    
-    return result
-
 
 def evaluate_hierarchical_clustering(embeddings, labels, manifold=None, linkage_methods=None):
     """
