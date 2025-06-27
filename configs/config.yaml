@@ -26,11 +26,6 @@ clustering:
     warmup_factor: 0.1  # Initial learning rate factor (0.1 means start at 10% of target lr)
     cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
     cosine_cycles: 1  # Number of cosine cycles
-  # Contrastive loss parameters
-  use_contrastive_loss: False # Whether to use contrastive loss during clustering
-  contrastive_weight: 1.0 # Weight for contrastive loss when used with reconstruction
-  contrastive_temperature: 0.05 # Temperature for contrastive loss
-  contrastive_projection_dim: 128 # Dimension of the projection head for contrastive loss
 
 ## HypHC parameters
 hyphc:
