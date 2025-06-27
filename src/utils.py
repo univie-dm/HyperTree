@@ -140,6 +140,7 @@ def get_clustering_model(cfg: omegaconf.DictConfig,
         hyphc_dist_sum_loss=cfg.hyphc.dist_sum_loss,
         distances_type=cfg.hyphc.distances_type,
         evaluation_metrics=cfg.evaluation,
+        start_epoch=cfg.pretraining.epochs,
     )
 
     return model

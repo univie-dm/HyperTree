@@ -34,6 +34,7 @@ class HyperbolicHCModel(AbstractModel):
         distances_type: str = 'geodesic',
         hyphc_dist_sum_loss: bool = True,
         evaluation_metrics: list[str] | None = None,
+        start_epoch: int = 0,  # This is used to set the global_epoch in the parent class
     ):
         super().__init__(
             model_type=ae_model.model_type,
@@ -49,8 +50,7 @@ class HyperbolicHCModel(AbstractModel):
             learning_rate=learning_rate,
             log_interval=log_interval,
             stage=stage,
-            #global_epoch=global_epoch+1, ###
-            global_epoch=ae_model.global_epoch,
+            global_epoch=start_epoch,
             learning_rate_scheduler=learning_rate_scheduler,
             lr_scheduler_params=lr_scheduler_params,
             distances_type=distances_type,
