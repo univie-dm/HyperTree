@@ -5,7 +5,7 @@ from lightning.pytorch.utilities import grad_norm
 
 from typing import List, Tuple
 from src.models.abstract import AbstractModel
-from src.models.utils import get_hyperbolic_encoding_layer_by_name, get_hyperbolic_decoding_layer_by_name
+from src.models.utils import get_dtype_from_precision, get_hyperbolic_encoding_layer_by_name, get_hyperbolic_decoding_layer_by_name
 from src.hyperbolic_math.src.manifolds import Euclidean
 
 
@@ -114,7 +114,7 @@ class HyperbolicAE(AbstractModel):
     def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
         x_recon = self.hyperbolic_decoding_layer(manifold_z)
         # Cast back from the manifold precision to the model's precision
-        x_recon = x_recon.to(dtype=self.params_dtype)
+        x_recon = x_recon.to(dtype=get_dtype_from_precision(self.params_dtype))
         x_recon = self.decoder(x_recon)
         x_recon = x_recon.view(-1, *self.orginal_input_shape)
         return x_recon

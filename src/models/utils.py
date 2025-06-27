@@ -4,11 +4,21 @@ import numpy as np
 from scipy.cluster.hierarchy import linkage
 from scipy.spatial.distance import squareform
 
-from typing import Union, Optional
+from typing import Dict, Union, Optional
 from src.hyperbolic_math.src.manifolds import Manifold, PoincareBall
 from src.hyperbolic_math.src.nn_layers import *
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 
+
+def get_dtype_from_precision(precision: str) -> torch.dtype:
+    DTYPE_MAP: Dict[str, torch.dtype] = {
+        "float16": torch.float16,
+        "float32": torch.float32,
+        "float64": torch.float64,
+    }
+    if precision not in DTYPE_MAP:
+        raise ValueError(f"Unsupported precision: {precision}. Supported precisions are: {list(DTYPE_MAP.keys())}.")
+    return DTYPE_MAP[precision]
 
 def get_hyperbolic_encoding_layer_by_name(
     layer_name: str,

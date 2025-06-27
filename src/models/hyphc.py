@@ -6,6 +6,7 @@ from typing import Tuple
 from lightning.pytorch.utilities import grad_norm
 from torchmetrics.functional.pairwise import pairwise_cosine_similarity
 
+from src.models.utils import get_dtype_from_precision
 from src.models.resnet import HyperbolicResNet
 from src.models.abstract import AbstractModel
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
@@ -279,7 +280,7 @@ class HyperbolicHCModel(AbstractModel):
     def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
         x = self.hyperbolic_decoding_layer(manifold_z)
         # Cast back from the manifold precision to the model's precision
-        x = x.to(dtype=self.params_dtype)
+        x = x.to(dtype=get_dtype_from_precision(self.params_dtype))
         if self.model_type in ['resnet18', 'resnet34']:
             x = x.view(-1, 512 * self.expansion, 4, 4)
         x_recon = self.decoder(x)

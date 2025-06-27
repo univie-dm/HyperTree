@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from typing import Tuple
 from torchvision.models import resnet18, resnet34, resnet50
 from src.models.abstract import AbstractModel
-from src.models.utils import get_hyperbolic_encoding_layer_by_name, get_hyperbolic_decoding_layer_by_name
+from src.models.utils import get_dtype_from_precision, get_hyperbolic_encoding_layer_by_name, get_hyperbolic_decoding_layer_by_name
 from src.hyperbolic_math.src.manifolds import Euclidean
 
 
@@ -192,7 +192,7 @@ class HyperbolicResNet(AbstractModel):
     def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
         x = self.hyperbolic_decoding_layer(manifold_z)
         # Cast back from the manifold precision to the model's precision
-        x = x.to(dtype=self.params_dtype)
+        x = x.to(dtype=get_dtype_from_precision(self.params_dtype))
         x = x.view(-1, 512 * self.expansion, 4, 4)
         x_recon = self.decoder(x)
         return x_recon

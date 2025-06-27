@@ -30,7 +30,6 @@ def main(cfg: DictConfig) -> None:
         raise ValueError(f"Precision {cfg.architecture.precision} not supported")
 
     warnings.filterwarnings("ignore", ".*is smaller than the logging interval Trainer.*")
-
     logger = get_logger(cfg)
     trainer = pl.Trainer(logger=logger,
                          max_epochs=cfg.pretraining.epochs,
