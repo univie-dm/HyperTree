@@ -1,21 +1,16 @@
 import torch
-import wandb
-import numpy as np
+from torch import nn
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 
 from typing import Tuple, Any
 from pytorch_lightning.loggers import WandbLogger
-from sklearn.cluster import AgglomerativeClustering
-from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from sklearn.metrics.pairwise import cosine_similarity
 
 from src.evaluation import evaluation
-from src.models.utils import dendrogram_purity
 from ..hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
 from ..hyperbolic_math.src.optim import RiemannianAdam, RiemannianSGD
-from ..hyperbolic_math.src.utils.helpers import compute_pairwise_distances, get_delta
-from ..hyperbolic_math.src.utils.vis_utils import create_figure
+from ..hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 
 
 class AbstractModel(pl.LightningModule):

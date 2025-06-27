@@ -8,14 +8,14 @@ experiment:
 
 ## Pretraining parameters
 pretraining:
-  epochs: 400
+  epochs: 10
   learning_rate: 3e-3
   trainable_curvature: False
   overwrite: False
 
 ## Clustering parameters
 clustering:
-  epochs: 500
+  epochs: 10
   trainable_curvature: False
   accumulate_gradients: 1000
   learning_rate: 1e-3
@@ -57,7 +57,7 @@ architecture:
   curvature_magnitude: 1.0
 
 ## Evaluation Metrics to be used and logged
-evalutation:
+evaluation:
   log_interval: 10
   delta_hyperbolicity: False
   dendrogram_purity_single: False

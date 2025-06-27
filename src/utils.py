@@ -82,7 +82,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
         model = torch.load(f"data/models/{get_model_path(cfg)}.pt", weights_only=False)
         print("Loaded model from {}".format(f"data/models/{get_model_path(cfg)}.pt"))
     elif cfg.architecture.ae_type == 'feedforward':
-        model = HyperbolicAE(
+        model = HyperbolicAE( 
             input_dim=input_dim,
             hidden_dims=cfg.architecture.hidden_dims,
             hyperbolic_encoding=cfg.architecture.hyperbolic_encoding,
@@ -98,7 +98,6 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             log_interval=cfg.evaluation.log_interval,
             stage='pretrain',
             global_epoch=0,
-            params_dtype=cfg.architecture.precision,
         )
     elif cfg.architecture.ae_type in ['resnet18', 'resnet34', 'resnet50']:
         model = HyperbolicResNet(
@@ -116,9 +115,6 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             optimizer_name=cfg.experiment.optimizer,
             learning_rate=cfg.pretraining.learning_rate,
             log_interval=cfg.evalutation.log_interval,
-            input_channels=cfg.dataset.channels,
-            output_size=cfg.dataset.resize,
-            params_dtype=cfg.architecture.precision,
         )
     else:
         raise ValueError("Invalid autoencoder type")
@@ -129,47 +125,33 @@ def get_clustering_model(cfg: omegaconf.DictConfig,
                          use_contrastive_loss: bool = False,
                          contrastive_weight: float = 0.5,
                          contrastive_temperature: float = 0.05,
-                         ) -> Union[HyperbolicContrastiveModel, HyperbolicHCModel]:
-    if cfg.clustering.model == 'HyperbolicContrastive':
-        model = HyperbolicContrastiveModel(
-            ae_model=pretrain_model,
-            clustering_trainable_curvature=cfg.clustering.trainable_curvature,
-            learning_rate=cfg.clustering.learning_rate,
-            contrastive_weight=0.0,
-            contrastive_temperature=0.0,
-            light_radius=0.0,
-            start_epoch=cfg.pretraining.epochs,
-            log_interval=cfg.training.log_interval,
-        )
-    elif cfg.clustering.model == 'HyperbolicHC':
-        model = HyperbolicHCModel(
-            ae_model=pretrain_model,
-            clustering_trainable_curvature=cfg.clustering.trainable_curvature,
-            learning_rate=cfg.clustering.learning_rate,
-            hyphc_weight=cfg.hyphc.loss_weight,
-            hyphc_temperature=cfg.hyphc.temperature,
-            hyphc_sampling_strategy=cfg.hyphc.sampling_strategy,
-            hyphc_triplet_subsampling_size=cfg.hyphc.triplet_subsampling_size,
-            lca_version=cfg.hyphc.lca_version,
-            start_epoch=cfg.pretraining.epochs,
-            log_interval=cfg.evaluation.log_interval,
-            stage='clustering',
-            global_epoch=cfg.pretraining.epochs,
-            learning_rate_scheduler=cfg.clustering.lr_scheduler,
-            lr_scheduler_params=cfg.lr_scheduler if hasattr(cfg, 'lr_scheduler') else None,
-            learnable_hyphc_weight=cfg.hyphc.learnable_hyphc_weight,
-            freeze_similarities=cfg.hyphc.freeze_similarities,
-            normalized_hyphc_loss=cfg.hyphc.normalized_loss,
-            clustering_adam_momentum=cfg.clustering.adam_momentum,
-            hyperbolic_dist_sum_loss=cfg.hyphc.dist_sum_loss,
-            use_contrastive_loss=False,  # Contrastive loss is not used in HyperbolicHCModel
-            contrastive_weight=0.0,
-            contrastive_temperature=0.0,
-            distances_type=cfg.hyphc.distances_type,
-            evaluation_metrics=cfg.hyphc.evaluation_metrics,
-        )
-    else:
-        raise ValueError("Invalid clustering model")
+                         ) -> Union[ HyperbolicHCModel]:
+    model = HyperbolicHCModel(
+        ae_model=pretrain_model,
+        clustering_trainable_curvature=cfg.clustering.trainable_curvature,
+        learning_rate=cfg.clustering.learning_rate,
+        hyphc_weight=cfg.hyphc.loss_weight,
+        hyphc_temperature=cfg.hyphc.temperature,
+        hyphc_sampling_strategy=cfg.hyphc.sampling_strategy,
+        hyphc_triplet_subsampling_size=cfg.hyphc.triplet_subsampling_size,
+        lca_version=cfg.hyphc.lca_version,
+        start_epoch=cfg.pretraining.epochs,
+        log_interval=cfg.evaluation.log_interval,
+        stage='clustering',
+        global_epoch=cfg.pretraining.epochs,
+        learning_rate_scheduler=cfg.clustering.lr_scheduler,
+        lr_scheduler_params=cfg.lr_scheduler if hasattr(cfg, 'lr_scheduler') else None,
+        learnable_hyphc_weight=cfg.hyphc.learnable_hyphc_weight,
+        freeze_similarities=cfg.hyphc.freeze_similarities,
+        normalized_hyphc_loss=cfg.hyphc.normalized_loss,
+        clustering_adam_momentum=cfg.clustering.adam_momentum,
+        hyperbolic_dist_sum_loss=cfg.hyphc.dist_sum_loss,
+        use_contrastive_loss=False,  # Contrastive loss is not used in HyperbolicHCModel
+        contrastive_weight=0.0,
+        contrastive_temperature=0.0,
+        distances_type=cfg.hyphc.distances_type,
+        evaluation_metrics=cfg.hyphc.evaluation_metrics,
+    )
 
     return model
 
