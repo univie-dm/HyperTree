@@ -93,6 +93,6 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
         )
     if metrics.get("visualization", False):
         # Create embeddings plot
-        fig = create_figure(X, manifold, labels=Y)
+        fig = create_figure(X, manifold, labels=Y.cpu().numpy())
         results["hyperbolic_embeddings"] = wandb.Image(fig)
     return results

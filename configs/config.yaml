@@ -35,7 +35,7 @@ hyphc:
   triplet_subsampling_size: 150
   lca_version: 'ours' # 'ours', 'chami'
   normalized_loss: True
-  distances_type: 'geodesic' # 'geodesic', 'cosine_similarity'
+  distances_type: 'cosine' # 'geodesic', 'cosine'
   dist_sum_loss: True
 
 ## Model architecture

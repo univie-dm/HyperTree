@@ -194,7 +194,7 @@ class HyperbolicHCModel(AbstractModel):
         if self.distances_type == 'geodesic':
             distances = compute_pairwise_distances(embeddings[sampled_indices, :], self.manifold)  ## check if the same without ":"
             similarties = torch.reciprocal(1 + distances)
-        elif self.distances_type == 'cosine_similarity':
+        elif self.distances_type == 'cosine':
             distances = pairwise_cosine_similarity(
                 embeddings[sampled_indices, :],  ## check if the same without ":"
                 zero_diagonal=False,

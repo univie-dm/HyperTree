@@ -7,6 +7,7 @@ from typing import Tuple, Any
 from pytorch_lightning.loggers import WandbLogger
 from sklearn.metrics.pairwise import cosine_similarity
 
+from src.models.utils import get_dtype_from_precision
 from src.evaluation import evaluation
 from ..hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
 from ..hyperbolic_math.src.optim import RiemannianAdam, RiemannianSGD
@@ -194,7 +195,7 @@ class AbstractModel(pl.LightningModule):
                 if self.distances_type == 'geodesic':
                     distance_matrix = compute_pairwise_distances(all_embeddings, self.manifold)
                 elif self.distances_type == 'cosine':
-                    distance_matrix = torch.tensor(1 - cosine_similarity(all_embeddings.cpu().numpy()), dtype=self.manifold_precision)
+                    distance_matrix = torch.tensor(1 - cosine_similarity(all_embeddings.cpu().numpy()), dtype=get_dtype_from_precision(self.manifold_precision))
                 else:
                     raise ValueError(f"Invalid distances_type: {self.distances_type}")
 
