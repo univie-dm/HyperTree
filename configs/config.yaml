@@ -8,14 +8,14 @@ experiment:
 
 ## Pretraining parameters
 pretraining:
-  epochs: 10
+  epochs: 400
   learning_rate: 3e-3
   trainable_curvature: False
   overwrite: False
 
 ## Clustering parameters
 clustering:
-  epochs: 10
+  epochs: 500
   trainable_curvature: False
   accumulate_gradients: 1000
   learning_rate: 1e-3
