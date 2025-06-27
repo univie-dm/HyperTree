@@ -41,7 +41,7 @@ class HyperbolicHCModel(AbstractModel):
             params_dtype=ae_model.params_dtype,
             latent_dim=ae_model.latent_dim,
             manifold_name=ae_model.manifold_name,
-            manifold_precision=ae_model.manifold.dtype,
+            manifold_precision=ae_model.manifold_precision,
             curvature_magnitude=ae_model.manifold.c.clone().detach(),
             trainable_curvature=trainable_curvature,
             hyperbolic_decoding=ae_model.hyperbolic_decoding,

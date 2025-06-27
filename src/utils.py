@@ -95,7 +95,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             hyperbolic_decoding=cfg.architecture.hyperbolic_decoding,
             optimizer_name=cfg.experiment.optimizer,
             learning_rate=cfg.pretraining.learning_rate,
-            log_interval=cfg.evaluation.log_interval,
+            log_interval=cfg.experiment.log_interval,
             stage='pretrain',
             global_epoch=0,
         )
@@ -114,7 +114,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             output_size=cfg.dataset.resize,
             optimizer_name=cfg.experiment.optimizer,
             learning_rate=cfg.pretraining.learning_rate,
-            log_interval=cfg.evalutation.log_interval,
+            log_interval=cfg.experiment.log_interval,
         )
     else:
         raise ValueError("Invalid autoencoder type")
@@ -122,30 +122,24 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
 
 def get_clustering_model(cfg: omegaconf.DictConfig,
                          pretrain_model:  Union[HyperbolicAE, HyperbolicResNet],
-                         use_contrastive_loss: bool = False,
-                         contrastive_weight: float = 0.5,
-                         contrastive_temperature: float = 0.05,
                          ) -> Union[ HyperbolicHCModel]:
     model = HyperbolicHCModel(
         ae_model=pretrain_model,
-        clustering_trainable_curvature=cfg.clustering.trainable_curvature,
+        trainable_curvature=cfg.clustering.trainable_curvature,
         learning_rate=cfg.clustering.learning_rate,
         hyphc_weight=cfg.hyphc.loss_weight,
         hyphc_temperature=cfg.hyphc.temperature,
         hyphc_sampling_strategy=cfg.hyphc.sampling_strategy,
         hyphc_triplet_subsampling_size=cfg.hyphc.triplet_subsampling_size,
         lca_version=cfg.hyphc.lca_version,
-        start_epoch=cfg.pretraining.epochs,
-        log_interval=cfg.evaluation.log_interval,
+        log_interval=cfg.experiment.log_interval,
         stage='clustering',
-        global_epoch=cfg.pretraining.epochs,
-        learning_rate_scheduler=cfg.clustering.lr_scheduler,
-        lr_scheduler_params=cfg.lr_scheduler if hasattr(cfg, 'lr_scheduler') else None,
+        learning_rate_scheduler=cfg.clustering.lr_scheduler.type,
+        lr_scheduler_params=cfg.clustering.lr_scheduler if hasattr(cfg.clustering, 'lr_scheduler') else None,
         normalized_hyphc_loss=cfg.hyphc.normalized_loss,
-        clustering_adam_momentum=cfg.clustering.adam_momentum,
-        hyperbolic_dist_sum_loss=cfg.hyphc.dist_sum_loss,
+        hyphc_dist_sum_loss=cfg.hyphc.dist_sum_loss,
         distances_type=cfg.hyphc.distances_type,
-        evaluation_metrics=cfg.hyphc.evaluation_metrics,
+        evaluation_metrics=cfg.evaluation,
     )
 
     return model

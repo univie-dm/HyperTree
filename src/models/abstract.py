@@ -39,6 +39,7 @@ class AbstractModel(pl.LightningModule):
         self.model_type = model_type
         self.hyperbolic_encoding = hyperbolic_encoding
         self.params_dtype = params_dtype
+        self.manifold_precision = manifold_precision
         self.latent_dim = latent_dim
         self.manifold_name = manifold_name
         if manifold_name == 'Euclidean' or curvature_magnitude == 0:
