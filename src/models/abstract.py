@@ -207,7 +207,7 @@ class AbstractModel(pl.LightningModule):
                     metrics=self.evaluation_metrics
                 )
                 for key, value in evaluation_metrics.items():
-                    self.metrics.setdefault(f"test/{key}", []).append(value)
+                    self.metrics[f"test/{key}"] = value
                 plt.close()
 
     def on_train_epoch_end(self) -> None:

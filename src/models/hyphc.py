@@ -311,6 +311,3 @@ class HyperbolicHCModel(AbstractModel):
             self.metrics.setdefault(f"{key}", []).append(value)
 
         return total_loss
-
-    def on_train_start(self) -> None:
-        self.on_train_epoch_end()
