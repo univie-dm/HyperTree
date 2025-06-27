@@ -24,6 +24,8 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
     dict: A dictionary with metric names as keys and their computed values.
     """
     results = {}
+    if metrics is None:
+        return results
     if "delta_hyperbolicity" in metrics:
         delta_hyp, diam_hyp, rel_delta_hyp = get_delta(X, Y)
         results["delta_hyperbolicity"] = delta_hyp.item()
