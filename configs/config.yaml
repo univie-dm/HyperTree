@@ -5,6 +5,7 @@ experiment:
   batch_size: 512
   log_interval: 10
   optimizer: 'RiemannianAdam' # 'RiemannianAdam', 'RiemannianSGD'
+  gradient_clip_value: 1.0 # None, Float
 
 ## Pretraining parameters
 pretraining:

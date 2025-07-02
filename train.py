@@ -37,6 +37,8 @@ def main(cfg: DictConfig) -> None:
                          accelerator='auto',
                          deterministic=True,
                          enable_checkpointing=False,
+                         gradient_clip_algorithm='norm' if cfg.experiment.gradient_clip_value is not None else None,
+                         gradient_clip_val=cfg.experiment.gradient_clip_value if cfg.experiment.gradient_clip_value is not None else 1.0,
                          )
     datamodule, input_dim, _ = get_datamodule(cfg)
     pretrain_model = get_pretrain_model(cfg, input_dim)
@@ -61,6 +63,8 @@ def main(cfg: DictConfig) -> None:
                          deterministic=True,
                          enable_checkpointing=False,
                          accumulate_grad_batches=(accumulate_grad_batches),
+                         gradient_clip_algorithm='norm' if cfg.experiment.gradient_clip_value is not None else None,
+                         gradient_clip_val=cfg.experiment.gradient_clip_value if cfg.experiment.gradient_clip_value is not None else 1.0,
                          )
     trainer.fit(clustering_model, datamodule)
     wandb.finish()

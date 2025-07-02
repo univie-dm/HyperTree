@@ -33,7 +33,7 @@ class AbstractModel(pl.LightningModule):
         learning_rate_scheduler: str | None = None,
         lr_scheduler_params: dict | None = None,
         distances_type: str = 'geodesic',
-        evaluation_metrics: list[str] = None,
+        evaluation_metrics: dict[str, bool] = None,
     ):
         super().__init__()
         self.model_type = model_type
@@ -53,11 +53,11 @@ class AbstractModel(pl.LightningModule):
         elif manifold_name == 'Hyperboloid':
             self.manifold = Hyperboloid(c=c_tensor,
                                         trainable_c=trainable_curvature,
-                                        dtype=manifold_precision)
+                                        dtype=str(manifold_precision).split('.')[-1])
         elif manifold_name == 'PoincareBall':
             self.manifold = PoincareBall(c=c_tensor,
                                          trainable_c=trainable_curvature,
-                                         dtype=manifold_precision)
+                                         dtype=str(manifold_precision).split('.')[-1])
         else:
             raise ValueError(f"Invalid manifold name: {manifold_name}")
         self.hyperbolic_decoding = hyperbolic_decoding
@@ -177,7 +177,7 @@ class AbstractModel(pl.LightningModule):
     def evaluate(self) -> None:
         if not isinstance(self.logger, WandbLogger):
             return
-        if self.current_epoch % self.log_interval == 0:
+        if self.current_epoch % self.log_interval == 0 and any([i for i in self.evaluation_metrics.values()]):
             with torch.no_grad():
                 test_loader = self.trainer.datamodule.test_dataloader() # type: ignore
 
