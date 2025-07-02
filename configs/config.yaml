@@ -5,6 +5,7 @@ experiment:
   batch_size: 512
   log_interval: 10
   optimizer: 'RiemannianAdam' # 'RiemannianAdam', 'RiemannianSGD'
+  gradient_clip_value: 1.0 # None, Float
 
 ## Pretraining parameters
 pretraining:
@@ -26,11 +27,6 @@ clustering:
     warmup_factor: 0.1  # Initial learning rate factor (0.1 means start at 10% of target lr)
     cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
     cosine_cycles: 1  # Number of cosine cycles
-  # Contrastive loss parameters
-  use_contrastive_loss: False # Whether to use contrastive loss during clustering
-  contrastive_weight: 1.0 # Weight for contrastive loss when used with reconstruction
-  contrastive_temperature: 0.05 # Temperature for contrastive loss
-  contrastive_projection_dim: 128 # Dimension of the projection head for contrastive loss
 
 ## HypHC parameters
 hyphc:
@@ -40,7 +36,7 @@ hyphc:
   triplet_subsampling_size: 150
   lca_version: 'ours' # 'ours', 'chami'
   normalized_loss: True
-  distances_type: 'geodesic' # 'geodesic', 'cosine_similarity'
+  distances_type: 'cosine_similarity' # 'geodesic', 'cosine_similarity'
   dist_sum_loss: True
 
 ## Model architecture
@@ -55,6 +51,19 @@ architecture:
   manifold_name: 'PoincareBall' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
   manifold_precision: 'float64' # 'float16', 'float32', 'float64'
   curvature_magnitude: 1.0
+
+## Evaluation Metrics to be used and logged
+evaluation:
+  delta_hyperbolicity: False
+  dendrogram_purity_single: False
+  dendrogram_purity_complete: False
+  dendrogram_purity_average: False
+  dendrogram_purity_ward: False
+  agglomerative_clustering_single: False
+  agglomerative_clustering_complete: False
+  agglomerative_clustering_average: False
+  agglomerative_clustering_ward: False
+  visualization: False
 
 ## Logging
 wandb:

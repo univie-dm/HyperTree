@@ -6,9 +6,9 @@ from typing import Tuple
 from lightning.pytorch.utilities import grad_norm
 from torchmetrics.functional.pairwise import pairwise_cosine_similarity
 
-from src.models.utils import get_dtype_from_precision
-from src.models.resnet import HyperbolicResNet
 from src.models.abstract import AbstractModel
+from src.models.resnet import HyperbolicResNet
+from src.models.utils import get_dtype_from_precision
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 
 
@@ -20,10 +20,9 @@ class HyperbolicHCModel(AbstractModel):
         learning_rate: float = 1e-3,
         log_interval: int = 5,
         stage: str = 'clustering',
-        #global_epoch: int = 0, ### just renamed
+        global_epoch: int = 0,
         learning_rate_scheduler: str | None = None,
         lr_scheduler_params: dict | None = None,
-        #start_epoch: int = 0, ###
         # HypHC parameters
         hyphc_weight: float = 1.0,
         hyphc_temperature: float = 0.05,
@@ -33,11 +32,7 @@ class HyperbolicHCModel(AbstractModel):
         normalized_hyphc_loss: bool = False,
         distances_type: str = 'geodesic',
         hyphc_dist_sum_loss: bool = True,
-        # Contrastive learning parameters
-        use_contrastive_loss: bool = False,
-        contrastive_weight: float = 0.5,
-        contrastive_temperature: float = 0.05,
-        contrastive_projection_dim: int = 128,
+        evaluation_metrics: list[str] | None = None,
     ):
         super().__init__(
             model_type=ae_model.model_type,
@@ -46,19 +41,19 @@ class HyperbolicHCModel(AbstractModel):
             latent_dim=ae_model.latent_dim,
             manifold_name=ae_model.manifold_name,
             manifold_precision=ae_model.manifold.dtype,
-            curvature_magnitude=ae_model.manifold.c.clone().detach(),
+            curvature_magnitude=ae_model.manifold.c,
             trainable_curvature=trainable_curvature,
             hyperbolic_decoding=ae_model.hyperbolic_decoding,
             optimizer_name=ae_model.optimizer_name,
             learning_rate=learning_rate,
             log_interval=log_interval,
             stage=stage,
-            #global_epoch=global_epoch+1, ###
-            global_epoch=ae_model.global_epoch,
+            global_epoch=global_epoch,
             learning_rate_scheduler=learning_rate_scheduler,
             lr_scheduler_params=lr_scheduler_params,
+            distances_type=distances_type,
+            evaluation_metrics=evaluation_metrics,
         )
-        #self.global_epoch = start_epoch ###
         self.orginal_input_shape = ae_model.orginal_input_shape
         # HypHC parameters
         self.hyphc_weight = hyphc_weight
@@ -69,22 +64,8 @@ class HyperbolicHCModel(AbstractModel):
         self.normalized_hyphc_loss = normalized_hyphc_loss
         self.distances_type = distances_type
         self.hyphc_dist_sum_loss = hyphc_dist_sum_loss
-        # Contrastive learning parameters
-        self.use_contrastive_loss = use_contrastive_loss
-        self.contrastive_weight = contrastive_weight
-        self.contrastive_temperature = contrastive_temperature
-        self.contrastive_projection_dim = contrastive_projection_dim
         self.save_hyperparameters()
 
-        # Add projection head for contrastive learning
-        if self.use_contrastive_loss:
-            self.projection_head = torch.nn.Sequential(
-                torch.nn.Linear(self.latent_dim, self.latent_dim),
-                torch.nn.ReLU(),
-                torch.nn.Linear(self.latent_dim, self.contrastive_projection_dim)
-            )
-        else:
-            self.projection_head = None
 
         # Load encoding and decoding modules with their weights
         self.encoder: torch.nn.Sequential = ae_model.encoder
@@ -288,23 +269,6 @@ class HyperbolicHCModel(AbstractModel):
             x_recon = x_recon.view(-1, *self.orginal_input_shape)
         return x_recon
 
-    def compute_contrastive_loss(self, embeddings: torch.Tensor) -> torch.Tensor:
-        """Compute contrastive loss between embeddings."""
-        # Project embeddings through projection head
-        if self.projection_head is not None:
-            embeddings = self.projection_head(embeddings)
-        # Normalize embeddings
-        embeddings = F.normalize(embeddings, p=2, dim=-1)
-        # Compute similarity matrix
-        sim_matrix = torch.matmul(embeddings, embeddings.t())
-        # Create labels for positive pairs (diagonal)
-        labels = torch.arange(embeddings.size(0), device=embeddings.device)
-        # Compute logits
-        logits = sim_matrix / self.contrastive_temperature
-        # Compute cross entropy loss
-        loss = F.cross_entropy(logits, labels)
-        return loss
-
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug, x, _ = batch
         x_recon, manifold_z = self(x)
@@ -327,12 +291,6 @@ class HyperbolicHCModel(AbstractModel):
         # Compute total loss
         total_loss = recon_loss + hyphc_loss * self.hyphc_weight
 
-        # Add contrastive loss if enabled
-        if self.use_contrastive_loss:
-            contrastive_loss = self.compute_contrastive_loss(manifold_z)
-            total_loss = total_loss + contrastive_loss * self.contrastive_weight
-            self.metrics.setdefault("clustering/contrastive_loss", []).append(contrastive_loss)
-
         # Logging
         self.metrics.setdefault("clustering/recon_loss", []).append(recon_loss)
         self.metrics.setdefault("clustering/hyphc_loss", []).append(hyphc_loss)
@@ -350,6 +308,3 @@ class HyperbolicHCModel(AbstractModel):
             self.metrics.setdefault(f"{key}", []).append(value)
 
         return total_loss
-
-    def on_train_start(self) -> None:
-        self.on_train_epoch_end()
