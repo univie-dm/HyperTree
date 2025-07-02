@@ -96,6 +96,8 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             optimizer_name=cfg.experiment.optimizer,
             learning_rate=cfg.pretraining.learning_rate,
             log_interval=cfg.experiment.log_interval,
+            stage='pretrain',
+            global_epoch=0,
         )
     elif cfg.architecture.ae_type in ['resnet18', 'resnet34', 'resnet50']:
         model = HyperbolicResNet(
@@ -121,12 +123,13 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
 def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[HyperbolicAE, HyperbolicResNet]) -> HyperbolicHCModel:
     model = HyperbolicHCModel(
         ae_model=pretrain_model,
-        clustering_trainable_curvature=cfg.clustering.trainable_curvature,
+        trainable_curvature=cfg.clustering.trainable_curvature,
         learning_rate=cfg.clustering.learning_rate,
         log_interval=cfg.experiment.log_interval,
-        #global_epoch=cfg.pretrain_model.global_epoch,##
-        learning_rate_scheduler=cfg.clustering.lr_scheduler,
-        lr_scheduler_params=cfg.clustering.lr_scheduler if hasattr(cfg, 'lr_scheduler') else None,
+        stage='clustering',
+        global_epoch=cfg.pretraining.epochs,
+        learning_rate_scheduler=cfg.clustering.lr_scheduler.type,
+        lr_scheduler_params=cfg.clustering.lr_scheduler if hasattr(cfg.clustering, 'lr_scheduler') else None,
         hyphc_weight=cfg.hyphc.loss_weight,
         hyphc_temperature=cfg.hyphc.temperature,
         hyphc_sampling_strategy=cfg.hyphc.sampling_strategy,
@@ -134,11 +137,8 @@ def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[Hyperb
         lca_version=cfg.hyphc.lca_version,
         normalized_hyphc_loss=cfg.hyphc.normalized_loss,
         distances_type=cfg.hyphc.distances_type,
-        hyperbolic_dist_sum_loss=cfg.hyphc.dist_sum_loss,
-        use_contrastive_loss=cfg.clustering.use_contrastive_loss,
-        contrastive_weight=cfg.clustering.contrastive_weight,
-        contrastive_temperature=cfg.clustering.contrastive_temperature,
-        contrastive_projection_dim=cfg.clustering.contrastive_projection_dim,
+        hyphc_dist_sum_loss=cfg.hyphc.dist_sum_loss,
+        evaluation_metrics=cfg.evaluation,
     )
     return model
 
