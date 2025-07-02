@@ -33,7 +33,7 @@ class AbstractModel(pl.LightningModule):
         learning_rate_scheduler: str | None = None,
         lr_scheduler_params: dict | None = None,
         distances_type: str = 'geodesic',
-        evaluation_metrics: dict[str, bool] = None,
+        evaluation_metrics: dict[str, bool] = {},
     ):
         super().__init__()
         self.model_type = model_type
@@ -200,14 +200,14 @@ class AbstractModel(pl.LightningModule):
                 else:
                     raise ValueError(f"Invalid distances_type: {self.distances_type}")
 
-                evaluation_metrics = evaluation(
+                evaluation_results = evaluation(
                     X=all_embeddings,
                     Y=all_labels,
                     distance_matrix=distance_matrix,
                     manifold=self.manifold,
                     metrics=self.evaluation_metrics
                 )
-                for key, value in evaluation_metrics.items():
+                for key, value in evaluation_results.items():
                     self.metrics[f"test/{key}"] = value
                 plt.close()
 
