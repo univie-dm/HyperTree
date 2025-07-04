@@ -47,9 +47,9 @@ architecture:
   hyperbolic_encoding: 'EuclideanLinear_Exp' # 'EuclideanLinear_Exp', 'HyperbolicLinear', 'HyperbolicLinearPP'
   hyperbolic_decoding: 'Log_EuclideanLinear' # 'Log_EuclideanLinear', 'HyperbolicLinear_Log', 'HyperbolicLinearPP_Log',
                                              # 'HyperbolicRegression', 'HyperbolicRegressionPP'
-  precision: 'float64' # 'float32', 'float64'
+  precision: 'float32' # 'float32', 'float64'
   manifold_name: 'PoincareBall' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
-  manifold_precision: 'float64' # 'float16', 'float32', 'float64'
+  manifold_precision: 'float32' # 'float32', 'float64'
   curvature_magnitude: 1.0
 
 ## Evaluation Metrics to be used and logged
