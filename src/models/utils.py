@@ -9,7 +9,6 @@ from src.hyperbolic_math.src.nn_layers import *
 def get_dtype_from_precision(precision: str) -> torch.dtype:
     # Dictionary mapping of dtype strings to torch dtypes
     DTYPE_MAP: Dict[str, torch.dtype] = {
-        "float16": torch.float16,
         "float32": torch.float32,
         "float64": torch.float64,
     }

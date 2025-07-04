@@ -4,9 +4,7 @@ import pytorch_lightning as pl
 
 from typing import Tuple, Any
 from pytorch_lightning.loggers import WandbLogger
-from sklearn.metrics.pairwise import cosine_similarity
 
-from src.models.utils import get_dtype_from_precision
 from src.evaluation import evaluation
 from ..hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
 from ..hyperbolic_math.src.optim import RiemannianAdam, RiemannianSGD
@@ -53,11 +51,11 @@ class AbstractModel(pl.LightningModule):
         elif manifold_name == 'Hyperboloid':
             self.manifold = Hyperboloid(c=c_tensor,
                                         trainable_c=trainable_curvature,
-                                        dtype=str(manifold_precision).split('.')[-1])
+                                        dtype=manifold_precision)
         elif manifold_name == 'PoincareBall':
             self.manifold = PoincareBall(c=c_tensor,
                                          trainable_c=trainable_curvature,
-                                         dtype=str(manifold_precision).split('.')[-1])
+                                         dtype=manifold_precision)
         else:
             raise ValueError(f"Invalid manifold name: {manifold_name}")
         self.hyperbolic_decoding = hyperbolic_decoding
@@ -196,7 +194,9 @@ class AbstractModel(pl.LightningModule):
                 if self.distances_type == 'geodesic':
                     distance_matrix = compute_pairwise_distances(all_embeddings, self.manifold)
                 elif self.distances_type == 'cosine_similarity':
-                    distance_matrix = torch.tensor(1 - cosine_similarity(all_embeddings.cpu().numpy()), dtype=self.manifold.dtype)
+                    all_embeddings_normalized = torch.nn.functional.normalize(all_embeddings, p=2, dim=-1)
+                    similarties = torch.mm(all_embeddings_normalized, all_embeddings_normalized.T).clamp(min=-1.0, max=1.0)
+                    distance_matrix = (1 - similarties) / (1 + similarties)
                 else:
                     raise ValueError(f"Invalid distances_type: {self.distances_type}")
 

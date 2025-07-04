@@ -4,7 +4,6 @@ import numpy as np
 
 from typing import Tuple
 from lightning.pytorch.utilities import grad_norm
-from torchmetrics.functional.pairwise import pairwise_cosine_similarity
 
 from src.models.abstract import AbstractModel
 from src.models.resnet import HyperbolicResNet
@@ -23,7 +22,6 @@ class HyperbolicHCModel(AbstractModel):
         global_epoch: int = 0,
         learning_rate_scheduler: str | None = None,
         lr_scheduler_params: dict | None = None,
-        # HypHC parameters
         hyphc_weight: float = 1.0,
         hyphc_temperature: float = 0.05,
         hyphc_sampling_strategy: str = 'all_subsample_triplets',
@@ -65,7 +63,6 @@ class HyperbolicHCModel(AbstractModel):
         self.distances_type = distances_type
         self.hyphc_dist_sum_loss = hyphc_dist_sum_loss
         self.save_hyperparameters()
-
 
         # Load encoding and decoding modules with their weights
         self.encoder: torch.nn.Sequential = ae_model.encoder
@@ -189,24 +186,21 @@ class HyperbolicHCModel(AbstractModel):
         sampled_indices, np_sampled_triplet_indices = self.sample_triplets(n, device)
         # Compute the pairwise distances
         if self.distances_type == 'geodesic':
-            distances = compute_pairwise_distances(embeddings[sampled_indices, :], self.manifold)  ## check if the same without ":"
+            distances = compute_pairwise_distances(embeddings[sampled_indices], self.manifold)
             similarties = torch.reciprocal(1 + distances)
         elif self.distances_type == 'cosine_similarity':
-            distances = pairwise_cosine_similarity(
-                embeddings[sampled_indices, :],  ## check if the same without ":"
-                zero_diagonal=False,
-                reduction='none'
-            )
-            similarties = distances
+            embeddings_normalized = torch.nn.functional.normalize(embeddings[sampled_indices], p=2, dim=-1)
+            distances = torch.mm(embeddings_normalized, embeddings_normalized.T).clamp(min=-1.0, max=1.0)
+            similarties = (distances + 1) / 2
         else:
             raise ValueError(f"Invalid distances type: {self.distances_type}")
         similarties_sum = similarties.sum()
 
         # Compute the pairwise lcas
         if self.lca_version == 'ours':
-            lcas = self.compute_lca_depth(embeddings[sampled_indices, :]) ## check if the same without ":"
+            lcas = self.compute_lca_depth(embeddings[sampled_indices])
         elif self.lca_version == 'chami':
-            lcas = self.compute_lca_depth_chami(embeddings[sampled_indices, :])  ## check if the same without ":"
+            lcas = self.compute_lca_depth_chami(embeddings[sampled_indices])
         else:
             raise ValueError(f"Invalid LCA version: {self.lca_version}")
 
