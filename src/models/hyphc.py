@@ -98,7 +98,8 @@ class HyperbolicHCModel(AbstractModel):
         return sampled_indices, np_sampled_triplet_indices
 
     def compute_lca_depth(self, points: torch.Tensor, batch_size: int=1_000) -> torch.Tensor:
-        """Generalized and corrected implementation of Chami et al.'s (2020) LCA depth computation using inverse geometry."""
+        """Generalized, corrected, and numerically stabilized implementation of
+           Chami et al.'s (2020) LCA depth computation using inverse geometry."""
         device = points.device
         lcas = torch.zeros((points.shape[0], points.shape[0]), dtype=points.dtype).to(device)
         indices = torch.triu_indices(points.shape[0], points.shape[0], 1).to(device)
@@ -118,17 +119,28 @@ class HyperbolicHCModel(AbstractModel):
 
             # Compute the lca and its distance to the origin w.r.t. the full geodesic
             z2 = z.pow(2).sum(dim=-1, keepdim=True)
-            lca = (1 - (z2 - 1/self.manifold.c).clamp(min=1e-15).sqrt() / z.norm(p=2, dim=-1, keepdim=True)) * z
+            z_norm = z.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-15)
+
+            # Direct computation of the lca
+            # second_term = (z2 - 1/self.manifold.c).clamp(min=1e-15).sqrt()
+            # lca = (1 - second_term / z_norm) * z
+
+            # Computation via conjugation to avoid numerical issues
+            sqrt_term = (z2 - 1 / self.manifold.c).clamp(min=1e-15).sqrt()
+            denom = self.manifold.c * z_norm * (z_norm + sqrt_term).clamp(min=1e-15)
+            lca = z / denom
             lca_depth = self.manifold.dist_0(lca)
 
             # Compute the cosine of the angles at the origin in the triangles {x, origin, c}, {y, origin, c}  {x, origin, y}
             xlca = (x * lca).sum(dim=-1, keepdim=True)
             ylca = (y * lca).sum(dim=-1, keepdim=True)
-            lca_norm = lca.norm(p=2, dim=-1, keepdim=True)
+            lca_norm = lca.norm(p=2, dim=-1, keepdim=True)#.clamp(min=1e-10) # see if this clamping is necessary
 
-            cos_x0c = xlca / (x2.sqrt() * lca_norm).clamp(min=1e-15)
-            cos_y0c = ylca / (y2.sqrt() * lca_norm).clamp(min=1e-15)
-            cos_x0y = xy / (x2.sqrt() * y2.sqrt()).clamp(min=1e-15)
+            x_norm = x.norm(p=2, dim=-1, keepdim=True)#.clamp(min=1e-15) # see if this clamping is necessary
+            y_norm = y.norm(p=2, dim=-1, keepdim=True)#.clamp(min=1e-15) # see if this clamping is necessary
+            cos_x0c = (xlca / (x_norm * lca_norm).clamp(min=1e-15)).clamp(min=-1.0, max=1.0)
+            cos_y0c = (ylca / (y_norm * lca_norm).clamp(min=1e-15)).clamp(min=-1.0, max=1.0)
+            cos_x0y = (xy / (x_norm * y_norm).clamp(min=1e-15)).clamp(min=-1.0, max=1.0)
 
             # Get the lca depth w.r.t. the geodesic segment between x and y
             condition = torch.logical_or(torch.logical_or(cos_x0y > cos_x0c, cos_x0y > cos_y0c), cos_x0y == 1) # True iff the lca lies outside
