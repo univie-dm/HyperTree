@@ -1,3 +1,5 @@
+from email.mime import base
+from sympy import use
 import torch
 import pytorch_lightning as pl
 import numpy as np
@@ -30,7 +32,7 @@ class ColorDataModule(pl.LightningDataModule):
     def get_normalize_fn(data: torch.Tensor) -> transforms.Normalize:
         channel_means = data.mean([0, 2, 3])
         channel_stds = data.std([0, 2, 3])
-        return transforms.Normalize(channel_means, channel_stds)
+        return transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
 
     def __init__(
         self,
@@ -39,7 +41,9 @@ class ColorDataModule(pl.LightningDataModule):
         batch_size: int = 256,
         resize: Optional[int] = None,
         subset: str = 'train',
-        num_workers: int = 1
+        num_workers: int = 1,
+        use_augmentations: bool = False,
+        selected_classes: Optional[list] = None
     ):
         super().__init__()
         self.dataset_name = dataset_name
@@ -48,6 +52,8 @@ class ColorDataModule(pl.LightningDataModule):
         self.resize = resize
         self.subset = subset
         self.num_workers = num_workers
+        self.use_augmentations = use_augmentations
+        self.selected_classes = selected_classes if selected_classes is not None else []
         self.dataset_map = {
             "cifar10": datasets.CIFAR10,
             "cifar100": datasets.CIFAR100,
@@ -78,6 +84,14 @@ class ColorDataModule(pl.LightningDataModule):
             temp_dataset = dataset_class(self.data_dir, split='train',
                                          transform=transforms.Compose(base_transforms),
                                          download=True)
+        elif self.dataset_name in ["cifar10", "cifar100", "cifar100_20"] and self.use_augmentations:
+            base_transforms = [
+                transforms.ToTensor(),
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomCrop(32, padding=4)
+            ]
+            temp_dataset = dataset_class(self.data_dir, train=True,
+                                         transform=transforms.Compose(base_transforms,), download=True)
         elif self.dataset_name == "imagenet":
             # ImageNet specific preprocessing
             base_transforms = [
@@ -99,6 +113,7 @@ class ColorDataModule(pl.LightningDataModule):
         else:
             temp_dataset = dataset_class(self.data_dir, train=True,
                                          transform=transforms.Compose(base_transforms,), download=True)
+            
         temp_loader = DataLoader(temp_dataset, batch_size=1000, num_workers=self.num_workers)
         normalize_fn = self.get_normalize_fn(next(iter(temp_loader))[0])
 
@@ -151,6 +166,17 @@ class ColorDataModule(pl.LightningDataModule):
         if self.coarse_labels:
             base_train.targets = [self._get_coarse_label(t) for t in base_train.targets]
             base_test.targets = [self._get_coarse_label(t) for t in base_test.targets]
+
+        if len(self.selected_classes) > 0:
+            # Create masks for selected classes
+            train_mask = torch.tensor([label in self.selected_classes for label in base_train.targets])
+            test_mask = torch.tensor([label in self.selected_classes for label in base_test.targets])
+
+            # Filter datasets
+            base_train.data = base_train.data[train_mask]
+            base_train.targets = [label for i, label in enumerate(base_train.targets) if train_mask[i]]
+            base_test.data = base_test.data[test_mask]
+            base_test.targets = [label for i, label in enumerate(base_test.targets) if test_mask[i]]
 
         if self.subset == 'all':
             self.train_dataset = MultiViewDataset(base_train, base_transform, base_transform)
@@ -276,7 +302,8 @@ class GrayScaleDataModule(pl.LightningDataModule):
         resize: int = 28,
         subset: str = 'train',
         num_workers: int = 1,
-        selected_classes: Optional[list] = None
+        selected_classes: Optional[list] = None,
+        use_augmentations: bool = False
     ):
         super().__init__()
         self.dataset_name = dataset_name
@@ -296,6 +323,7 @@ class GrayScaleDataModule(pl.LightningDataModule):
             "kmnist": datasets.KMNIST,
             "usps": datasets.USPS,
         }
+        self.use_augmentations = use_augmentations
 
     def setup(self, stage: str = None) -> None:
         dataset_class = self.dataset_map[self.dataset_name]
@@ -311,6 +339,15 @@ class GrayScaleDataModule(pl.LightningDataModule):
             transform_list.append(transforms.Resize((self.resize, self.resize)))
         transform_list.extend([transforms.ToTensor(), normalize_fn])
         base_transform = transforms.Compose(transform_list)
+        if self.use_augmentations:
+            # Define augmentations
+            base_transform = transforms.Compose([
+                *transform_list,
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomCrop(28, padding=4)
+            ])
+        else:
+            base_transform = transforms.Compose(transform_list)
 
         aug_transform = transforms.Compose([
             *transform_list[:-2],
