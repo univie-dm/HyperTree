@@ -75,6 +75,8 @@ class HyperbolicResNet(AbstractModel):
         log_interval: int = 5,
         stage: str = 'pretrain',
         global_epoch: int = 0,
+        evaluation_metrics: dict[str, bool] = {}
+        
     ):
         super().__init__(
             model_type=model_type,
@@ -91,6 +93,7 @@ class HyperbolicResNet(AbstractModel):
             log_interval=log_interval,
             stage=stage,
             global_epoch=global_epoch,
+            evaluation_metrics=evaluation_metrics
         )
         self.input_channels = input_channels
         self.output_size = output_size
@@ -112,17 +115,21 @@ class HyperbolicResNet(AbstractModel):
 
         # Modify first conv layer to accept different number of input channels
         self.encoder.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.encoder = nn.Sequential(
+            self.encoder,
+            nn.Linear(1000, self.latent_dim),  # Final linear layer to get 1000 features
+        )
 
         # Add hyperbolic encoding layer(s)
         if isinstance(self.manifold, Euclidean) or hyperbolic_encoding is None:
             print("Using Euclidean manifold or hyperbolic_encoding is 'None', "
                   "hyperbolic encoding layers will default to nn.Linear.", flush=True)
-            self.hyperbolic_encoding_layer = nn.Linear(1000, self.latent_dim)
+            self.hyperbolic_encoding_layer = nn.Linear(self.latent_dim, self.latent_dim)
         else:
             self.hyperbolic_encoding_layer = get_hyperbolic_encoding_layer_by_name(
                 layer_name=hyperbolic_encoding,
                 manifold=self.manifold,
-                input_dim=1000,
+                input_dim=self.latent_dim,
                 output_dim=self.latent_dim,
                 params_dtype=self.params_dtype
             )

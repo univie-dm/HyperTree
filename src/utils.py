@@ -7,7 +7,8 @@ from pytorch_lightning.loggers import WandbLogger, CSVLogger
 from typing import Tuple, Union
 
 from src.datasets.datamodule import ColorDataModule, GrayScaleDataModule, TabularDataModule
-from src.models import HyperbolicAE, HyperbolicHCModel, HyperbolicResNet
+from src.models import HyperbolicAE, HyperbolicHCModel, HyperbolicResNet, HyperbolicConvAE
+from src.models.poincare_resnet import PoincareResNet
 
 
 def get_model_path(cfg: omegaconf.DictConfig):
@@ -37,7 +38,13 @@ def get_model_path(cfg: omegaconf.DictConfig):
     }
     return md5(str(attr).encode()).hexdigest()
 
-def get_datamodule(cfg: omegaconf.DictConfig) -> Tuple[Union[TabularDataModule, GrayScaleDataModule, ColorDataModule], int, bool]:
+def get_datamodule(cfg: omegaconf.DictConfig, stage: str) -> Tuple[Union[TabularDataModule, GrayScaleDataModule, ColorDataModule], int, bool]:
+    if stage == 'pretrain':
+        use_augmentations = cfg.pretraining.augmentations
+    elif stage == 'clustering':
+        use_augmentations = cfg.clustering.augmentations
+    else:
+        raise ValueError(f"Invalid stage: {stage}. Expected 'pretrain' or 'clustering'.")
     # Determine dataset type and create appropriate datamodule
     if hasattr(cfg.dataset, 'type') and cfg.dataset.type == 'tabular':
         datamodule = TabularDataModule(
@@ -58,6 +65,7 @@ def get_datamodule(cfg: omegaconf.DictConfig) -> Tuple[Union[TabularDataModule, 
             subset=cfg.dataset.subset,
             num_workers=cfg.experiment.num_workers,
             selected_classes=cfg.dataset.get('selected_classes', None),
+            use_augmentations=use_augmentations,
         )
         input_dim = cfg.dataset.resize * cfg.dataset.resize * cfg.dataset.channels
         is_image = True
@@ -69,6 +77,8 @@ def get_datamodule(cfg: omegaconf.DictConfig) -> Tuple[Union[TabularDataModule, 
             resize=cfg.dataset.resize,
             subset=cfg.dataset.subset,
             num_workers=cfg.experiment.num_workers,
+            use_augmentations=use_augmentations,
+            selected_classes=cfg.dataset.get('selected_classes', None),
         )
         input_dim = cfg.dataset.resize * cfg.dataset.resize * cfg.dataset.channels
         is_image = True
@@ -77,7 +87,7 @@ def get_datamodule(cfg: omegaconf.DictConfig) -> Tuple[Union[TabularDataModule, 
     datamodule.setup()
     return datamodule, input_dim, is_image
 
-def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[HyperbolicAE, HyperbolicResNet]:
+def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[HyperbolicAE, HyperbolicResNet, HyperbolicConvAE]:
     if os.path.exists(f"data/models/{get_model_path(cfg)}.pt") and not cfg.pretraining.overwrite:
         model = torch.load(f"data/models/{get_model_path(cfg)}.pt", weights_only=False)
         print("Loaded model from {}".format(f"data/models/{get_model_path(cfg)}.pt"))
@@ -98,6 +108,26 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             log_interval=cfg.experiment.log_interval,
             stage='pretrain',
             global_epoch=0,
+            evaluation_metrics=cfg.evaluation,
+        )
+    elif cfg.architecture.ae_type == 'convolutional':
+        model = HyperbolicConvAE(
+            image_size=cfg.dataset.resize,
+            input_channels=cfg.dataset.channels,
+            hyperbolic_encoding=cfg.architecture.hyperbolic_encoding,
+            params_dtype=cfg.architecture.precision,
+            manifold_name=cfg.architecture.manifold_name,
+            manifold_precision=cfg.architecture.manifold_precision,
+            curvature_magnitude=cfg.architecture.curvature_magnitude,
+            trainable_curvature=cfg.pretraining.trainable_curvature,
+            hyperbolic_decoding=cfg.architecture.hyperbolic_decoding,
+            optimizer_name=cfg.experiment.optimizer,
+            learning_rate=cfg.pretraining.learning_rate,
+            log_interval=cfg.experiment.log_interval,
+            latent_dim=cfg.architecture.latent_dim,
+            stage='pretrain',
+            global_epoch=0,
+            evaluation_metrics=cfg.evaluation,
         )
     elif cfg.architecture.ae_type in ['resnet18', 'resnet34', 'resnet50']:
         model = HyperbolicResNet(
@@ -115,16 +145,37 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             optimizer_name=cfg.experiment.optimizer,
             learning_rate=cfg.pretraining.learning_rate,
             log_interval=cfg.experiment.log_interval,
+            evaluation_metrics=cfg.evaluation,
+        )
+
+    elif cfg.architecture.ae_type == 'poincare_resnet':
+            model = PoincareResNet(
+                input_channels=cfg.dataset.channels,
+                params_dtype=cfg.architecture.precision,
+                latent_dim=cfg.architecture.latent_dim,
+                manifold_name=cfg.architecture.manifold_name,
+                manifold_precision=cfg.architecture.manifold_precision,
+                curvature_magnitude=cfg.architecture.curvature_magnitude,
+                trainable_curvature=cfg.pretraining.trainable_curvature,
+                optimizer_name=cfg.experiment.optimizer,
+                learning_rate=cfg.pretraining.learning_rate,
+                log_interval=cfg.experiment.log_interval,
+                evaluation_metrics=cfg.evaluation,
+                hyperbolic_encoding=cfg.architecture.hyperbolic_encoding,
+                hyperbolic_decoding=cfg.architecture.hyperbolic_decoding,
+                distances_type=cfg.hyphc.distances_type,
+                weight_decay=cfg.pretraining.weight_decay,
         )
     else:
         raise ValueError("Invalid autoencoder type")
     return model
 
-def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[HyperbolicAE, HyperbolicResNet]) -> HyperbolicHCModel:
+def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[HyperbolicAE, HyperbolicResNet, PoincareResNet]) -> HyperbolicHCModel:
     model = HyperbolicHCModel(
         ae_model=pretrain_model,
         trainable_curvature=cfg.clustering.trainable_curvature,
         learning_rate=cfg.clustering.learning_rate,
+        weight_decay=cfg.clustering.weight_decay,
         log_interval=cfg.experiment.log_interval,
         stage='clustering',
         global_epoch=cfg.pretraining.epochs,

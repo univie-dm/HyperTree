@@ -9,17 +9,21 @@ experiment:
 
 ## Pretraining parameters
 pretraining:
-  epochs: 400
+  epochs: 10
   learning_rate: 3e-3
   trainable_curvature: False
   overwrite: False
+  weight_decay: 0.0
+  augmentations: False
 
 ## Clustering parameters
 clustering:
-  epochs: 500
+  epochs: 20
   trainable_curvature: False
   accumulate_gradients: 1
-  learning_rate: 1e-3
+  learning_rate: 1e-4
+  weight_decay: 0.0
+  augmentations: False
   # Learning rate scheduler
   lr_scheduler:
     type: # 'cosine', 'linear', 'warmup_cosine'
@@ -31,9 +35,9 @@ clustering:
 ## HypHC parameters
 hyphc:
   loss_weight: 1.0
-  temperature: 0.05
+  temperature: 0.01
   sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'chami'
-  triplet_subsampling_size: 150
+  triplet_subsampling_size: 200
   lca_version: 'ours' # 'ours', 'chami'
   normalized_loss: True
   distances_type: 'cosine_similarity' # 'geodesic', 'cosine_similarity'
@@ -41,11 +45,11 @@ hyphc:
 
 ## Model architecture
 architecture:
-  ae_type: 'feedforward' # 'feedforward', 'resnet18', 'resnet34', 'resnet50'
+  ae_type: 'resnet34' # 'feedforward', 'convolutional', 'resnet18', 'resnet34', 'resnet50', 'poincare_resnet'
   hidden_dims: [512, 256, 128, 64, 32]
   latent_dim: 10
-  hyperbolic_encoding: 'EuclideanLinear_Exp' # 'EuclideanLinear_Exp', 'HyperbolicLinear', 'HyperbolicLinearPP'
-  hyperbolic_decoding: 'Log_EuclideanLinear' # 'Log_EuclideanLinear', 'HyperbolicLinear_Log', 'HyperbolicLinearPP_Log',
+  hyperbolic_encoding: 'HyperbolicLinearPP' # 'EuclideanLinear_Exp', 'HyperbolicLinear', 'HyperbolicLinearPP'
+  hyperbolic_decoding: 'HyperbolicRegressionPP' # 'Log_EuclideanLinear', 'HyperbolicLinear_Log', 'HyperbolicLinearPP_Log',
                                              # 'HyperbolicRegression', 'HyperbolicRegressionPP'
   precision: 'float32' # 'float32', 'float64'
   manifold_name: 'PoincareBall' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
@@ -63,7 +67,10 @@ evaluation:
   agglomerative_clustering_complete: False
   agglomerative_clustering_average: False
   agglomerative_clustering_ward: False
-  visualization: False
+  nearest_neighbors_accuracy: True
+  spectral_clustering: True
+  visualization: True
+  kmeans: True
 
 ## Logging
 wandb:

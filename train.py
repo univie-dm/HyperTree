@@ -40,7 +40,7 @@ def main(cfg: DictConfig) -> None:
                          gradient_clip_algorithm='norm' if cfg.experiment.gradient_clip_value is not None else None,
                          gradient_clip_val=cfg.experiment.gradient_clip_value if cfg.experiment.gradient_clip_value is not None else 1.0,
                          )
-    datamodule, input_dim, _ = get_datamodule(cfg)
+    datamodule, input_dim, _ = get_datamodule(cfg, stage='pretrain')
     pretrain_model = get_pretrain_model(cfg, input_dim)
 
     if not os.path.exists(f"data/models/{get_model_path(cfg)}.pt") or cfg.pretraining.overwrite:
@@ -52,6 +52,7 @@ def main(cfg: DictConfig) -> None:
 
     print("Finished pretraining", flush=True)
     print("Starting clustering", flush=True)
+    datamodule, input_dim, _ = get_datamodule(cfg, stage='clustering')
 
     accumulate_grad_batches = max(1, min(cfg.clustering.accumulate_gradients, len(datamodule.train_dataloader())))
 

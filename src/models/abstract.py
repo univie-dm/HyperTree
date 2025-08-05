@@ -25,6 +25,7 @@ class AbstractModel(pl.LightningModule):
         hyperbolic_decoding: str | None = None,
         optimizer_name: str = 'RiemannianAdam',
         learning_rate: float = 1e-3,
+        weight_decay: float = 0.0,
         log_interval: int = 5,
         stage: str = 'pretrain',
         global_epoch: int = 0,
@@ -74,6 +75,7 @@ class AbstractModel(pl.LightningModule):
         self.old_ari = 0
         self.distances_type = distances_type
         self.evaluation_metrics = evaluation_metrics
+        self.weight_decay = weight_decay
 
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
@@ -97,9 +99,9 @@ class AbstractModel(pl.LightningModule):
 
     def configure_optimizers(self) -> Any:
         if self.optimizer_name == 'RiemannianAdam':
-            optimizer = RiemannianAdam(self.parameters(), lr=self.learning_rate, eps=1e-5, expmap_update=True)
+            optimizer = RiemannianAdam(self.parameters(), lr=self.learning_rate, eps=5e-4, expmap_update=True, weight_decay=self.weight_decay)
         elif self.optimizer_name == 'RiemannianSGD':
-            optimizer = RiemannianSGD(self.parameters(), lr=self.learning_rate, momentum=0.9, expmap_update=True)
+            optimizer = RiemannianSGD(self.parameters(), lr=self.learning_rate, momentum=0.9, expmap_update=True, weight_decay=self.weight_decay)
         else:
             raise ValueError(f"Invalid optimizer name: {self.optimizer_name}")
 
@@ -172,10 +174,11 @@ class AbstractModel(pl.LightningModule):
         else:
             raise ValueError(f"Invalid learning rate scheduler: {self.learning_rate_scheduler}")
 
-    def evaluate(self) -> None:
+    def test_phase(self) -> None:
         if not isinstance(self.logger, WandbLogger):
             return
         if self.current_epoch % self.log_interval == 0 and any([i for i in self.evaluation_metrics.values()]):
+            self.eval()
             with torch.no_grad():
                 test_loader = self.trainer.datamodule.test_dataloader() # type: ignore
 
@@ -196,7 +199,7 @@ class AbstractModel(pl.LightningModule):
                 elif self.distances_type == 'cosine_similarity':
                     all_embeddings_normalized = torch.nn.functional.normalize(all_embeddings, p=2, dim=-1)
                     similarties = torch.mm(all_embeddings_normalized, all_embeddings_normalized.T).clamp(min=-1.0, max=1.0)
-                    distance_matrix = (1 - similarties) / (1 + similarties)
+                    distance_matrix = (1 + similarties) / 2
                 else:
                     raise ValueError(f"Invalid distances_type: {self.distances_type}")
 
@@ -210,9 +213,10 @@ class AbstractModel(pl.LightningModule):
                 for key, value in evaluation_results.items():
                     self.metrics[f"test/{key}"] = value
                 plt.close()
+                self.train()
 
     def on_train_epoch_end(self) -> None:
-        self.evaluate()
+        self.test_phase()
         self.metrics[f'{self.stage}/epoch'] = self.current_epoch
         for key, value in self.metrics.items():
             if isinstance(value, list):

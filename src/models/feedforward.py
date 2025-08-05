@@ -1,7 +1,9 @@
+from math import e
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from lightning.pytorch.utilities import grad_norm
+from torch.nn.utils import spectral_norm
 
 from typing import List, Tuple
 from src.models.abstract import AbstractModel
@@ -27,6 +29,7 @@ class HyperbolicAE(AbstractModel):
         log_interval: int = 5,
         stage: str = 'pretrain',
         global_epoch: int = 0,
+        evaluation_metrics: dict[str, bool] = {},
     ):
         super().__init__(
             model_type='feedforward',
@@ -43,6 +46,7 @@ class HyperbolicAE(AbstractModel):
             log_interval=log_interval,
             stage=stage,
             global_epoch=global_epoch,
+            evaluation_metrics=evaluation_metrics,
         )
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
@@ -50,10 +54,10 @@ class HyperbolicAE(AbstractModel):
 
         # Encoder
         encoder_layers = []
-        prev_dim = input_dim
+        prev_dim = self.input_dim
         for hidden_dim in self.hidden_dims:
             encoder_layers.extend([
-                nn.Linear(prev_dim, hidden_dim),
+                spectral_norm(nn.Linear(prev_dim, hidden_dim)),
                 nn.BatchNorm1d(hidden_dim),
                 nn.ReLU()
             ])
@@ -79,7 +83,7 @@ class HyperbolicAE(AbstractModel):
             print("Using Euclidean manifold or hyperbolic_encoding is 'None', "
                   "hyperbolic encoding layers will default to nn.Linear.", flush=True)
             self.hyperbolic_decoding_layer = nn.Sequential(
-                nn.Linear(self.latent_dim, self.hidden_dims[-1]),
+                spectral_norm(nn.Linear(self.latent_dim, self.hidden_dims[-1])),
                 nn.BatchNorm1d(self.hidden_dims[-1]),
                 nn.ReLU()
             )

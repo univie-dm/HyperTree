@@ -1,14 +1,19 @@
+import dis
+from src.hyperbolic_math.src.optim.riemannian_adam import RiemannianAdam
+from src.hyperbolic_math.src.optim.riemannian_sgd import RiemannianSGD
 import torch
 import torch.nn.functional as F
 import numpy as np
 
-from typing import Tuple
+
+from typing import Any, Tuple
 from lightning.pytorch.utilities import grad_norm
 
 from src.models.abstract import AbstractModel
 from src.models.resnet import HyperbolicResNet
 from src.models.utils import get_dtype_from_precision
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
+import torch.nn as nn
 
 
 class HyperbolicHCModel(AbstractModel):
@@ -17,6 +22,7 @@ class HyperbolicHCModel(AbstractModel):
         ae_model: AbstractModel,
         trainable_curvature: bool = False,
         learning_rate: float = 1e-3,
+        weight_decay: float = 0.0,
         log_interval: int = 5,
         stage: str = 'clustering',
         global_epoch: int = 0,
@@ -44,6 +50,7 @@ class HyperbolicHCModel(AbstractModel):
             hyperbolic_decoding=ae_model.hyperbolic_decoding,
             optimizer_name=ae_model.optimizer_name,
             learning_rate=learning_rate,
+            weight_decay=weight_decay,
             log_interval=log_interval,
             stage=stage,
             global_epoch=global_epoch,
@@ -62,7 +69,6 @@ class HyperbolicHCModel(AbstractModel):
         self.normalized_hyphc_loss = normalized_hyphc_loss
         self.distances_type = distances_type
         self.hyphc_dist_sum_loss = hyphc_dist_sum_loss
-        self.save_hyperparameters()
 
         # Load encoding and decoding modules with their weights
         self.encoder: torch.nn.Sequential = ae_model.encoder
@@ -79,6 +85,7 @@ class HyperbolicHCModel(AbstractModel):
         self.hyperbolic_encoding_layer.load_state_dict(ae_model.hyperbolic_encoding_layer.state_dict())
         self.hyperbolic_decoding_layer.load_state_dict(ae_model.hyperbolic_decoding_layer.state_dict())
         self.decoder.load_state_dict(ae_model.decoder.state_dict())
+
 
     def sample_triplets(self, num_pts: int, device: torch.device) -> Tuple[torch.Tensor, np.ndarray]:
         """Sample triplets for the HypHC loss."""
@@ -270,6 +277,8 @@ class HyperbolicHCModel(AbstractModel):
         x = x.to(dtype=get_dtype_from_precision(self.params_dtype))
         if self.model_type in ['resnet18', 'resnet34']:
             x = x.view(-1, 512 * self.expansion, 4, 4)
+        elif self.model_type == 'poincare_resnet_ae':
+            x = x.view(-1, 64, 8, 8)
         x_recon = self.decoder(x)
         if isinstance(self.orginal_input_shape, tuple):
             x_recon = x_recon.view(-1, *self.orginal_input_shape)
@@ -307,10 +316,15 @@ class HyperbolicHCModel(AbstractModel):
         self.metrics.setdefault("clustering/total_loss", []).append(total_loss)
         self.metrics.setdefault('clustering/c', []).append(self.manifold.c.item())
         self.metrics.setdefault('clustering/lr', []).append(self.optimizers().param_groups[0]['lr'])
+        self.metrics['latent_space/mean'] = manifold_z.mean().item()
+        self.metrics['latent_space/std'] = manifold_z.std().item()
+        self.metrics['latent_space/max'] = manifold_z.max().item()
+        self.metrics['latent_space/min'] = manifold_z.min().item()
 
         for key, value in grad_norm(self, norm_type=2).items():
             if key == "grad_2.0_norm_total":
                 key = "grad_2.0_norm/total"
             self.metrics.setdefault(f"{key}", []).append(value)
 
+        self.log('train_loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, logger=False)
         return total_loss
