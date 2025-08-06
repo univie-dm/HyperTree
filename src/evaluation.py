@@ -171,6 +171,27 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
     results = {}
     if metrics is None:
         return results
+
+    if any([metrics["visualization"], metrics["spectral_clustering"], metrics["kmeans"],
+            metrics["agglomerative_clustering_single"], metrics["agglomerative_clustering_complete"],
+            metrics["agglomerative_clustering_average"], metrics["agglomerative_clustering_ward"]]):
+        settings = {
+            "plot_manifold_dtype": torch.float64,
+            "dim_red_method": "HoroPCA",
+            "title": "Hyperbolic Embeddings",
+            "show_origin": True,
+            "save_figure": False,
+            "file_name": "hyperbolic_embeddings",
+            "file_path": None,
+            "file_format": "png",
+        }
+        points = X * 0.95
+        poincare_64 = PoincareBall(c=manifold.c.to(settings['plot_manifold_dtype']), dtype=settings['plot_manifold_dtype'])
+        points = poincare_64.to_hyperboloid(points)
+        two_d_pts, _ = pointsTo2dPoincare(x=points, poincare=poincare_64, hyperplanes=None, settings=settings)
+        two_d_pts = torch.tensor(two_d_pts, dtype=settings['plot_manifold_dtype'], device=manifold.c.device)
+
+
     if metrics.get("delta_hyperbolicity", False):
         delta_hyp, diam_hyp, rel_delta_hyp = get_delta(X, manifold)
         results["delta_hyperbolicity"] = delta_hyp.item()
@@ -204,6 +225,19 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
         ari_single = adjusted_rand_score(Y, pred_labels_single)
         results["agglomerative_clustering_single_nmi"] = nmi_single
         results["agglomerative_clustering_single_ari"] = ari_single
+        settings = {
+            "plot_manifold_dtype": torch.float64,
+            "dim_red_method": "HoroPCA",
+            "title": "Hyperbolic Embeddings Agglomerative Clustering Single Linkage",
+            "show_origin": True,
+            "save_figure": False,
+            "file_name": "hyperbolic_embeddings",
+            "file_path": None,
+            "file_format": "png",
+        }
+        fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_single)
+        results["agglomerative_clustering_single_hyperbolic_embeddings"] = wandb.Image(fig)
+        plt.close(fig)
     if metrics.get("agglomerative_clustering_complete", False):
         # Compute agglomerative clustering metrics
         agglomerative_clustering_complete = AgglomerativeClustering(
@@ -216,6 +250,19 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
         ari_complete = adjusted_rand_score(Y, pred_labels_complete)
         results["agglomerative_clustering_complete_nmi"] = nmi_complete
         results["agglomerative_clustering_complete_ari"] = ari_complete
+        settings = {
+            "plot_manifold_dtype": torch.float64,
+            "dim_red_method": "HoroPCA",
+            "title": "Hyperbolic Embeddings Agglomerative Clustering Complete Linkage",
+            "show_origin": True,
+            "save_figure": False,
+            "file_name": "hyperbolic_embeddings",
+            "file_path": None,
+            "file_format": "png",
+        }
+        fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_complete)
+        results["agglomerative_clustering_complete_hyperbolic_embeddings"] = wandb.Image(fig)
+        plt.close(fig)
     if metrics.get("agglomerative_clustering_average", False):
         # Compute agglomerative clustering metrics
         agglomerative_clustering_average = AgglomerativeClustering(
@@ -228,22 +275,39 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
         ari_average = adjusted_rand_score(Y, pred_labels_average)
         results["agglomerative_clustering_average_nmi"] = nmi_average
         results["agglomerative_clustering_average_ari"] = ari_average
+        settings = {
+            "plot_manifold_dtype": torch.float64,
+            "dim_red_method": "HoroPCA",
+            "title": "Hyperbolic Embeddings Agglomerative Clustering Average Linkage",
+            "show_origin": True,
+            "save_figure": False,
+            "file_name": "hyperbolic_embeddings",
+            "file_path": None,
+            "file_format": "png",
+        }
+        fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_average)
+        results["agglomerative_clustering_average_hyperbolic_embeddings"] = wandb.Image(fig)
+        plt.close(fig)
     if metrics.get("agglomerative_clustering_ward", False):
         # Compute agglomerative clustering metrics
         #TODO: Implement agglomerative clustering with ward linkage. Sklearn does not support precomputed distance matrix with ward linkage.
         pass
     if metrics.get("visualization", False):
-        # Create embeddings plot
-        default_settings = {
-        "plot_manifold_dtype": torch.float64,
-        "dim_red_method": "HoroPCA",
-        "title": "Hyperbolic Embeddings",
-        "show_origin": True,
-        "save_figure": False,
-        "file_name": "hyperbolic_embeddings",
-        "file_path": None,
-        "file_format": "png",
-    }
+        # Create a figure with the points and labels
+        settings = {
+            "plot_manifold_dtype": torch.float64,
+            "dim_red_method": "HoroPCA",
+            "title": "Hyperbolic Embeddings",
+            "show_origin": True,
+            "save_figure": False,
+            "file_name": "hyperbolic_embeddings",
+            "file_path": None,
+            "file_format": "png",
+        }
+        fig = create_figure(two_d_pts, poincare_64, labels=Y.cpu().numpy())
+        results["hyperbolic_embeddings"] = wandb.Image(fig)
+        plt.close(fig)
+
     if metrics.get("nearest_neighbors_accuracy", False):
         # Compute nearest neighbors accuracy
         nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y, k=1)
@@ -268,18 +332,38 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
         ari_spectral = adjusted_rand_score(Y, pred_labels_spectral)
         results["spectral_clustering_nmi"] = nmi_spectral
         results["spectral_clustering_ari"] = ari_spectral
-        #fig = create_figure(points, manifold, labels=pred_labels_spectral)
-        #results["spectral_hyperbolic_embeddings"] = wandb.Image(fig)
-        #plt.close(fig)
+        settings = {
+            "plot_manifold_dtype": torch.float64,
+            "dim_red_method": "HoroPCA",
+            "title": "Hyperbolic Embeddings Spectral Clustering",
+            "show_origin": True,
+            "save_figure": False,
+            "file_name": "hyperbolic_embeddings",
+            "file_path": None,
+            "file_format": "png",
+        }
+        fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_spectral)
+        results["spectral_clustering_hyperbolic_embeddings"] = wandb.Image(fig)
+        plt.close(fig)
     if metrics.get("kmeans", False):
         # Compute k-means clustering metrics
-        kmeans = KMeans(n_clusters=len(np.unique(Y)))
+        kmeans = KMeans(n_clusters=len(np.unique(Y)), n_init='auto')
         pred_labels_kmeans = kmeans.fit_predict(X.cpu().numpy())
         nmi_kmeans = normalized_mutual_info_score(Y, pred_labels_kmeans)
         ari_kmeans = adjusted_rand_score(Y, pred_labels_kmeans)
         results["kmeans_nmi"] = nmi_kmeans
         results["kmeans_ari"] = ari_kmeans
-        #fig = create_figure(points, manifold, labels=pred_labels_kmeans)
-        #results["kmeans_hyperbolic_embeddings"] = wandb.Image(fig)
-        #plt.close(fig)
+        settings = {
+            "plot_manifold_dtype": torch.float64,
+            "dim_red_method": "HoroPCA",
+            "title": "Hyperbolic Embeddings KMeans Clustering",
+            "show_origin": True,
+            "save_figure": False,
+            "file_name": "hyperbolic_embeddings",
+            "file_path": None,
+            "file_format": "png",
+        }
+        fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_kmeans)
+        results["kmeans_hyperbolic_embeddings"] = wandb.Image(fig)
+        plt.close(fig)
     return results
