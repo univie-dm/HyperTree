@@ -30,6 +30,7 @@ class HyperbolicAE(AbstractModel):
         stage: str = 'pretrain',
         global_epoch: int = 0,
         evaluation_metrics: dict[str, bool] = {},
+        activation_function: str = 'relu',
     ):
         super().__init__(
             model_type='feedforward',
@@ -47,6 +48,7 @@ class HyperbolicAE(AbstractModel):
             stage=stage,
             global_epoch=global_epoch,
             evaluation_metrics=evaluation_metrics,
+            activation_function=activation_function
         )
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
@@ -59,7 +61,7 @@ class HyperbolicAE(AbstractModel):
             encoder_layers.extend([
                 spectral_norm(nn.Linear(prev_dim, hidden_dim)),
                 nn.BatchNorm1d(hidden_dim),
-                nn.ReLU()
+                self.activation_function
             ])
             prev_dim = hidden_dim
         self.encoder = nn.Sequential(*encoder_layers)
@@ -85,7 +87,7 @@ class HyperbolicAE(AbstractModel):
             self.hyperbolic_decoding_layer = nn.Sequential(
                 spectral_norm(nn.Linear(self.latent_dim, self.hidden_dims[-1])),
                 nn.BatchNorm1d(self.hidden_dims[-1]),
-                nn.ReLU()
+                self.activation_function
             )
         else:
             self.hyperbolic_decoding_layer = get_hyperbolic_decoding_layer_by_name(
@@ -103,7 +105,7 @@ class HyperbolicAE(AbstractModel):
             decoder_layers.extend([
                 nn.Linear(prev_dim, hidden_dim),
                 nn.BatchNorm1d(hidden_dim),
-                nn.ReLU()
+                self.activation_function
             ])
             prev_dim = hidden_dim
         decoder_layers.append(nn.Linear(self.hidden_dims[0], input_dim))

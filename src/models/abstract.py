@@ -5,10 +5,11 @@ import pytorch_lightning as pl
 from typing import Tuple, Any
 from pytorch_lightning.loggers import WandbLogger
 
+
 from src.evaluation import evaluation
-from ..hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
-from ..hyperbolic_math.src.optim import RiemannianAdam, RiemannianSGD
-from ..hyperbolic_math.src.utils.helpers import compute_pairwise_distances
+from src.hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
+from src.hyperbolic_math.src.optim import RiemannianAdam, RiemannianSGD
+from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 
 
 class AbstractModel(pl.LightningModule):
@@ -29,10 +30,9 @@ class AbstractModel(pl.LightningModule):
         log_interval: int = 5,
         stage: str = 'pretrain',
         global_epoch: int = 0,
-        learning_rate_scheduler: str | None = None,
-        lr_scheduler_params: dict | None = None,
         distances_type: str = 'geodesic',
         evaluation_metrics: dict[str, bool] = {},
+        activation_function: str = 'relu',
     ):
         super().__init__()
         self.model_type = model_type
@@ -59,14 +59,18 @@ class AbstractModel(pl.LightningModule):
                                          dtype=manifold_precision)
         else:
             raise ValueError(f"Invalid manifold name: {manifold_name}")
+
+        if activation_function == 'relu':
+            self.activation_function = torch.nn.ReLU()
+        elif activation_function == 'swish':
+            self.activation_function = torch.nn.SiLU()
+
         self.hyperbolic_decoding = hyperbolic_decoding
         self.optimizer_name = optimizer_name
         self.learning_rate = learning_rate
         self.log_interval = log_interval
         self.stage = stage
         self.global_epoch = global_epoch
-        self.learning_rate_scheduler = learning_rate_scheduler
-        self.lr_scheduler_params = lr_scheduler_params or {}
         self.orginal_input_shape = None
         # Evaluation & Logging
         self.metrics = {}
@@ -104,75 +108,7 @@ class AbstractModel(pl.LightningModule):
             optimizer = RiemannianSGD(self.parameters(), lr=self.learning_rate, momentum=0.9, expmap_update=True, weight_decay=self.weight_decay)
         else:
             raise ValueError(f"Invalid optimizer name: {self.optimizer_name}")
-
-        if self.learning_rate_scheduler is None:
-            return optimizer
-        elif self.learning_rate_scheduler == 'cosine':
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer,
-                T_max=self.trainer.max_epochs if self.trainer.max_epochs is not None else 100
-            )
-            return {
-                'optimizer': optimizer,
-                'lr_scheduler': {
-                    'scheduler': scheduler,
-                    'interval': 'epoch',
-                    'frequency': 1
-                }
-            }
-        elif self.learning_rate_scheduler == 'linear':
-            scheduler = torch.optim.lr_scheduler.LinearLR(
-                optimizer,
-                start_factor=1,
-                end_factor=0.1,
-                total_iters=self.trainer.max_epochs if self.trainer.max_epochs is not None else 100
-            )
-            return {
-                'optimizer': optimizer,
-                'lr_scheduler': {
-                    'scheduler': scheduler,
-                    'interval': 'epoch',
-                    'frequency': 1
-                }
-            }
-        elif self.learning_rate_scheduler == 'warmup_cosine':
-            # Get scheduler parameters with defaults
-            warmup_epochs = self.lr_scheduler_params.get('warmup_epochs', 10)
-            warmup_factor = self.lr_scheduler_params.get('warmup_factor', 0.1)
-            cosine_min_factor = self.lr_scheduler_params.get('cosine_min_factor', 0.01)
-            cosine_cycles = self.lr_scheduler_params.get('cosine_cycles', 1)
-
-            # Create a warmup scheduler that linearly increases the learning rate
-            warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
-                optimizer,
-                start_factor=warmup_factor,
-                end_factor=1.0,
-                total_iters=min(warmup_epochs, self.trainer.max_epochs // 10) # Warmup for specified epochs or 10% of total epochs
-            )
-
-            # Create a cosine annealing scheduler
-            cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                optimizer,
-                T_0=(self.trainer.max_epochs - warmup_scheduler.total_iters) // cosine_cycles if self.trainer.max_epochs is not None else 90,
-                T_mult=1, # Keep the same cycle length
-                eta_min=self.learning_rate * cosine_min_factor
-            )
-
-            # Combine the schedulers
-            return {
-                'optimizer': optimizer,
-                'lr_scheduler': {
-                    'scheduler': torch.optim.lr_scheduler.SequentialLR(
-                        optimizer,
-                        schedulers=[warmup_scheduler, cosine_scheduler],
-                        milestones=[warmup_scheduler.total_iters]
-                    ),
-                    'interval': 'epoch',
-                    'frequency': 1
-                }
-            }
-        else:
-            raise ValueError(f"Invalid learning rate scheduler: {self.learning_rate_scheduler}")
+        return optimizer
 
     def test_phase(self) -> None:
         if not isinstance(self.logger, WandbLogger):
@@ -199,7 +135,7 @@ class AbstractModel(pl.LightningModule):
                 elif self.distances_type == 'cosine_similarity':
                     all_embeddings_normalized = torch.nn.functional.normalize(all_embeddings, p=2, dim=-1)
                     similarties = torch.mm(all_embeddings_normalized, all_embeddings_normalized.T).clamp(min=-1.0, max=1.0)
-                    distance_matrix = (1 + similarties) / 2
+                    distance_matrix = (1 - similarties) / (1 + similarties)
                 else:
                     raise ValueError(f"Invalid distances_type: {self.distances_type}")
 

@@ -1,4 +1,4 @@
-from math import dist
+from random import sample
 from matplotlib import pyplot as plt
 import torch
 import wandb
@@ -9,11 +9,13 @@ from scipy.cluster.hierarchy import linkage
 from scipy.spatial.distance import squareform
 from sklearn.cluster import AgglomerativeClustering, SpectralClustering, KMeans
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
+from sklearn.base import BaseEstimator, ClusterMixin
+from scipy.sparse.linalg import eigsh
 
-from src.hyperbolic_math.src.manifolds.poincare import PoincareBall
-from src.hyperbolic_math.src.manifolds import Manifold
+from src.hyperbolic_math.src.manifolds import Hyperboloid, PoincareBall, Manifold
 from src.hyperbolic_math.src.utils.helpers import get_delta
 from src.hyperbolic_math.src.utils.vis_utils import create_figure, pointsTo2dPoincare
+from src.hyperbolic_math.src.utils.horo_pca import compute_frechet_mean, center_data
 
 def nearest_neighbors_accuracy(
     distance_matrix: Union[np.ndarray, torch.Tensor],
@@ -147,6 +149,97 @@ def dendrogram_purity(
 
     return 0.0
 
+class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
+    """
+    A corrected Spectral Clustering algorithm that operates on a pre-computed
+    geodesic distance matrix from a hyperbolic space.
+
+    This implementation takes a distance matrix, constructs a proper affinity
+    matrix using the Gaussian (RBF) kernel, and then performs the standard
+    spectral clustering steps.
+    """
+    def __init__(self, n_clusters=8, gamma=1.0, n_init=20, random_state=None):
+        """
+        Initializes the HyperbolicSpectralClustering instance.
+
+        Args:
+            n_clusters (int): The number of clusters to form.
+            gamma (float): Kernel coefficient for the RBF kernel used to create
+                           the affinity matrix. A crucial hyperparameter to tune.
+                           Corresponds to 1 / (2 * sigma^2).
+            n_init (int): Number of times the k-means algorithm will be run with
+                          different centroid seeds in the final step.
+            random_state (int or RandomState instance): Determines random number
+                                                       generation for KMeans initialization.
+        """
+        self.n_clusters = n_clusters
+        self.gamma = gamma
+        self.n_init = n_init
+        self.random_state = random_state
+        self.labels_ = None
+
+    def fit(self, D, y=None):
+        """
+        Performs hyperbolic spectral clustering on the distance matrix.
+
+        Args:
+            D (np.ndarray): A square array of shape (n_samples, n_samples)
+                            containing the pre-computed pairwise geodesic distances.
+        """
+        self.fit_predict(D)
+        return self
+
+    def fit_predict(self, D, y=None):
+        """
+        Performs clustering on the distance matrix and returns cluster labels.
+
+        Args:
+            D (np.ndarray): A square array of shape (n_samples, n_samples)
+                            containing the pre-computed pairwise geodesic distances.
+
+        Returns:
+            np.ndarray: Array of shape (n_samples,) containing the cluster labels.
+        """
+        if D.shape[0] != D.shape[1]:
+            raise ValueError("Input D must be a square distance matrix.")
+        n_samples = D.shape[0]
+
+        # Step 1: Construct the affinity matrix from the geodesic distance matrix
+        # This is the key step: using the Gaussian (RBF) kernel.
+        affinity_matrix = np.exp(-self.gamma * (D ** 2))
+        np.fill_diagonal(affinity_matrix, 0)
+
+        # Step 2: Compute the Graph Laplacian (normalized)
+        degree_matrix = np.diag(np.sum(affinity_matrix, axis=1))
+        # Add a small epsilon to avoid division by zero for isolated nodes
+        degree_inv_sqrt = np.linalg.inv(np.sqrt(degree_matrix + 1e-10))
+        laplacian = np.eye(n_samples) - degree_inv_sqrt @ affinity_matrix @ degree_inv_sqrt
+
+        # Step 3: Compute the eigenvectors of the Laplacian
+        # We look for the k smallest eigenvalues
+        _, eigenvectors = eigsh(
+            laplacian,
+            k=self.n_clusters,
+            which='SM', # Smallest Magnitude
+            tol=1e-6
+        )
+
+        # Step 4: Normalize the eigenvectors to form the spectral embedding
+        # Each row is treated as a point in the new spectral space
+        norm = np.linalg.norm(eigenvectors, axis=1, keepdims=True)
+        spectral_embedding = eigenvectors / (norm + 1e-10)
+
+        # Step 5: Cluster the points in the new spectral space using KMeans
+        # This is the standard final step for spectral clustering.
+        kmeans = KMeans(
+            n_clusters=self.n_clusters,
+            n_init=self.n_init,
+            random_state=self.random_state,
+        )
+        self.labels_ = kmeans.fit_predict(spectral_embedding)
+
+        return self.labels_
+
 def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, manifold: Manifold, metrics: dict[str, bool] | None = None) -> dict:
     """
     Evaluate the performance of a model using specified metrics.
@@ -172,9 +265,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
     if metrics is None:
         return results
 
-    if any([metrics["visualization"], metrics["spectral_clustering"], metrics["kmeans"],
-            metrics["agglomerative_clustering_single"], metrics["agglomerative_clustering_complete"],
-            metrics["agglomerative_clustering_average"], metrics["agglomerative_clustering_ward"]]):
+    if metrics["visualization"]:
         settings = {
             "plot_manifold_dtype": torch.float64,
             "dim_red_method": "HoroPCA",
@@ -185,11 +276,23 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
             "file_path": None,
             "file_format": "png",
         }
-        points = X * 0.95
+        sample_size = metrics['visualization_sample_size']
+        sample_size = min(sample_size, len(X))
+
+        pca_sample_indices = np.random.choice(len(X), sample_size, replace=False)
+        points_sampled = X[pca_sample_indices]* 0.95
+
+        
         poincare_64 = PoincareBall(c=manifold.c.to(settings['plot_manifold_dtype']), dtype=settings['plot_manifold_dtype'])
-        points = poincare_64.to_hyperboloid(points)
-        two_d_pts, _ = pointsTo2dPoincare(x=points, poincare=poincare_64, hyperplanes=None, settings=settings)
+        points_sampled = poincare_64.to_hyperboloid(points_sampled)
+        two_d_pts, _ = pointsTo2dPoincare(x=points_sampled, poincare=poincare_64, hyperplanes=None, settings=settings)
         two_d_pts = torch.tensor(two_d_pts, dtype=settings['plot_manifold_dtype'], device=manifold.c.device)
+        hyperboloid = Hyperboloid(c=manifold.c.to(settings['plot_manifold_dtype']), dtype=settings['plot_manifold_dtype'])
+        hyp_points = poincare_64.to_hyperboloid(two_d_pts)
+        frechet_mean = compute_frechet_mean(hyp_points, hyperboloid)
+        two_d_pts = center_data(hyp_points, frechet_mean, hyperboloid=hyperboloid)
+        two_d_pts = hyperboloid.to_poincare(two_d_pts)
+        #TODO test tangent pca instead of horror pca
 
 
     if metrics.get("delta_hyperbolicity", False):
@@ -225,19 +328,20 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
         ari_single = adjusted_rand_score(Y, pred_labels_single)
         results["agglomerative_clustering_single_nmi"] = nmi_single
         results["agglomerative_clustering_single_ari"] = ari_single
-        settings = {
-            "plot_manifold_dtype": torch.float64,
-            "dim_red_method": "HoroPCA",
-            "title": "Hyperbolic Embeddings Agglomerative Clustering Single Linkage",
-            "show_origin": True,
-            "save_figure": False,
-            "file_name": "hyperbolic_embeddings",
-            "file_path": None,
-            "file_format": "png",
-        }
-        fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_single)
-        results["agglomerative_clustering_single_hyperbolic_embeddings"] = wandb.Image(fig)
-        plt.close(fig)
+        if metrics['visualization']:
+            settings = {
+                "plot_manifold_dtype": torch.float64,
+                "dim_red_method": "HoroPCA",
+                "title": "Hyperbolic Embeddings Agglomerative Clustering Single Linkage",
+                "show_origin": True,
+                "save_figure": False,
+                "file_name": "hyperbolic_embeddings",
+                "file_path": None,
+                "file_format": "png",
+            }
+            fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_single[pca_sample_indices])
+            results["agglomerative_clustering_single_hyperbolic_embeddings"] = wandb.Image(fig)
+            plt.close(fig)
     if metrics.get("agglomerative_clustering_complete", False):
         # Compute agglomerative clustering metrics
         agglomerative_clustering_complete = AgglomerativeClustering(
@@ -250,19 +354,20 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
         ari_complete = adjusted_rand_score(Y, pred_labels_complete)
         results["agglomerative_clustering_complete_nmi"] = nmi_complete
         results["agglomerative_clustering_complete_ari"] = ari_complete
-        settings = {
-            "plot_manifold_dtype": torch.float64,
-            "dim_red_method": "HoroPCA",
-            "title": "Hyperbolic Embeddings Agglomerative Clustering Complete Linkage",
-            "show_origin": True,
-            "save_figure": False,
-            "file_name": "hyperbolic_embeddings",
-            "file_path": None,
-            "file_format": "png",
-        }
-        fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_complete)
-        results["agglomerative_clustering_complete_hyperbolic_embeddings"] = wandb.Image(fig)
-        plt.close(fig)
+        if metrics['visualization']:
+            settings = {
+                    "plot_manifold_dtype": torch.float64,
+                    "dim_red_method": "HoroPCA",
+                    "title": "Hyperbolic Embeddings Agglomerative Clustering Complete Linkage",
+                    "show_origin": True,
+                    "save_figure": False,
+                    "file_name": "hyperbolic_embeddings",
+                    "file_path": None,
+                    "file_format": "png",
+            }
+            fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_complete[pca_sample_indices])
+            results["agglomerative_clustering_complete_hyperbolic_embeddings"] = wandb.Image(fig)
+            plt.close(fig)
     if metrics.get("agglomerative_clustering_average", False):
         # Compute agglomerative clustering metrics
         agglomerative_clustering_average = AgglomerativeClustering(
@@ -275,19 +380,20 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
         ari_average = adjusted_rand_score(Y, pred_labels_average)
         results["agglomerative_clustering_average_nmi"] = nmi_average
         results["agglomerative_clustering_average_ari"] = ari_average
-        settings = {
-            "plot_manifold_dtype": torch.float64,
-            "dim_red_method": "HoroPCA",
-            "title": "Hyperbolic Embeddings Agglomerative Clustering Average Linkage",
-            "show_origin": True,
-            "save_figure": False,
-            "file_name": "hyperbolic_embeddings",
-            "file_path": None,
-            "file_format": "png",
-        }
-        fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_average)
-        results["agglomerative_clustering_average_hyperbolic_embeddings"] = wandb.Image(fig)
-        plt.close(fig)
+        if metrics['visualization']:
+            settings = {
+                "plot_manifold_dtype": torch.float64,
+                "dim_red_method": "HoroPCA",
+                "title": "Hyperbolic Embeddings Agglomerative Clustering Average Linkage",
+                "show_origin": True,
+                "save_figure": False,
+                "file_name": "hyperbolic_embeddings",
+                "file_path": None,
+                "file_format": "png",
+            }
+            fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_average[pca_sample_indices])
+            results["agglomerative_clustering_average_hyperbolic_embeddings"] = wandb.Image(fig)
+            plt.close(fig)
     if metrics.get("agglomerative_clustering_ward", False):
         # Compute agglomerative clustering metrics
         #TODO: Implement agglomerative clustering with ward linkage. Sklearn does not support precomputed distance matrix with ward linkage.
@@ -304,7 +410,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
             "file_path": None,
             "file_format": "png",
         }
-        fig = create_figure(two_d_pts, poincare_64, labels=Y.cpu().numpy())
+        fig = create_figure(two_d_pts, poincare_64, labels=Y.cpu().numpy()[pca_sample_indices])
         results["hyperbolic_embeddings"] = wandb.Image(fig)
         plt.close(fig)
 
@@ -323,28 +429,26 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
 
     if metrics.get("spectral_clustering", False):
         # Compute spectral clustering metrics
-        spectral_clustering = SpectralClustering(
-            n_clusters=len(np.unique(Y)),
-            affinity='precomputed'
-        )
+        spectral_clustering = HyperbolicSpectralClustering(n_clusters=len(np.unique(Y)))
         pred_labels_spectral = spectral_clustering.fit_predict(distance_matrix.cpu().numpy())
         nmi_spectral = normalized_mutual_info_score(Y, pred_labels_spectral)
         ari_spectral = adjusted_rand_score(Y, pred_labels_spectral)
         results["spectral_clustering_nmi"] = nmi_spectral
         results["spectral_clustering_ari"] = ari_spectral
-        settings = {
-            "plot_manifold_dtype": torch.float64,
-            "dim_red_method": "HoroPCA",
-            "title": "Hyperbolic Embeddings Spectral Clustering",
-            "show_origin": True,
-            "save_figure": False,
-            "file_name": "hyperbolic_embeddings",
-            "file_path": None,
-            "file_format": "png",
-        }
-        fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_spectral)
-        results["spectral_clustering_hyperbolic_embeddings"] = wandb.Image(fig)
-        plt.close(fig)
+        if metrics['visualization']:
+            settings = {
+                "plot_manifold_dtype": torch.float64,
+                "dim_red_method": "HoroPCA",
+                "title": "Hyperbolic Embeddings Spectral Clustering",
+                "show_origin": True,
+                "save_figure": False,
+                "file_name": "hyperbolic_embeddings",
+                "file_path": None,
+                "file_format": "png",
+            }
+            fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_spectral[pca_sample_indices])
+            results["spectral_clustering_hyperbolic_embeddings"] = wandb.Image(fig)
+            plt.close(fig)
     if metrics.get("kmeans", False):
         # Compute k-means clustering metrics
         kmeans = KMeans(n_clusters=len(np.unique(Y)), n_init='auto')
@@ -353,17 +457,18 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
         ari_kmeans = adjusted_rand_score(Y, pred_labels_kmeans)
         results["kmeans_nmi"] = nmi_kmeans
         results["kmeans_ari"] = ari_kmeans
-        settings = {
-            "plot_manifold_dtype": torch.float64,
-            "dim_red_method": "HoroPCA",
-            "title": "Hyperbolic Embeddings KMeans Clustering",
-            "show_origin": True,
-            "save_figure": False,
-            "file_name": "hyperbolic_embeddings",
-            "file_path": None,
-            "file_format": "png",
-        }
-        fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_kmeans)
-        results["kmeans_hyperbolic_embeddings"] = wandb.Image(fig)
-        plt.close(fig)
+        if metrics['visualization']:
+            settings = {
+                "plot_manifold_dtype": torch.float64,
+                "dim_red_method": "HoroPCA",
+                "title": "Hyperbolic Embeddings KMeans Clustering",
+                "show_origin": True,
+                "save_figure": False,
+                "file_name": "hyperbolic_embeddings",
+                "file_path": None,
+                "file_format": "png",
+            }
+            fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_kmeans[pca_sample_indices])
+            results["kmeans_hyperbolic_embeddings"] = wandb.Image(fig)
+            plt.close(fig)
     return results

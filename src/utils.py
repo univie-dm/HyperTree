@@ -35,6 +35,7 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "dataset_name" : cfg.dataset.name,
         "selected_classes" : cfg.dataset.get('selected_classes', None),
         "dataset_subset" : cfg.dataset.get('subset', None),
+        "activation_function": cfg.architecture.activation_function,
     }
     return md5(str(attr).encode()).hexdigest()
 
@@ -109,6 +110,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             stage='pretrain',
             global_epoch=0,
             evaluation_metrics=cfg.evaluation,
+            activation_function=cfg.architecture.activation_function,
         )
     elif cfg.architecture.ae_type == 'convolutional':
         model = HyperbolicConvAE(
@@ -146,6 +148,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             learning_rate=cfg.pretraining.learning_rate,
             log_interval=cfg.experiment.log_interval,
             evaluation_metrics=cfg.evaluation,
+            activation_function=cfg.architecture.activation_function,
         )
 
     elif cfg.architecture.ae_type == 'poincare_resnet':
@@ -165,6 +168,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
                 hyperbolic_decoding=cfg.architecture.hyperbolic_decoding,
                 distances_type=cfg.hyphc.distances_type,
                 weight_decay=cfg.pretraining.weight_decay,
+                activation_function=cfg.architecture.activation_function,
         )
     else:
         raise ValueError("Invalid autoencoder type")
@@ -179,7 +183,6 @@ def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[Hyperb
         log_interval=cfg.experiment.log_interval,
         stage='clustering',
         global_epoch=cfg.pretraining.epochs,
-        learning_rate_scheduler=cfg.clustering.lr_scheduler.type,
         lr_scheduler_params=cfg.clustering.lr_scheduler if hasattr(cfg.clustering, 'lr_scheduler') else None,
         hyphc_weight=cfg.hyphc.loss_weight,
         hyphc_temperature=cfg.hyphc.temperature,

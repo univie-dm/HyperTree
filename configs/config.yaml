@@ -26,11 +26,9 @@ clustering:
   augmentations: False
   # Learning rate scheduler
   lr_scheduler:
-    type: # 'cosine', 'linear', 'warmup_cosine'
-    warmup_epochs: 100  # Number of epochs for warmup phase
-    warmup_factor: 0.1  # Initial learning rate factor (0.1 means start at 10% of target lr)
+    type: # 'warmup_cosine'
+    interval: 20  # Number of epochs for warmup phase
     cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
-    cosine_cycles: 1  # Number of cosine cycles
 
 ## HypHC parameters
 hyphc:
@@ -55,6 +53,7 @@ architecture:
   manifold_name: 'PoincareBall' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
   manifold_precision: 'float32' # 'float32', 'float64'
   curvature_magnitude: 1.0
+  activation_function: 'relu' #'relu', 'swish'
 
 ## Evaluation Metrics to be used and logged
 evaluation:
@@ -69,8 +68,9 @@ evaluation:
   agglomerative_clustering_ward: False
   nearest_neighbors_accuracy: True
   spectral_clustering: True
-  visualization: True
+  visualization: False
   kmeans: True
+  visualization_sample_size: 5000
 
 ## Logging
 wandb:

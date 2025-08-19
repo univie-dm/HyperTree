@@ -1,9 +1,7 @@
-import dis
-from src.hyperbolic_math.src.optim.riemannian_adam import RiemannianAdam
-from src.hyperbolic_math.src.optim.riemannian_sgd import RiemannianSGD
 import torch
 import torch.nn.functional as F
 import numpy as np
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
 
 from typing import Any, Tuple
@@ -13,7 +11,6 @@ from src.models.abstract import AbstractModel
 from src.models.resnet import HyperbolicResNet
 from src.models.utils import get_dtype_from_precision
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
-import torch.nn as nn
 
 
 class HyperbolicHCModel(AbstractModel):
@@ -26,7 +23,6 @@ class HyperbolicHCModel(AbstractModel):
         log_interval: int = 5,
         stage: str = 'clustering',
         global_epoch: int = 0,
-        learning_rate_scheduler: str | None = None,
         lr_scheduler_params: dict | None = None,
         hyphc_weight: float = 1.0,
         hyphc_temperature: float = 0.05,
@@ -36,7 +32,7 @@ class HyperbolicHCModel(AbstractModel):
         normalized_hyphc_loss: bool = False,
         distances_type: str = 'geodesic',
         hyphc_dist_sum_loss: bool = True,
-        evaluation_metrics: list[str] | None = None,
+        evaluation_metrics: dict[str, bool] = {},
     ):
         super().__init__(
             model_type=ae_model.model_type,
@@ -54,8 +50,6 @@ class HyperbolicHCModel(AbstractModel):
             log_interval=log_interval,
             stage=stage,
             global_epoch=global_epoch,
-            learning_rate_scheduler=learning_rate_scheduler,
-            lr_scheduler_params=lr_scheduler_params,
             distances_type=distances_type,
             evaluation_metrics=evaluation_metrics,
         )
@@ -69,6 +63,7 @@ class HyperbolicHCModel(AbstractModel):
         self.normalized_hyphc_loss = normalized_hyphc_loss
         self.distances_type = distances_type
         self.hyphc_dist_sum_loss = hyphc_dist_sum_loss
+        self.lr_scheduler_params = lr_scheduler_params
 
         # Load encoding and decoding modules with their weights
         self.encoder: torch.nn.Sequential = ae_model.encoder
@@ -86,6 +81,25 @@ class HyperbolicHCModel(AbstractModel):
         self.hyperbolic_decoding_layer.load_state_dict(ae_model.hyperbolic_decoding_layer.state_dict())
         self.decoder.load_state_dict(ae_model.decoder.state_dict())
 
+    def configure_optimizers(self) -> Any:
+        optimizer = super().configure_optimizers()
+        if self.lr_scheduler_params is not None:
+            if self.lr_scheduler_params['type'] == 'warmup_cosine':
+                scheduler = CosineAnnealingWarmRestarts(
+                    optimizer,
+                    T_0=self.lr_scheduler_params['interval'],
+                    eta_min=self.lr_scheduler_params['cosine_min_factor'] * self.learning_rate,
+                )
+                return {
+                    'optimizer': optimizer,
+                    'lr_scheduler': {
+                        'scheduler': scheduler,
+                        'interval': 'epoch',
+                        'frequency': 1,
+                    }
+                }
+            else:
+                return optimizer
 
     def sample_triplets(self, num_pts: int, device: torch.device) -> Tuple[torch.Tensor, np.ndarray]:
         """Sample triplets for the HypHC loss."""
@@ -210,7 +224,7 @@ class HyperbolicHCModel(AbstractModel):
         elif self.distances_type == 'cosine_similarity':
             embeddings_normalized = torch.nn.functional.normalize(embeddings[sampled_indices], p=2, dim=-1)
             distances = torch.mm(embeddings_normalized, embeddings_normalized.T).clamp(min=-1.0, max=1.0)
-            similarties = (distances + 1) / 2
+            similarties = (1 - similarties) / (1 + similarties)
         else:
             raise ValueError(f"Invalid distances type: {self.distances_type}")
         similarties_sum = similarties.sum()

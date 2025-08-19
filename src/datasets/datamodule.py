@@ -32,7 +32,7 @@ class ColorDataModule(pl.LightningDataModule):
     def get_normalize_fn(data: torch.Tensor) -> transforms.Normalize:
         channel_means = data.mean([0, 2, 3])
         channel_stds = data.std([0, 2, 3])
-        return transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        return transforms.Normalize(channel_means, channel_stds)
 
     def __init__(
         self,
