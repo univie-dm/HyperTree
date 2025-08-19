@@ -38,7 +38,9 @@ class PoincareResNet(AbstractModel):
                  hyperbolic_encoding: str,
                  hyperbolic_decoding: str,
                  weight_decay: float = 0.0,
-                 evaluation_metrics: dict[str, bool] = {},):
+                 evaluation_metrics: dict[str, bool] = {},
+                 activation_function: str = 'relu',
+                 ):
         super().__init__(
             model_type='poincare_resnet_ae',
             hyperbolic_encoding=hyperbolic_encoding,
@@ -54,6 +56,7 @@ class PoincareResNet(AbstractModel):
             log_interval=log_interval,
             distances_type=distances_type,
             evaluation_metrics=evaluation_metrics,
+            activation_function=activation_function,
         )
         self.save_hyperparameters() 
         self.model_type = 'poincare_resnet_ae'
@@ -99,7 +102,7 @@ class PoincareResNet(AbstractModel):
             self.hyperbolic_decoding_layer = nn.Sequential(
                 spectral_norm(nn.Linear(self.latent_dim, channel_dims[-1])),
                 nn.BatchNorm1d(channel_dims[-1]),
-                nn.ReLU()
+                self.activation_function
             )
         else:
             self.hyperbolic_decoding_layer = get_hyperbolic_decoding_layer_by_name(
@@ -143,7 +146,7 @@ class PoincareResNet(AbstractModel):
             self._make_decoder_layer(128, 2, scale=2), # Note: Adjusted these channels for a better capacity decoder
             self._make_decoder_layer(64, 2, scale=2),
             nn.ConvTranspose2d(self.inplanes, self.input_channels, kernel_size=3, stride=1, padding=1),
-            nn.Tanh()
+            self.activation_function
         )
 
     def _make_decoder_layer(self, planes: int, blocks: int, scale: int = 1) -> nn.Sequential:
