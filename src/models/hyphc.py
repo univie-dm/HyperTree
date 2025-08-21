@@ -11,6 +11,7 @@ from src.models.abstract import AbstractModel
 from src.models.resnet import HyperbolicResNet
 from src.models.utils import get_dtype_from_precision
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
+from src.hyperbolic_math.src.manifolds import Hyperboloid, PoincareBall
 
 
 class HyperbolicHCModel(AbstractModel):
@@ -127,29 +128,49 @@ class HyperbolicHCModel(AbstractModel):
         while indices.shape[1] > 0:
             x = points[indices[0,:batch_size], :]
             y = points[indices[1,:batch_size], :]
-
-            # Compute the center of geodesic circle Gamma through x and y
-            x2 = x.pow(2).sum(dim=-1, keepdim=True)
-            y2 = y.pow(2).sum(dim=-1, keepdim=True)
             xy = (x * y).sum(dim=-1, keepdim=True)
 
-            denom = (2 * self.manifold.c * (x2 * y2 - xy ** 2)).clamp(min=1e-15)
-            alpha = ((1 + self.manifold.c * x2) * y2 - (1 + self.manifold.c * y2) * xy) / denom
-            beta = ((1 + self.manifold.c * y2) * x2 - (1 + self.manifold.c * x2) * xy) / denom
-            z = alpha * x + beta * y
+            if isinstance(self.manifold, Hyperboloid):
+                # Compute the orthogonal geodesic projection(s) [z B A^T (A B A^T)^-1 A] of the Hyperboloid's origin z
+                # onto all 2d geodesic submanifold(s) spanned by all pair-wise combination of vectors x and y.
+                # That is, A is the batched tensor of (2, dim) matrices whose rows span on of the 2d submanifold we
+                # project onto, and B is the Minkowski inner product matrix
+                # Construct the matrix A
+                A = torch.stack([x, y], dim=1) # (B, 2, dim)
+                # 1) Compute the coefficients [z_coeffs = z B A^T (A B A^T)^-1] of the projection
+                z = self.manifold._create_origin_from_reference(x) # (B, d)
+                zBAt = self.manifold._minkowski_inner(z.unsqueeze(-1), A.transpose(-2, -1), axis=1).squeeze(1) # (B, 2)
+                ABAt = self.manifold._minkowski_inner(A.unsqueeze(-1), A.transpose(-2, -1).unsqueeze(1), axis=2).squeeze(2) # (B, 2, 2)
+                z_coeffs = torch.linalg.solve(ABAt, zBAt) # (B, 2)
+                # 2) Compute the orthogonal geodesic projection onto the submanifold(s)
+                mink_proj = (z_coeffs.unsqueeze(1) @ A).squeeze(1) # (B, d)
+                mink_proj_normalized = (-self.manifold.c * self.manifold._minkowski_inner(mink_proj, mink_proj)).sqrt() # (B, d)
+                lca = mink_proj / mink_proj_normalized # (B, d)
+            elif isinstance(self.manifold, PoincareBall):
+                # Compute the center of geodesic circle Gamma through x and y
+                x2 = x.pow(2).sum(dim=-1, keepdim=True)
+                y2 = y.pow(2).sum(dim=-1, keepdim=True)
 
-            # Compute the lca and its distance to the origin w.r.t. the full geodesic
-            z2 = z.pow(2).sum(dim=-1, keepdim=True)
-            z_norm = z.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-15)
+                denom = (2 * self.manifold.c * (x2 * y2 - xy ** 2)).clamp(min=1e-15)
+                alpha = ((1 + self.manifold.c * x2) * y2 - (1 + self.manifold.c * y2) * xy) / denom
+                beta = ((1 + self.manifold.c * y2) * x2 - (1 + self.manifold.c * x2) * xy) / denom
+                z = alpha * x + beta * y
 
-            # Direct computation of the lca
-            # second_term = (z2 - 1/self.manifold.c).clamp(min=1e-15).sqrt()
-            # lca = (1 - second_term / z_norm) * z
+                # Compute the lca and its distance to the origin w.r.t. the full geodesic
+                z2 = z.pow(2).sum(dim=-1, keepdim=True)
+                z_norm = z.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-15)
 
-            # Computation via conjugation to avoid numerical issues
-            sqrt_term = (z2 - 1 / self.manifold.c).clamp(min=1e-15).sqrt()
-            denom = self.manifold.c * z_norm * (z_norm + sqrt_term).clamp(min=1e-15)
-            lca = z / denom
+                # Direct computation of the lca
+                # second_term = (z2 - 1/self.manifold.c).clamp(min=1e-15).sqrt()
+                # lca = (1 - second_term / z_norm) * z
+
+                # Computation via conjugation to avoid numerical issues
+                sqrt_term = (z2 - 1 / self.manifold.c).clamp(min=1e-15).sqrt()
+                denom = self.manifold.c * z_norm * (z_norm + sqrt_term).clamp(min=1e-15)
+                lca = z / denom
+            else:
+                raise ValueError(f"Unsupported manifold: {self.manifold}")
+
             lca_depth = self.manifold.dist_0(lca)
 
             # Compute the cosine of the angles at the origin in the triangles {x, origin, c}, {y, origin, c}  {x, origin, y}
@@ -176,6 +197,7 @@ class HyperbolicHCModel(AbstractModel):
 
     def compute_lca_depth_chami(self, points: torch.Tensor, batch_size: int=1_000) -> torch.Tensor:
         """LCA depth computation of Chami et al. (2020)."""
+        assert self.manifold.c == 1.0, "Chami et al. (2020) requires a curvature of -1.0"
         device = points.device
         lcas = torch.zeros((points.shape[0], points.shape[0]), dtype=points.dtype).to(device)
         indices = torch.triu_indices(points.shape[0], points.shape[0], 1).to(device)
