@@ -1,4 +1,3 @@
-from random import sample
 from matplotlib import pyplot as plt
 import torch
 import wandb
@@ -7,10 +6,12 @@ import numpy as np
 from typing import Union, Optional
 from scipy.cluster.hierarchy import linkage
 from scipy.spatial.distance import squareform
-from sklearn.cluster import AgglomerativeClustering, SpectralClustering, KMeans
+from sklearn.cluster import AgglomerativeClustering, KMeans, SpectralClustering
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from sklearn.base import BaseEstimator, ClusterMixin
 from scipy.sparse.linalg import eigsh
+from sklearn.neighbors import kneighbors_graph
+from scipy.sparse import csgraph, identity
 
 from src.hyperbolic_math.src.manifolds import Hyperboloid, PoincareBall, Manifold
 from src.hyperbolic_math.src.utils.helpers import get_delta
@@ -151,29 +152,32 @@ def dendrogram_purity(
 
 class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
     """
-    A corrected Spectral Clustering algorithm that operates on a pre-computed
-    geodesic distance matrix from a hyperbolic space.
-
-    This implementation takes a distance matrix, constructs a proper affinity
-    matrix using the Gaussian (RBF) kernel, and then performs the standard
-    spectral clustering steps.
+    A Spectral Clustering algorithm that operates on a pre-computed
+    geodesic distance matrix from a hyperbolic space, with optimizations
+    for performance and robustness, similar to sklearn's implementation.
     """
-    def __init__(self, n_clusters=8, gamma=1.0, n_init=20, random_state=None):
+    def __init__(self, n_clusters=8, gamma=1.0, affinity='rbf', n_neighbors=10,
+                 assign_labels='kmeans', n_init=20, random_state=None):
         """
         Initializes the HyperbolicSpectralClustering instance.
 
         Args:
             n_clusters (int): The number of clusters to form.
-            gamma (float): Kernel coefficient for the RBF kernel used to create
-                           the affinity matrix. A crucial hyperparameter to tune.
-                           Corresponds to 1 / (2 * sigma^2).
-            n_init (int): Number of times the k-means algorithm will be run with
-                          different centroid seeds in the final step.
-            random_state (int or RandomState instance): Determines random number
-                                                       generation for KMeans initialization.
+            gamma (float): Kernel coefficient for the RBF kernel.
+            affinity (str): How to construct the affinity matrix.
+                            'rbf': use the RBF kernel on the full distance matrix.
+                            'nearest_neighbors': construct a sparse k-NN graph.
+            n_neighbors (int): Number of neighbors for the k-NN graph.
+            assign_labels (str): The strategy for assigning labels in the spectral space.
+                                 'kmeans': use KMeans.
+            n_init (int): Number of times KMeans will be run with different seeds.
+            random_state (int or RandomState): Determines random number generation.
         """
         self.n_clusters = n_clusters
         self.gamma = gamma
+        self.affinity = affinity
+        self.n_neighbors = n_neighbors
+        self.assign_labels = assign_labels
         self.n_init = n_init
         self.random_state = random_state
         self.labels_ = None
@@ -181,66 +185,72 @@ class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
     def fit(self, D, y=None):
         """
         Performs hyperbolic spectral clustering on the distance matrix.
-
-        Args:
-            D (np.ndarray): A square array of shape (n_samples, n_samples)
-                            containing the pre-computed pairwise geodesic distances.
         """
         self.fit_predict(D)
         return self
 
     def fit_predict(self, D, y=None):
         """
-        Performs clustering on the distance matrix and returns cluster labels.
-
-        Args:
-            D (np.ndarray): A square array of shape (n_samples, n_samples)
-                            containing the pre-computed pairwise geodesic distances.
-
-        Returns:
-            np.ndarray: Array of shape (n_samples,) containing the cluster labels.
+        Performs clustering and returns cluster labels.
         """
         if D.shape[0] != D.shape[1]:
             raise ValueError("Input D must be a square distance matrix.")
         n_samples = D.shape[0]
 
-        # Step 1: Construct the affinity matrix from the geodesic distance matrix
-        # This is the key step: using the Gaussian (RBF) kernel.
-        affinity_matrix = np.exp(-self.gamma * (D ** 2))
-        np.fill_diagonal(affinity_matrix, 0)
+        # Step 1: Construct the affinity matrix
+        if self.affinity == 'rbf':
+            affinity_matrix = np.exp(-self.gamma * (D ** 2))
+            np.fill_diagonal(affinity_matrix, 0)
+        elif self.affinity == 'nearest_neighbors':
+            # Construct a sparse k-NN graph
+            connectivity = kneighbors_graph(D, n_neighbors=self.n_neighbors,
+                                            mode='distance', metric='precomputed',
+                                            include_self=False)
+            # Make the graph symmetric
+            affinity_matrix = 0.5 * (connectivity + connectivity.T)
+            # Apply the RBF kernel to the sparse graph
+            affinity_matrix.data = np.exp(-self.gamma * (affinity_matrix.data ** 2))
+        else:
+            raise ValueError(f"Unknown affinity type: {self.affinity}")
 
         # Step 2: Compute the Graph Laplacian (normalized)
-        degree_matrix = np.diag(np.sum(affinity_matrix, axis=1))
-        # Add a small epsilon to avoid division by zero for isolated nodes
-        degree_inv_sqrt = np.linalg.inv(np.sqrt(degree_matrix + 1e-10))
-        laplacian = np.eye(n_samples) - degree_inv_sqrt @ affinity_matrix @ degree_inv_sqrt
+        # csgraph.laplacian is optimized for both sparse and dense matrices
+        laplacian, dd = csgraph.laplacian(affinity_matrix, normed=True, return_diag=True)
 
         # Step 3: Compute the eigenvectors of the Laplacian
-        # We look for the k smallest eigenvalues
+        # We use a robust and efficient eigensolver (eigsh with a shift-invert mode)
+        # to find the eigenvectors corresponding to the smallest eigenvalues.
+        # Adding a small shift to the diagonal improves stability.
+        laplacian_shifted = laplacian + 1e-10 * identity(laplacian.shape[0])
         _, eigenvectors = eigsh(
-            laplacian,
+            laplacian_shifted,
             k=self.n_clusters,
-            which='SM', # Smallest Magnitude
-            tol=1e-6
+            which='SM',  # Smallest Magnitude
+            tol=1e-6,
+            v0=np.ones(laplacian.shape[0]) # Initial vector for stability
         )
 
+
         # Step 4: Normalize the eigenvectors to form the spectral embedding
-        # Each row is treated as a point in the new spectral space
         norm = np.linalg.norm(eigenvectors, axis=1, keepdims=True)
         spectral_embedding = eigenvectors / (norm + 1e-10)
 
-        # Step 5: Cluster the points in the new spectral space using KMeans
-        # This is the standard final step for spectral clustering.
-        kmeans = KMeans(
-            n_clusters=self.n_clusters,
-            n_init=self.n_init,
-            random_state=self.random_state,
-        )
-        self.labels_ = kmeans.fit_predict(spectral_embedding)
+        # Step 5: Cluster the points in the new spectral space
+        if self.assign_labels == 'kmeans':
+            kmeans = KMeans(
+                n_clusters=self.n_clusters,
+                n_init=self.n_init,
+                random_state=self.random_state,
+            )
+            self.labels_ = kmeans.fit_predict(spectral_embedding)
+        else:
+            raise ValueError(f"Unknown label assignment strategy: {self.assign_labels}")
 
         return self.labels_
 
-def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, manifold: Manifold, metrics: dict[str, bool] | None = None) -> dict:
+
+def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
+               manifold: Manifold, metrics: dict[str, bool] | None = None) -> dict:
     """
     Evaluate the performance of a model using specified metrics.
 
@@ -280,13 +290,13 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
         sample_size = min(sample_size, len(X))
 
         pca_sample_indices = np.random.choice(len(X), sample_size, replace=False)
-        points_sampled = X[pca_sample_indices]* 0.95
+        points_sampled = X[pca_sample_indices]* 0.8
 
         
         poincare_64 = PoincareBall(c=manifold.c.to(settings['plot_manifold_dtype']), dtype=settings['plot_manifold_dtype'])
         points_sampled = poincare_64.to_hyperboloid(points_sampled)
         two_d_pts, _ = pointsTo2dPoincare(x=points_sampled, poincare=poincare_64, hyperplanes=None, settings=settings)
-        two_d_pts = torch.tensor(two_d_pts, dtype=settings['plot_manifold_dtype'], device=manifold.c.device)
+        two_d_pts = two_d_pts.detach().clone().to(dtype=settings['plot_manifold_dtype'], device=manifold.c.device)
         hyperboloid = Hyperboloid(c=manifold.c.to(settings['plot_manifold_dtype']), dtype=settings['plot_manifold_dtype'])
         hyp_points = poincare_64.to_hyperboloid(two_d_pts)
         frechet_mean = compute_frechet_mean(hyp_points, hyperboloid)
@@ -429,8 +439,18 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
 
     if metrics.get("spectral_clustering", False):
         # Compute spectral clustering metrics
-        spectral_clustering = HyperbolicSpectralClustering(n_clusters=len(np.unique(Y)))
-        pred_labels_spectral = spectral_clustering.fit_predict(distance_matrix.cpu().numpy())
+        affinity_matrix = distance_matrix.cpu().numpy()
+        # Use sklearn's SpectralClustering with the precomputed affinity matrix
+        spectral_clustering = SpectralClustering(
+            n_clusters=len(np.unique(Y)),
+            affinity='precomputed_nearest_neighbors',
+            n_neighbors=metrics.get('spectral_nn', 10),
+            assign_labels='kmeans',
+            random_state=int(torch.get_rng_state()[0].item())
+        )
+
+        #spectral_clustering = HyperbolicSpectralClustering(n_clusters=len(np.unique(Y)))
+        pred_labels_spectral = spectral_clustering.fit_predict(affinity_matrix)
         nmi_spectral = normalized_mutual_info_score(Y, pred_labels_spectral)
         ari_spectral = adjusted_rand_score(Y, pred_labels_spectral)
         results["spectral_clustering_nmi"] = nmi_spectral
@@ -451,7 +471,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
             plt.close(fig)
     if metrics.get("kmeans", False):
         # Compute k-means clustering metrics
-        kmeans = KMeans(n_clusters=len(np.unique(Y)), n_init='auto')
+        kmeans = KMeans(n_clusters=len(np.unique(Y)), n_init='auto', random_state=int(torch.get_rng_state()[0].item()))
         pred_labels_kmeans = kmeans.fit_predict(X.cpu().numpy())
         nmi_kmeans = normalized_mutual_info_score(Y, pred_labels_kmeans)
         ari_kmeans = adjusted_rand_score(Y, pred_labels_kmeans)
