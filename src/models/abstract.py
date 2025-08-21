@@ -144,7 +144,7 @@ class AbstractModel(pl.LightningModule):
                     Y=all_labels,
                     distance_matrix=distance_matrix,
                     manifold=self.manifold,
-                    metrics=self.evaluation_metrics
+                    metrics=self.evaluation_metrics,
                 )
                 for key, value in evaluation_results.items():
                     self.metrics[f"test/{key}"] = value
