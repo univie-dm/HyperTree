@@ -188,6 +188,7 @@ def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[Hyperb
         hyphc_temperature=cfg.hyphc.temperature,
         hyphc_sampling_strategy=cfg.hyphc.sampling_strategy,
         hyphc_triplet_subsampling_size=cfg.hyphc.triplet_subsampling_size,
+        hyphc_triplet_subsampling_delta=cfg.hyphc.triplet_subsampling_delta,
         lca_version=cfg.hyphc.lca_version,
         normalized_hyphc_loss=cfg.hyphc.normalized_loss,
         distances_type=cfg.hyphc.distances_type,

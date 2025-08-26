@@ -151,7 +151,7 @@ class AbstractModel(pl.LightningModule):
                 plt.close()
                 self.train()
 
-    def on_train_epoch_end(self) -> None:
+    def on_train_start(self) -> None:
         self.test_phase()
         self.metrics[f'{self.stage}/epoch'] = self.current_epoch
         for key, value in self.metrics.items():
@@ -159,5 +159,16 @@ class AbstractModel(pl.LightningModule):
                 self.metrics[key] = sum(value) / len(value)
         if isinstance(self.logger, WandbLogger):
             self.logger.experiment.log(self.metrics, step=self.current_epoch+self.global_epoch)
+        self.metrics = {}
+        self.train()
+
+    def on_train_epoch_end(self) -> None:
+        self.test_phase()
+        self.metrics[f'{self.stage}/epoch'] = self.current_epoch+1
+        for key, value in self.metrics.items():
+            if isinstance(value, list):
+                self.metrics[key] = sum(value) / len(value)
+        if isinstance(self.logger, WandbLogger):
+            self.logger.experiment.log(self.metrics, step=self.current_epoch+self.global_epoch+1)
         self.metrics = {}
         self.train()

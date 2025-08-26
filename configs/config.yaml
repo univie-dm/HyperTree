@@ -21,21 +21,22 @@ clustering:
   epochs: 20
   trainable_curvature: False
   accumulate_gradients: 1
-  learning_rate: 1e-4
+  learning_rate: 1e-3
   weight_decay: 0.0
   augmentations: False
   # Learning rate scheduler
   lr_scheduler:
     type: # 'warmup_cosine'
-    interval: 20  # Number of epochs for warmup phase
+    interval: 40  # Number of epochs for warmup phase
     cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
 
 ## HypHC parameters
 hyphc:
   loss_weight: 1.0
   temperature: 0.01
-  sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'chami'
+  sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'chami', 'probabilistic_coverage'
   triplet_subsampling_size: 200
+  triplet_subsampling_delta: 0.1 # The probability of missing a pair
   lca_version: 'ours' # 'ours', 'chami'
   normalized_loss: True
   distances_type: 'cosine_similarity' # 'geodesic', 'cosine_similarity'
