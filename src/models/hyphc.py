@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -29,6 +30,7 @@ class HyperbolicHCModel(AbstractModel):
         hyphc_temperature: float = 0.05,
         hyphc_sampling_strategy: str = 'all_subsample_triplets',
         hyphc_triplet_subsampling_size: int = 100,
+        hyphc_triplet_subsampling_delta: float = 0.05,
         lca_version: str = 'ours',
         normalized_hyphc_loss: bool = False,
         distances_type: str = 'geodesic',
@@ -59,6 +61,7 @@ class HyperbolicHCModel(AbstractModel):
         self.hyphc_weight = hyphc_weight
         self.hyphc_temperature = hyphc_temperature
         self.hyphc_sampling_strategy = hyphc_sampling_strategy
+        self.hyphc_triplet_subsampling_delta = hyphc_triplet_subsampling_delta
         self.hyphc_triplet_subsampling_size = hyphc_triplet_subsampling_size
         self.lca_version = lca_version
         self.normalized_hyphc_loss = normalized_hyphc_loss
@@ -101,6 +104,16 @@ class HyperbolicHCModel(AbstractModel):
                 }
             else:
                 return optimizer
+            
+    def _calculate_probabilistic_coverage_samples(self, n: int) -> int:
+        """
+        Calculates the number of triplets to sample for probabilistic coverage.
+        """
+        if n < 2:
+            return 0
+        num_pairs = n * (n - 1) / 2
+        m = math.ceil((n * (n - 1) / 6) * (math.log(num_pairs) - math.log(self.hyphc_triplet_subsampling_delta)))
+        return m
 
     def sample_triplets(self, num_pts: int, device: torch.device) -> Tuple[torch.Tensor, np.ndarray]:
         """Sample triplets for the HypHC loss."""
@@ -113,6 +126,15 @@ class HyperbolicHCModel(AbstractModel):
             # Append a third random point to the torch tensor of 2-tuples
             random_indices = torch.randint(0, num_pts, (sampled_pair_indices.shape[0], 1), device=device)
             sampled_triplet_indices = torch.cat([sampled_pair_indices, random_indices], dim=1)
+            np_sampled_triplet_indices = sampled_triplet_indices.cpu().numpy()
+            sampled_indices = torch.unique(sampled_triplet_indices)
+        elif self.hyphc_sampling_strategy == 'probabilistic_coverage':
+            num_samples = self._calculate_probabilistic_coverage_samples(num_pts)
+            print(f"Sampling {num_samples} triplets for probabilistic coverage.")
+            sampled_triplet_indices = torch.randint(0, num_pts, (num_samples, 3), device=device)
+            for i in range(sampled_triplet_indices.shape[0]):
+                while len(torch.unique(sampled_triplet_indices[i])) < 3:
+                    sampled_triplet_indices[i] = torch.randint(0, num_pts, (3,), device=device)
             np_sampled_triplet_indices = sampled_triplet_indices.cpu().numpy()
             sampled_indices = torch.unique(sampled_triplet_indices)
         else:
@@ -172,6 +194,8 @@ class HyperbolicHCModel(AbstractModel):
                 raise ValueError(f"Unsupported manifold: {self.manifold}")
 
             lca_depth = self.manifold.dist_0(lca)
+            center = torch.zeros_like(lca).to(x.device)
+            
 
             # Compute the cosine of the angles at the origin in the triangles {x, origin, c}, {y, origin, c}  {x, origin, y}
             xlca = (x * lca).sum(dim=-1, keepdim=True)
@@ -246,7 +270,7 @@ class HyperbolicHCModel(AbstractModel):
         elif self.distances_type == 'cosine_similarity':
             embeddings_normalized = torch.nn.functional.normalize(embeddings[sampled_indices], p=2, dim=-1)
             distances = torch.mm(embeddings_normalized, embeddings_normalized.T).clamp(min=-1.0, max=1.0)
-            similarties = (1 - similarties) / (1 + similarties)
+            similarties = (1 - distances) / (1 + distances)
         else:
             raise ValueError(f"Invalid distances type: {self.distances_type}")
         similarties_sum = similarties.sum()
@@ -326,6 +350,8 @@ class HyperbolicHCModel(AbstractModel):
         #x_aug_recon, manifold_z_aug = self(x_aug)
 
         # Reconstruction loss
+        if x_recon.shape != x.shape:
+            x_recon = x_recon.view_as(x)
         x_recon_loss = F.mse_loss(x_recon, x)
         #x_aug_recon_loss = F.mse_loss(x_aug_recon, x_aug)
         #recon_loss = (x_recon_loss + x_aug_recon_loss) / 2

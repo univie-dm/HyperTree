@@ -1,3 +1,4 @@
+from logging import warning
 from matplotlib import pyplot as plt
 import torch
 import wandb
@@ -274,6 +275,12 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
     results = {}
     if metrics is None:
         return results
+    
+
+    distance_matrix += 2/manifold.c
+    if distance_matrix.min() < 0:
+        warning("Distance matrix contains negative values. Clipping to zero. Minimum: {}".format(distance_matrix.min()))
+        distance_matrix = distance_matrix.clamp(min=0)
 
     if metrics["visualization"]:
         settings = {
@@ -438,9 +445,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
         results["1000_nearest_neighbors_accuracy"] = nn_accuracy
 
     if metrics.get("spectral_clustering", False):
-        # Compute spectral clustering metrics
         affinity_matrix = distance_matrix.cpu().numpy()
-        # Use sklearn's SpectralClustering with the precomputed affinity matrix
         spectral_clustering = SpectralClustering(
             n_clusters=len(np.unique(Y)),
             affinity='precomputed_nearest_neighbors',

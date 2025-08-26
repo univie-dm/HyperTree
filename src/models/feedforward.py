@@ -112,6 +112,7 @@ class HyperbolicAE(AbstractModel):
         self.decoder = nn.Sequential(*decoder_layers)
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        self.original_input_shape = x.shape[1:]
         x = x.view(x.size(0), -1)
         hidden = self.encoder(x)
         manifold_z = self.hyperbolic_encoding_layer(hidden)
@@ -122,16 +123,17 @@ class HyperbolicAE(AbstractModel):
         # Cast back from the manifold precision to the model's precision
         x_recon = x_recon.to(dtype=get_dtype_from_precision(self.params_dtype))
         x_recon = self.decoder(x_recon)
-        x_recon = x_recon.view(-1, *self.orginal_input_shape)
+        x_recon = x_recon.view(-1, *self.original_input_shape)
         return x_recon
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug, x, _ = batch
-        self.orginal_input_shape = x.shape[1:]
         x_recon, _, = self(x)
         #x_aug_recon, _, = self(x_aug)
 
         # Reconstruction loss
+        if x_recon.shape != x.shape:
+            x_recon = x_recon.view_as(x)
         x_recon_loss = F.mse_loss(x_recon, x)
         #x_aug_recon_loss = F.mse_loss(x_aug_recon, x_aug)
         #loss = (x_recon_loss + x_aug_recon_loss) / 2
