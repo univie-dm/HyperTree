@@ -109,6 +109,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             optimizer_name=cfg.experiment.optimizer,
             learning_rate=cfg.pretraining.learning_rate,
             log_interval=cfg.experiment.log_interval,
+            distances_type=cfg.hyphc.distances_type,
             stage='pretrain',
             global_epoch=0,
             evaluation_metrics=cfg.evaluation,
@@ -140,7 +141,6 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
     elif cfg.architecture.ae_type in ['resnet18', 'resnet34', 'resnet50']:
         model = HyperbolicResNet(
             model_type=cfg.architecture.ae_type,
-            input_channels=cfg.dataset.channels,
             hyperbolic_encoding=cfg.architecture.hyperbolic_encoding,
             params_dtype=cfg.architecture.precision,
             latent_dim=cfg.architecture.latent_dim,
@@ -157,6 +157,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             activation_function=cfg.architecture.activation_function,
             clamping_factor=cfg.architecture.hyperbolic_clamping,
             smoothing_factor=cfg.architecture.hyperbolic_smoothing,
+            distances_type=cfg.hyphc.distances_type
         )
     elif cfg.architecture.ae_type == 'poincare_resnet':
             model = PoincareResNet(

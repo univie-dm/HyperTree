@@ -181,3 +181,4 @@ setup.sh
 settings.json
 test_run.sh
 test_sbatch.sh
+test_cifar.sh

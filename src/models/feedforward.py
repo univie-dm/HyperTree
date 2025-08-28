@@ -27,6 +27,7 @@ class HyperbolicAE(AbstractModel):
         optimizer_name: str = 'RiemannianAdam',
         learning_rate: float = 1e-3,
         log_interval: int = 5,
+        distances_type: str = 'geodesic',
         stage: str = 'pretrain',
         global_epoch: int = 0,
         evaluation_metrics: dict[str, bool] = {},
@@ -50,7 +51,8 @@ class HyperbolicAE(AbstractModel):
             stage=stage,
             global_epoch=global_epoch,
             evaluation_metrics=evaluation_metrics,
-            activation_function=activation_function
+            activation_function=activation_function,
+            distances_type=distances_type
         )
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
@@ -103,7 +105,8 @@ class HyperbolicAE(AbstractModel):
                 output_dim=self.hidden_dims[-1],
                 params_dtype=self.params_dtype,
                 clamping_factor=self.clamping_factor,
-                smoothing_factor=self.smoothing_factor
+                smoothing_factor=self.smoothing_factor,
+                activation_function=self.activation_function
             )
 
         # Decoder
