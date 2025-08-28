@@ -58,14 +58,15 @@ def get_hyperbolic_decoding_layer_by_name(
     output_dim: int,
     params_dtype: str = 'float32',
     clamping_factor: float = 1.0,
-    smoothing_factor: float = 50.0
+    smoothing_factor: float = 50.0,
+    activation_function: nn.Module = nn.ReLU()
 ) -> nn.Sequential:
     if layer_name == 'Log_EuclideanLinear':
         layer = nn.Sequential(
             Logmap_0(manifold=manifold),
             nn.Linear(input_dim, output_dim),
             nn.BatchNorm1d(output_dim),
-            nn.ReLU()
+            activation_function,
         )
     elif layer_name == 'HyperbolicLinear_Log' and isinstance(manifold, PoincareBall):
         layer = nn.Sequential(
@@ -77,7 +78,7 @@ def get_hyperbolic_decoding_layer_by_name(
                 input_space='manifold'),
             Logmap_0(manifold=manifold),
             nn.BatchNorm1d(output_dim),
-            nn.ReLU()
+            activation_function
         )
     elif layer_name == 'HyperbolicLinearPP_Log' and isinstance(manifold, PoincareBall):
         layer = nn.Sequential(
@@ -91,7 +92,7 @@ def get_hyperbolic_decoding_layer_by_name(
                 smoothing_factor=smoothing_factor),
             Logmap_0(manifold=manifold),
             nn.BatchNorm1d(output_dim),
-            nn.ReLU()
+            activation_function
         )
     elif layer_name == 'HyperbolicRegression' and isinstance(manifold, PoincareBall):
         layer = nn.Sequential(
@@ -104,7 +105,7 @@ def get_hyperbolic_decoding_layer_by_name(
                 clamping_factor=clamping_factor,
                 smoothing_factor=smoothing_factor),
             nn.BatchNorm1d(output_dim),
-            nn.ReLU()
+            activation_function
         )
     elif layer_name == 'HyperbolicRegressionPP' and isinstance(manifold, PoincareBall):
         layer = nn.Sequential(
@@ -117,7 +118,7 @@ def get_hyperbolic_decoding_layer_by_name(
                 clamping_factor=clamping_factor,
                 smoothing_factor=smoothing_factor),
             nn.BatchNorm1d(output_dim),
-            nn.ReLU()
+            activation_function
         )
     else:
         raise ValueError(f"Unknown hyperbolic layer name: {layer_name}. "

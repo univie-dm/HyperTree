@@ -273,6 +273,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
         dict: A dictionary with metric names as keys and their computed values.
     """
     results = {}
+    points_in_manifold = False
     if metrics is None:
         return results
     
@@ -297,18 +298,22 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
         sample_size = min(sample_size, len(X))
 
         pca_sample_indices = np.random.choice(len(X), sample_size, replace=False)
-        points_sampled = X[pca_sample_indices]* 0.8
+        points_sampled = X[pca_sample_indices]
 
         
         poincare_64 = PoincareBall(c=manifold.c.to(settings['plot_manifold_dtype']), dtype=settings['plot_manifold_dtype'])
         points_sampled = poincare_64.to_hyperboloid(points_sampled)
         two_d_pts, _ = pointsTo2dPoincare(x=points_sampled, poincare=poincare_64, hyperplanes=None, settings=settings)
         two_d_pts = two_d_pts.detach().clone().to(dtype=settings['plot_manifold_dtype'], device=manifold.c.device)
-        hyperboloid = Hyperboloid(c=manifold.c.to(settings['plot_manifold_dtype']), dtype=settings['plot_manifold_dtype'])
-        hyp_points = poincare_64.to_hyperboloid(two_d_pts)
-        frechet_mean = compute_frechet_mean(hyp_points, hyperboloid)
-        two_d_pts = center_data(hyp_points, frechet_mean, hyperboloid=hyperboloid)
-        two_d_pts = hyperboloid.to_poincare(two_d_pts)
+        if not poincare_64.is_in_manifold(two_d_pts):
+            warning("Some points are out of the Poincare ball after dimensionality reduction. NO visualization generated")
+        else:
+            points_in_manifold = True
+        #hyperboloid = Hyperboloid(c=manifold.c.to(settings['plot_manifold_dtype']), dtype=settings['plot_manifold_dtype'])
+        #hyp_points = poincare_64.to_hyperboloid(two_d_pts)
+        #frechet_mean = compute_frechet_mean(hyp_points, hyperboloid)
+        #two_d_pts = center_data(hyp_points, frechet_mean, hyperboloid=hyperboloid)
+        #two_d_pts = hyperboloid.to_poincare(two_d_pts)
         #TODO test tangent pca instead of horror pca
 
 
@@ -345,7 +350,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
         ari_single = adjusted_rand_score(Y, pred_labels_single)
         results["agglomerative_clustering_single_nmi"] = nmi_single
         results["agglomerative_clustering_single_ari"] = ari_single
-        if metrics['visualization']:
+        if metrics['visualization'] and points_in_manifold:
             settings = {
                 "plot_manifold_dtype": torch.float64,
                 "dim_red_method": "HoroPCA",
@@ -371,7 +376,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
         ari_complete = adjusted_rand_score(Y, pred_labels_complete)
         results["agglomerative_clustering_complete_nmi"] = nmi_complete
         results["agglomerative_clustering_complete_ari"] = ari_complete
-        if metrics['visualization']:
+        if metrics['visualization'] and points_in_manifold:
             settings = {
                     "plot_manifold_dtype": torch.float64,
                     "dim_red_method": "HoroPCA",
@@ -397,7 +402,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
         ari_average = adjusted_rand_score(Y, pred_labels_average)
         results["agglomerative_clustering_average_nmi"] = nmi_average
         results["agglomerative_clustering_average_ari"] = ari_average
-        if metrics['visualization']:
+        if metrics['visualization'] and points_in_manifold:
             settings = {
                 "plot_manifold_dtype": torch.float64,
                 "dim_red_method": "HoroPCA",
@@ -415,7 +420,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
         # Compute agglomerative clustering metrics
         #TODO: Implement agglomerative clustering with ward linkage. Sklearn does not support precomputed distance matrix with ward linkage.
         pass
-    if metrics.get("visualization", False):
+    if metrics.get("visualization", False) and points_in_manifold:
         # Create a figure with the points and labels
         settings = {
             "plot_manifold_dtype": torch.float64,
@@ -460,7 +465,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
         ari_spectral = adjusted_rand_score(Y, pred_labels_spectral)
         results["spectral_clustering_nmi"] = nmi_spectral
         results["spectral_clustering_ari"] = ari_spectral
-        if metrics['visualization']:
+        if metrics['visualization'] and points_in_manifold:
             settings = {
                 "plot_manifold_dtype": torch.float64,
                 "dim_red_method": "HoroPCA",
@@ -482,7 +487,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
         ari_kmeans = adjusted_rand_score(Y, pred_labels_kmeans)
         results["kmeans_nmi"] = nmi_kmeans
         results["kmeans_ari"] = ari_kmeans
-        if metrics['visualization']:
+        if metrics['visualization'] and points_in_manifold:
             settings = {
                 "plot_manifold_dtype": torch.float64,
                 "dim_red_method": "HoroPCA",

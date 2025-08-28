@@ -38,12 +38,11 @@ class HyperbolicConvAE(AbstractModel):
         log_interval: int = 5,
         stage: str = 'pretrain',
         global_epoch: int = 0,
-        learning_rate_scheduler: str | None = None,
-        lr_scheduler_params: dict | None = None,
         distances_type: str = 'geodesic',
         evaluation_metrics: dict[str, bool] = {},
         clamping_factor: float = 1.0,
         smoothing_factor: float = 50.0,
+        activation_function: str = 'relu'
     ):
         super().__init__(
             model_type='convolutional',
@@ -60,10 +59,9 @@ class HyperbolicConvAE(AbstractModel):
             log_interval=log_interval,
             stage=stage,
             global_epoch=global_epoch,
-            learning_rate_scheduler=learning_rate_scheduler,
-            lr_scheduler_params=lr_scheduler_params,
-            distances_type=distances_type,
-            evaluation_metrics=evaluation_metrics
+            evaluation_metrics=evaluation_metrics,
+            activation_function=activation_function,
+            distances_type=distances_type
         )
         self.image_size = image_size
         self.input_channels = input_channels

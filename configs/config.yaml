@@ -69,10 +69,10 @@ evaluation:
   agglomerative_clustering_complete: False
   agglomerative_clustering_average: False
   agglomerative_clustering_ward: False
-  nearest_neighbors_accuracy: True
+  nearest_neighbors_accuracy: False
   spectral_clustering: True
-  visualization: False
-  kmeans: True
+  visualization: True
+  kmeans: False
   visualization_sample_size: 5000
 
 ## Logging
