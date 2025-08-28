@@ -31,6 +31,8 @@ class HyperbolicAE(AbstractModel):
         global_epoch: int = 0,
         evaluation_metrics: dict[str, bool] = {},
         activation_function: str = 'relu',
+        clamping_factor: float = 1.0,
+        smoothing_factor: float = 50.0,
     ):
         super().__init__(
             model_type='feedforward',
@@ -52,6 +54,8 @@ class HyperbolicAE(AbstractModel):
         )
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
+        self.clamping_factor = clamping_factor
+        self.smoothing_factor = smoothing_factor
         self.save_hyperparameters()
 
         # Encoder
@@ -77,7 +81,9 @@ class HyperbolicAE(AbstractModel):
                 manifold=self.manifold,
                 input_dim=self.hidden_dims[-1],
                 output_dim=self.latent_dim,
-                params_dtype=self.params_dtype
+                params_dtype=self.params_dtype,
+                clamping_factor=self.clamping_factor,
+                smoothing_factor=self.smoothing_factor,
             )
 
         # Add hyperbolic decoding layer(s)
@@ -95,7 +101,9 @@ class HyperbolicAE(AbstractModel):
                 manifold=self.manifold,
                 input_dim=self.latent_dim,
                 output_dim=self.hidden_dims[-1],
-                params_dtype=self.params_dtype
+                params_dtype=self.params_dtype,
+                clamping_factor=self.clamping_factor,
+                smoothing_factor=self.smoothing_factor
             )
 
         # Decoder

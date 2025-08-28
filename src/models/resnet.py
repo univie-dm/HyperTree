@@ -75,8 +75,9 @@ class HyperbolicResNet(AbstractModel):
         log_interval: int = 5,
         stage: str = 'pretrain',
         global_epoch: int = 0,
-        evaluation_metrics: dict[str, bool] = {}
-        
+        evaluation_metrics: dict[str, bool] = {},
+        clamping_factor: float = 1.0,
+        smoothing_factor: float = 50.0,
     ):
         super().__init__(
             model_type=model_type,
@@ -97,6 +98,8 @@ class HyperbolicResNet(AbstractModel):
         )
         self.input_channels = input_channels
         self.output_size = output_size
+        self.clamping_factor = clamping_factor
+        self.smoothing_factor = smoothing_factor
         self.save_hyperparameters()
 
         # Decoder params
@@ -131,7 +134,9 @@ class HyperbolicResNet(AbstractModel):
                 manifold=self.manifold,
                 input_dim=self.latent_dim,
                 output_dim=self.latent_dim,
-                params_dtype=self.params_dtype
+                params_dtype=self.params_dtype,
+                clamping_factor=self.clamping_factor,
+                smoothing_factor=self.smoothing_factor,
             )
 
         # Add hyperbolic decoding layer(s)
@@ -145,7 +150,9 @@ class HyperbolicResNet(AbstractModel):
                 manifold=self.manifold,
                 input_dim=self.latent_dim,
                 output_dim=self.inplanes * 4 * 4,
-                params_dtype=self.params_dtype
+                params_dtype=self.params_dtype,
+                clamping_factor=self.clamping_factor,
+                smoothing_factor=self.smoothing_factor,
             )
 
         # Decoder

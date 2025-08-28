@@ -21,27 +21,31 @@ def get_hyperbolic_encoding_layer_by_name(
     manifold: Manifold,
     input_dim: int,
     output_dim: int,
-    params_dtype: str = 'float32'
-) -> Union[nn.Sequential, HyperbolicLinear, HyperbolicFullyConnectedPoincarePP]:
+    params_dtype: str = 'float32',
+    clamping_factor: float = 1.0,
+    smoothing_factor: float = 50.0
+) -> Union[nn.Sequential, HyperbolicLinearPoincare, HyperbolicLinearPoincarePP]:
     if layer_name =='EuclideanLinear_Exp':
         layer = nn.Sequential(
             nn.Linear(input_dim, output_dim),
                 Expmap_0(manifold=manifold)
             )
-    elif layer_name == 'HyperbolicLinear':
-        layer = HyperbolicLinear(
+    elif layer_name == 'HyperbolicLinear' and isinstance(manifold, PoincareBall):
+        layer = HyperbolicLinearPoincare(
                 manifold=manifold,
                 input_dim=input_dim,
                 output_dim=output_dim,
                 params_dtype=params_dtype,
                 input_space='tangent')
     elif layer_name == 'HyperbolicLinearPP' and isinstance(manifold, PoincareBall):
-        layer = HyperbolicFullyConnectedPoincarePP(
+        layer = HyperbolicLinearPoincarePP(
             manifold=manifold,
             input_dim=input_dim,
             output_dim=output_dim,
             params_dtype=params_dtype,
-            input_space='tangent')
+            input_space='tangent',
+            clamping_factor=clamping_factor,
+            smoothing_factor=smoothing_factor)
     else:
         raise ValueError(f"Unknown hyperbolic layer name: {layer_name}. "
                          "Available options are: 'EuclideanLinear_Exp', 'HyperbolicLinear', 'HyperbolicLinearPP'.")
@@ -52,7 +56,9 @@ def get_hyperbolic_decoding_layer_by_name(
     manifold: Manifold,
     input_dim: int,
     output_dim: int,
-    params_dtype: str = 'float32'
+    params_dtype: str = 'float32',
+    clamping_factor: float = 1.0,
+    smoothing_factor: float = 50.0
 ) -> nn.Sequential:
     if layer_name == 'Log_EuclideanLinear':
         layer = nn.Sequential(
@@ -61,9 +67,9 @@ def get_hyperbolic_decoding_layer_by_name(
             nn.BatchNorm1d(output_dim),
             nn.ReLU()
         )
-    elif layer_name == 'HyperbolicLinear_Log':
+    elif layer_name == 'HyperbolicLinear_Log' and isinstance(manifold, PoincareBall):
         layer = nn.Sequential(
-            HyperbolicLinear(
+            HyperbolicLinearPoincare(
                 manifold=manifold,
                 input_dim=input_dim,
                 output_dim=output_dim,
@@ -75,12 +81,14 @@ def get_hyperbolic_decoding_layer_by_name(
         )
     elif layer_name == 'HyperbolicLinearPP_Log' and isinstance(manifold, PoincareBall):
         layer = nn.Sequential(
-            HyperbolicFullyConnectedPoincarePP(
+            HyperbolicLinearPoincarePP(
                 manifold=manifold,
                 input_dim=input_dim,
                 output_dim=output_dim,
                 params_dtype=params_dtype,
-                input_space='manifold'),
+                input_space='manifold',
+                clamping_factor=clamping_factor,
+                smoothing_factor=smoothing_factor),
             Logmap_0(manifold=manifold),
             nn.BatchNorm1d(output_dim),
             nn.ReLU()
@@ -92,7 +100,9 @@ def get_hyperbolic_decoding_layer_by_name(
                 input_dim=input_dim,
                 output_dim=output_dim,
                 params_dtype=params_dtype,
-                input_space='manifold'),
+                input_space='manifold',
+                clamping_factor=clamping_factor,
+                smoothing_factor=smoothing_factor),
             nn.BatchNorm1d(output_dim),
             nn.ReLU()
         )
@@ -103,7 +113,9 @@ def get_hyperbolic_decoding_layer_by_name(
                 input_dim=input_dim,
                 output_dim=output_dim,
                 params_dtype=params_dtype,
-                input_space='manifold'),
+                input_space='manifold',
+                clamping_factor=clamping_factor,
+                smoothing_factor=smoothing_factor),
             nn.BatchNorm1d(output_dim),
             nn.ReLU()
         )

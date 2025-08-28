@@ -55,6 +55,8 @@ architecture:
   manifold_precision: 'float32' # 'float32', 'float64'
   curvature_magnitude: 1.0
   activation_function: 'relu' #'relu', 'swish'
+  hyperbolic_clamping: 1.0
+  hyperbolic_smoothing: 50.0
 
 ## Evaluation Metrics to be used and logged
 evaluation:
