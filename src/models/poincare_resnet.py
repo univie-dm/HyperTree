@@ -40,6 +40,8 @@ class PoincareResNet(AbstractModel):
                  weight_decay: float = 0.0,
                  evaluation_metrics: dict[str, bool] = {},
                  activation_function: str = 'relu',
+                 clamping_factor: float = 1.0,
+                 smoothing_factor: float = 50.0,
                  ):
         super().__init__(
             model_type='poincare_resnet_ae',
@@ -77,7 +79,8 @@ class PoincareResNet(AbstractModel):
         self.optimizer_name = optimizer_name
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
-
+        self.clamping_factor = clamping_factor
+        self.smoothing_factor = smoothing_factor
 
         channel_dims = [16, 32, 64]
         depths = [3,3,3]
@@ -93,7 +96,9 @@ class PoincareResNet(AbstractModel):
                 manifold=self.manifold,
                 input_dim=channel_dims[-1],
                 output_dim=self.latent_dim,
-                params_dtype=self.params_dtype
+                params_dtype=self.params_dtype,
+                clamping_factor=self.clamping_factor,
+                smoothing_factor=self.smoothing_factor,
             )
 
         if isinstance(self.manifold, Euclidean) or hyperbolic_decoding is None:
@@ -110,7 +115,9 @@ class PoincareResNet(AbstractModel):
                 manifold=self.manifold,
                 input_dim=self.latent_dim,
                 output_dim=(self.inplanes * 8 * 8),
-                params_dtype=self.params_dtype
+                params_dtype=self.params_dtype,
+                clamping_factor=self.clamping_factor,
+                smoothing_factor=self.smoothing_factor,
             )
 
         self.hyperbolic_encoding = hyperbolic_encoding

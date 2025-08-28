@@ -42,6 +42,8 @@ class HyperbolicConvAE(AbstractModel):
         lr_scheduler_params: dict | None = None,
         distances_type: str = 'geodesic',
         evaluation_metrics: dict[str, bool] = {},
+        clamping_factor: float = 1.0,
+        smoothing_factor: float = 50.0,
     ):
         super().__init__(
             model_type='convolutional',
@@ -69,6 +71,8 @@ class HyperbolicConvAE(AbstractModel):
         self.hyperbolic_encoding = hyperbolic_encoding
         self.params_dtype = params_dtype
         self.latent_dim = latent_dim
+        self.clamping_factor = clamping_factor
+        self.smoothing_factor = smoothing_factor
 
 
         conv1 = nn.Conv2d(
@@ -113,15 +117,19 @@ class HyperbolicConvAE(AbstractModel):
                 manifold=self.manifold,
                 input_dim=32,
                 output_dim=self.latent_dim,
-                params_dtype=self.params_dtype
+                params_dtype=self.params_dtype,
+                clamping_factor=self.clamping_factor,
+                smoothing_factor=self.smoothing_factor
             )
-       
+
         self.hyperbolic_decoding_layer = get_hyperbolic_decoding_layer_by_name(
             layer_name=hyperbolic_decoding,
             manifold=self.manifold,
             input_dim=self.latent_dim,
             output_dim=32,
-            params_dtype=self.params_dtype
+            params_dtype=self.params_dtype,
+            clamping_factor=self.clamping_factor,
+            smoothing_factor=self.smoothing_factor
         )
 
         deconv1 = nn.ConvTranspose2d(
