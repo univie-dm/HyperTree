@@ -8,7 +8,7 @@ from typing import Tuple
 # Assuming AbstractModel and utils are in a path like this based on your other files
 from src.models.abstract import AbstractModel
 from src.models.utils import get_dtype_from_precision, get_hyperbolic_encoding_layer_by_name, get_hyperbolic_decoding_layer_by_name
-from src.hyperbolic_math.src.manifolds import Euclidean
+from src.hyperbolic_math.src.manifolds import Hyperboloid
 
 
 class HyperbolicConvAE(AbstractModel):
@@ -40,9 +40,11 @@ class HyperbolicConvAE(AbstractModel):
         global_epoch: int = 0,
         distances_type: str = 'geodesic',
         evaluation_metrics: dict[str, bool] = {},
+        activation_function: str = 'relu',
         clamping_factor: float = 1.0,
         smoothing_factor: float = 50.0,
-        activation_function: str = 'relu'
+        learnable_scale: bool = False,
+        normalize: bool = False
     ):
         super().__init__(
             model_type='convolutional',
@@ -71,6 +73,8 @@ class HyperbolicConvAE(AbstractModel):
         self.latent_dim = latent_dim
         self.clamping_factor = clamping_factor
         self.smoothing_factor = smoothing_factor
+        self.learnable_scale = learnable_scale
+        self.normalize = normalize
 
 
         conv1 = nn.Conv2d(
@@ -117,7 +121,9 @@ class HyperbolicConvAE(AbstractModel):
                 output_dim=self.latent_dim,
                 params_dtype=self.params_dtype,
                 clamping_factor=self.clamping_factor,
-                smoothing_factor=self.smoothing_factor
+                smoothing_factor=self.smoothing_factor,
+                learnable_scale=self.learnable_scale,
+                normalize=self.normalize
             )
 
         self.hyperbolic_decoding_layer = get_hyperbolic_decoding_layer_by_name(
@@ -127,7 +133,9 @@ class HyperbolicConvAE(AbstractModel):
             output_dim=32,
             params_dtype=self.params_dtype,
             clamping_factor=self.clamping_factor,
-            smoothing_factor=self.smoothing_factor
+            smoothing_factor=self.smoothing_factor,
+            learnable_scale=self.learnable_scale,
+            normalize=self.normalize
         )
 
         deconv1 = nn.ConvTranspose2d(
@@ -165,8 +173,6 @@ class HyperbolicConvAE(AbstractModel):
             nn.ReLU(),
             self.deconv3,
         )
-
-
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """ Encodes the input image into a manifold representation. """
