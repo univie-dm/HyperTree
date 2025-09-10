@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torchvision.models import resnet18, resnet34, resnet50
 from src.models.abstract import AbstractModel
 from src.models.utils import get_dtype_from_precision, get_hyperbolic_encoding_layer_by_name, get_hyperbolic_decoding_layer_by_name
-from src.hyperbolic_math.src.manifolds import Euclidean
+from src.hyperbolic_math.src.manifolds import Euclidean, Hyperboloid
 
 
 def resize_conv3x3(in_planes: int, out_planes: int, scale: float=1):
@@ -74,10 +74,12 @@ class HyperbolicResNet(AbstractModel):
         stage: str = 'pretrain',
         global_epoch: int = 0,
         evaluation_metrics: dict[str, bool] = {},
+        activation_function: str = 'relu',
         clamping_factor: float = 1.0,
         smoothing_factor: float = 50.0,
         distances_type: str = 'geodesic',
-        activation_function: str = 'relu'
+        learnable_scale: bool = False,
+        normalize: bool = False
     ):
         super().__init__(
             model_type=model_type,
@@ -101,6 +103,8 @@ class HyperbolicResNet(AbstractModel):
         self.output_size = output_size
         self.clamping_factor = clamping_factor
         self.smoothing_factor = smoothing_factor
+        self.learnable_scale = learnable_scale
+        self.normalize = normalize
         self.save_hyperparameters()
 
         # Decoder params
@@ -149,6 +153,8 @@ class HyperbolicResNet(AbstractModel):
                 params_dtype=self.params_dtype,
                 clamping_factor=self.clamping_factor,
                 smoothing_factor=self.smoothing_factor,
+                learnable_scale=self.learnable_scale,
+                normalize=self.normalize
             )
 
         # Add hyperbolic decoding layer(s)
@@ -165,6 +171,8 @@ class HyperbolicResNet(AbstractModel):
                 params_dtype=self.params_dtype,
                 clamping_factor=self.clamping_factor,
                 smoothing_factor=self.smoothing_factor,
+                learnable_scale=self.learnable_scale,
+                normalize=self.normalize
             )
 
         # Decoder

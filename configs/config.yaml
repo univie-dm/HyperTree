@@ -47,7 +47,7 @@ hyphc:
 architecture:
   ae_type: 'feedforward' # 'feedforward', 'convolutional', 'resnet18', 'resnet34', 'resnet50', 'poincare_resnet'
   hidden_dims: [512, 256, 64, 16]
-  latent_dim: 10
+  latent_dim: 10 # Hyperboloid automatically uses latent_dim + 1, i.e. latent_dim actually refers to the dimension of the hyperbolic manifold
   hyperbolic_encoding: 'HyperbolicLinearPP' # 'EuclideanLinear_Exp', 'HyperbolicLinear', 'HyperbolicLinearPP'
   hyperbolic_decoding: 'Log_EuclideanLinear' # 'Log_EuclideanLinear', 'HyperbolicLinear_Log', 'HyperbolicLinearPP_Log',
                                              # 'HyperbolicRegression', 'HyperbolicRegressionPP'
@@ -58,6 +58,8 @@ architecture:
   activation_function: 'relu' #'relu', 'swish'
   hyperbolic_clamping: 1.0
   hyperbolic_smoothing: 50.0
+  learnable_scale: False # only used if hyperbolic_encoding is 'HyperbolicLinearHyperboloidFHNN', 'HyperbolicLinearHyperboloidFHCNN'
+  normalize: False # only used if hyperbolic_encoding is 'HyperbolicLinearHyperboloidFHCNN'
   spectral_norm: False # True, False
 
 ## Evaluation Metrics to be used and logged
