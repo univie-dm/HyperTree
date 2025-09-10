@@ -58,6 +58,7 @@ architecture:
   activation_function: 'relu' #'relu', 'swish'
   hyperbolic_clamping: 1.0
   hyperbolic_smoothing: 50.0
+  spectral_norm: False # True, False
 
 ## Evaluation Metrics to be used and logged
 evaluation:
