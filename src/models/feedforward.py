@@ -68,7 +68,7 @@ class HyperbolicAE(AbstractModel):
         prev_dim = self.input_dim
         for hidden_dim in self.hidden_dims:
             encoder_layers.extend([
-                spectral_norm(nn.Linear(prev_dim, hidden_dim)) if spectral_norm else nn.Linear(prev_dim, hidden_dim),
+                torch.nn.utils.spectral_norm(nn.Linear(prev_dim, hidden_dim)) if spectral_norm else nn.Linear(prev_dim, hidden_dim),
                 nn.BatchNorm1d(hidden_dim),
                 self.activation_function
             ])
@@ -96,7 +96,7 @@ class HyperbolicAE(AbstractModel):
             print("Using Euclidean manifold or hyperbolic_encoding is 'None', "
                   "hyperbolic encoding layers will default to nn.Linear.", flush=True)
             self.hyperbolic_decoding_layer = nn.Sequential(
-                spectral_norm(nn.Linear(self.latent_dim, self.hidden_dims[-1])), if spectral_norm else nn.Linear(self.latent_dim, self.hidden_dims[-1]),
+                torch.nn.utils.spectral_norm(nn.Linear(self.latent_dim, self.hidden_dims[-1])) if spectral_norm else nn.Linear(self.latent_dim, self.hidden_dims[-1]),
                 nn.BatchNorm1d(self.hidden_dims[-1]),
                 self.activation_function
             )
