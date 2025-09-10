@@ -5,6 +5,9 @@ import wandb
 import warnings
 import pytorch_lightning as pl
 
+from icecream import install
+install()
+
 from lightning.pytorch import seed_everything
 from omegaconf import DictConfig
 from threadpoolctl import threadpool_limits

@@ -41,18 +41,16 @@ hyphc:
   normalized_loss: True
   distances_type: 'cosine_similarity' # 'geodesic', 'cosine_similarity'
   dist_sum_loss: True
+  distances_version: 'lorentzian_proxy' # 'mobius_direct', 'lorentzian_proxy'
 
 ## Model architecture
 architecture:
-  ae_type: 'resnet34' # 'feedforward', 'convolutional', 'resnet18', 'resnet34', 'resnet50', 'poincare_resnet'
-  hidden_dims: [512, 256, 128, 64, 32]
+  ae_type: 'feedforward' # 'feedforward', 'convolutional', 'resnet18', 'resnet34', 'resnet50', 'poincare_resnet'
+  hidden_dims: [512, 256, 64, 16]
   latent_dim: 10 # Hyperboloid automatically uses latent_dim + 1, i.e. latent_dim actually refers to the dimension of the hyperbolic manifold
-  hyperbolic_encoding: 'HyperbolicLinearPP' # 'EuclideanLinear_Exp'
-                                            #  Hyperboloid: 'HyperbolicLinear', 'HyperbolicLinearHyperboloidFHNN', 'HyperbolicLinearHyperboloidFHCNN'
-                                            #  Poincare: 'HyperbolicLinear', 'HyperbolicLinearPP'
-  hyperbolic_decoding: 'HyperbolicRegressionPP' # 'Log_EuclideanLinear'
-                                                # Hyperboloid: 'HyperbolicLinear_Log', 'HyperbolicLinearHyperboloidFHNN_Log', 'HyperbolicLinearHyperboloidFHCNN_Log', 'HyperbolicRegression'
-                                                # Poincare: 'HyperbolicLinear_Log', 'HyperbolicLinearPP_Log', 'HyperbolicRegression', 'HyperbolicRegressionPP'
+  hyperbolic_encoding: 'HyperbolicLinearPP' # 'EuclideanLinear_Exp', 'HyperbolicLinear', 'HyperbolicLinearPP'
+  hyperbolic_decoding: 'Log_EuclideanLinear' # 'Log_EuclideanLinear', 'HyperbolicLinear_Log', 'HyperbolicLinearPP_Log',
+                                             # 'HyperbolicRegression', 'HyperbolicRegressionPP'
   precision: 'float32' # 'float32', 'float64'
   manifold_name: 'PoincareBall' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
   manifold_precision: 'float32' # 'float32', 'float64'
@@ -62,6 +60,7 @@ architecture:
   hyperbolic_smoothing: 50.0
   learnable_scale: False # only used if hyperbolic_encoding is 'HyperbolicLinearHyperboloidFHNN', 'HyperbolicLinearHyperboloidFHCNN'
   normalize: False # only used if hyperbolic_encoding is 'HyperbolicLinearHyperboloidFHCNN'
+  spectral_norm: False # True, False
 
 ## Evaluation Metrics to be used and logged
 evaluation:
@@ -77,7 +76,7 @@ evaluation:
   nearest_neighbors_accuracy: False
   spectral_clustering: True
   visualization: True
-  kmeans: False
+  kmeans: True
   visualization_sample_size: 5000
 
 ## Logging

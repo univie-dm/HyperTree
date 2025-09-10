@@ -34,7 +34,9 @@ class HyperbolicAE(AbstractModel):
         clamping_factor: float = 1.0,
         smoothing_factor: float = 50.0,
         learnable_scale: bool = False,
-        normalize: bool = False
+        normalize: bool = False,
+        distances_version: str = 'mobius_direct',
+        spectral_norm: bool = False
     ):
         super().__init__(
             model_type='feedforward',
@@ -53,7 +55,8 @@ class HyperbolicAE(AbstractModel):
             global_epoch=global_epoch,
             evaluation_metrics=evaluation_metrics,
             activation_function=activation_function,
-            distances_type=distances_type
+            distances_type=distances_type,
+            distances_version=distances_version
         )
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
@@ -68,12 +71,12 @@ class HyperbolicAE(AbstractModel):
         prev_dim = self.input_dim
         for hidden_dim in self.hidden_dims:
             encoder_layers.extend([
-                spectral_norm(nn.Linear(prev_dim, hidden_dim)),
+                torch.nn.utils.spectral_norm(nn.Linear(prev_dim, hidden_dim)) if spectral_norm else nn.Linear(prev_dim, hidden_dim),
                 nn.BatchNorm1d(hidden_dim),
                 self.activation_function
             ])
             prev_dim = hidden_dim
-        self.encoder = nn.Sequential(*encoder_layers)
+        self.encoder = nn.Sequential(*encoder_layers[:-2])  # Remove the last activation function
 
         # Add hyperbolic encoding layer(s)
         if isinstance(self.manifold, Euclidean) or hyperbolic_encoding is None:
@@ -98,7 +101,7 @@ class HyperbolicAE(AbstractModel):
             print("Using Euclidean manifold or hyperbolic_encoding is 'None', "
                   "hyperbolic encoding layers will default to nn.Linear.", flush=True)
             self.hyperbolic_decoding_layer = nn.Sequential(
-                spectral_norm(nn.Linear(self.latent_dim, self.hidden_dims[-1])),
+                torch.nn.utils.spectral_norm(nn.Linear(self.latent_dim, self.hidden_dims[-1])) if spectral_norm else nn.Linear(self.latent_dim, self.hidden_dims[-1]),
                 nn.BatchNorm1d(self.hidden_dims[-1]),
                 self.activation_function
             )
@@ -133,6 +136,7 @@ class HyperbolicAE(AbstractModel):
         self.original_input_shape = x.shape[1:]
         x = x.view(x.size(0), -1)
         hidden = self.encoder(x)
+        hidden /= self.encoder[-1].out_features ** 0.5  # Scale by input dimension
         manifold_z = self.hyperbolic_encoding_layer(hidden)
         return manifold_z
 
