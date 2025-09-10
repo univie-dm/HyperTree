@@ -116,6 +116,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             activation_function=cfg.architecture.activation_function,
             clamping_factor=cfg.architecture.hyperbolic_clamping,
             smoothing_factor=cfg.architecture.hyperbolic_smoothing,
+            distances_version=cfg.hyphc.distances_version
         )
     elif cfg.architecture.ae_type == 'convolutional':
         model = HyperbolicConvAE(
@@ -157,7 +158,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             activation_function=cfg.architecture.activation_function,
             clamping_factor=cfg.architecture.hyperbolic_clamping,
             smoothing_factor=cfg.architecture.hyperbolic_smoothing,
-            distances_type=cfg.hyphc.distances_type
+            distances_type=cfg.hyphc.distances_type,
         )
     elif cfg.architecture.ae_type == 'poincare_resnet':
             model = PoincareResNet(
@@ -204,6 +205,7 @@ def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[Hyperb
         distances_type=cfg.hyphc.distances_type,
         hyphc_dist_sum_loss=cfg.hyphc.dist_sum_loss,
         evaluation_metrics=cfg.evaluation,
+        distances_version=cfg.hyphc.distances_version
     )
     return model
 

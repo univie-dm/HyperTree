@@ -3,6 +3,7 @@ from matplotlib import pyplot as plt
 import torch
 import wandb
 import numpy as np
+import numpy.typing as npt
 
 from typing import Union, Optional
 from scipy.cluster.hierarchy import linkage
@@ -13,6 +14,7 @@ from sklearn.base import BaseEstimator, ClusterMixin
 from scipy.sparse.linalg import eigsh
 from sklearn.neighbors import kneighbors_graph
 from scipy.sparse import csgraph, identity
+from collections import Counter
 
 from src.hyperbolic_math.src.manifolds import Hyperboloid, PoincareBall, Manifold
 from src.hyperbolic_math.src.utils.helpers import get_delta
@@ -66,90 +68,102 @@ def nearest_neighbors_accuracy(
 
 
 def dendrogram_purity(
-    distance_matrix: Union[np.ndarray, torch.Tensor],
-    labels: Union[np.ndarray, torch.Tensor],
+    distance_matrix: torch.Tensor,
+    labels: np.ndarray,
     linkage_method: str = 'average'
 ) -> float:
     """
-    Computes dendrogram purity according to the specific formula provided in the paper.
-    Gradient-based Hierarchical Clustering using Continuous Representations of Trees in Hyperbolic Space
-    https://dl.acm.org/doi/pdf/10.1145/3292500.3330997
-    Formula: DP(T) = (1 / |P*|) * Σ_{C* ∈ C*} Σ_{(xi, xj) ∈ C* x C*} pur(lca(xi, xj), C*)
-    """
-    if isinstance(labels, torch.Tensor):
-        labels_np = labels.detach().cpu().numpy()
-    else:
-        labels_np = np.array(labels)
+    Computes the canonical Dendrogram Purity for a hierarchy built from a distance matrix.
 
-    num_samples = len(labels_np)
+    This function first builds a dendrogram using the specified linkage method and then
+    calculates its purity against the ground-truth labels, adhering to the formula:
+    DP(T) = (1 / |P*|) * Σ_{k} Σ_{xi, xj ∈ C*_k, i≠j} pur(lca(xi, xj), C*_k)
+
+    Args:
+        distance_matrix (np.ndarray): A square N x N matrix of pairwise distances.
+        labels (np.ndarray): A 1D array of size N with ground-truth class labels.
+        linkage_method (str): The linkage algorithm to use (e.g., 'average', 'single', 'complete').
+
+    Returns:
+        float: The Dendrogram Purity score, between 0 and 1.
+    """
+    num_samples = len(labels)
     if num_samples < 2:
         return 1.0
 
-    if isinstance(distance_matrix, torch.Tensor):
-        distance_matrix_np = distance_matrix.detach().cpu().numpy()
-    else:
-        distance_matrix_np = distance_matrix
+    # Ensure numpy arrays
+    distance_matrix_np = distance_matrix.cpu().numpy()
+    labels_np = np.asarray(labels)
 
     if distance_matrix_np.shape != (num_samples, num_samples):
         raise ValueError("Distance matrix must be square and match number of labels.")
+
+    # --- Step 1: Calculate the Normalization Factor |P*| ---
+    # This is the total number of unique, non-identical pairs of points
+    # that belong to the same ground-truth class.
+    _, class_counts = np.unique(labels_np, return_counts=True)
+    num_same_class_pairs = sum(count * (count - 1) // 2 for count in class_counts)
+
+    if num_same_class_pairs == 0:
+        # By convention, if there are no same-class pairs, purity is perfect.
+        return 1.0
+
+    # --- Step 2: Build the Dendrogram (Linkage Matrix) ---
+    # The metric evaluates a given tree. Here, we build it first.
     condensed_distances = squareform(distance_matrix_np, checks=False)
     Z = linkage(condensed_distances, method=linkage_method)
 
-    cluster_to_samples_map = {i: {i} for i in range(num_samples)}
-    pair_purity_contributions = {}
+    # --- Step 3: Iterate Through Merges to Calculate Total Purity Sum ---
+    total_purity_sum = 0.0
 
-    for m in range(Z.shape[0]):
-        merged_cluster_id_1 = int(Z[m, 0])
-        merged_cluster_id_2 = int(Z[m, 1])
+    # This map will store the label distribution (Counter) for each cluster node.
+    # It starts with leaf nodes (the original data points).
+    cluster_label_counts = {i: Counter({labels_np[i]: 1}) for i in range(num_samples)}
 
-        samples_in_cluster_1 = cluster_to_samples_map[merged_cluster_id_1]
-        samples_in_cluster_2 = cluster_to_samples_map[merged_cluster_id_2]
+    # Iterate over each merge operation in the linkage matrix
+    for i, merge in enumerate(Z):
+        node1_id, node2_id = int(merge[0]), int(merge[1])
+        new_node_id = num_samples + i
 
-        newly_merged_samples_set = samples_in_cluster_1.union(samples_in_cluster_2)
-        new_cluster_id = num_samples + m
-        cluster_to_samples_map[new_cluster_id] = newly_merged_samples_set
-                
-        labels_of_samples_in_new_cluster = labels_np[list(newly_merged_samples_set)]
-        node_size = len(labels_of_samples_in_new_cluster)
+        counts1 = cluster_label_counts[node1_id]
+        counts2 = cluster_label_counts[node2_id]
 
-        for s1_idx in samples_in_cluster_1:
-            for s2_idx in samples_in_cluster_2:
-                if labels_np[s1_idx] == labels_np[s2_idx]:
-                    pair_key = tuple(sorted((s1_idx, s2_idx)))
-                    if pair_key not in pair_purity_contributions:
-                        # This pair's ground truth label
-                        pair_label = labels_np[s1_idx]
-                        
-                        # Count how many members of the new cluster share this specific label
-                        count_of_pair_label_in_node = np.sum(labels_of_samples_in_new_cluster == pair_label)
-                        
-                        # Purity of the node w.r.t. the pair's true class
-                        purity_for_this_pair = count_of_pair_label_in_node / node_size
-                        
-                        pair_purity_contributions[pair_key] = purity_for_this_pair
-
-        del cluster_to_samples_map[merged_cluster_id_1]
-        del cluster_to_samples_map[merged_cluster_id_2]
-
-        # The sum of purities for non-self pairs (xi, xj) and (xj, xi).
-        # Since pur(lca(xi,xj)) == pur(lca(xj,xi)), we multiply the sum by 2.
-        sum_of_purities_non_self = 2 * sum(pair_purity_contributions.values())
+        # The new node's labels are the sum of its children's labels
+        new_node_counts = counts1 + counts2
+        cluster_label_counts[new_node_id] = new_node_counts
         
-        # The purity for self-pairs (xi, xi) is always 1. There are num_samples such pairs.
-        sum_of_purities_self = num_samples
+        # The current new_node_id is the LCA for any pair of points (x, y)
+        # where x is from the subtree of node1 and y is from the subtree of node2.
 
-        total_purity_sum = sum_of_purities_non_self + sum_of_purities_self
+        # Total points in the newly formed cluster (the LCA's leaves)
+        lca_node_size = sum(new_node_counts.values())
 
-        # The denominator |P*| is the sum of squares of class sizes.
-        _unique_true_labels, true_label_counts = np.unique(labels_np, return_counts=True)
-        total_num_ordered_pairs = np.sum(true_label_counts**2)
+        # Iterate through all ground-truth classes present in the merge
+        all_involved_labels = set(counts1.keys()) | set(counts2.keys())
+        
+        for label in all_involved_labels:
+            # Number of points with this label from each child cluster
+            n1_k = counts1.get(label, 0)
+            n2_k = counts2.get(label, 0)
+            
+            # The number of new same-class pairs whose LCA is this node
+            num_new_pairs = n1_k * n2_k
+            
+            if num_new_pairs > 0:
+                # Purity of the LCA node with respect to this specific class `label`
+                # pur(lvs(lca), C*_k) = |lvs(lca) ∩ C*_k| / |lvs(lca)|
+                count_of_label_in_lca = new_node_counts.get(label, 0)
+                purity_of_lca_for_label = count_of_label_in_lca / lca_node_size
+                
+                # Add the contribution of all these new pairs to the total sum
+                total_purity_sum += num_new_pairs * purity_of_lca_for_label
 
-        if total_num_ordered_pairs == 0:
-            return 1.0
-
-        return float(total_purity_sum / total_num_ordered_pairs)
-
-    return 0.0
+        # Free memory by deleting child node info that will no longer be used
+        del cluster_label_counts[node1_id]
+        del cluster_label_counts[node2_id]
+    
+    # --- Step 4: Final Normalization ---
+    return total_purity_sum / num_same_class_pairs
 
 class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
     """
@@ -251,7 +265,7 @@ class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
 
 
 def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
-               manifold: Manifold, metrics: dict[str, bool] | None = None) -> dict:
+               manifold: Manifold, metrics: dict[str, bool] | None = None, str_labels:Optional[npt.ArrayLike]|None = None) -> dict:
     """
     Evaluate the performance of a model using specified metrics.
 
@@ -432,7 +446,11 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
             "file_path": None,
             "file_format": "png",
         }
-        fig = create_figure(two_d_pts, poincare_64, labels=Y.cpu().numpy()[pca_sample_indices])
+        if str_labels is not None:
+            labels = str_labels
+        else:
+            labels = Y.cpu().numpy()
+        fig = create_figure(two_d_pts, poincare_64, labels=labels[pca_sample_indices])
         results["hyperbolic_embeddings"] = wandb.Image(fig)
         plt.close(fig)
 

@@ -34,6 +34,7 @@ class HyperbolicAE(AbstractModel):
         activation_function: str = 'relu',
         clamping_factor: float = 1.0,
         smoothing_factor: float = 50.0,
+        distances_version: str = 'mobius_direct'
     ):
         super().__init__(
             model_type='feedforward',
@@ -52,7 +53,8 @@ class HyperbolicAE(AbstractModel):
             global_epoch=global_epoch,
             evaluation_metrics=evaluation_metrics,
             activation_function=activation_function,
-            distances_type=distances_type
+            distances_type=distances_type,
+            distances_version=distances_version
         )
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
@@ -70,7 +72,7 @@ class HyperbolicAE(AbstractModel):
                 self.activation_function
             ])
             prev_dim = hidden_dim
-        self.encoder = nn.Sequential(*encoder_layers)
+        self.encoder = nn.Sequential(*encoder_layers[:-2])  # Remove the last activation function
 
         # Add hyperbolic encoding layer(s)
         if isinstance(self.manifold, Euclidean) or hyperbolic_encoding is None:
@@ -126,6 +128,7 @@ class HyperbolicAE(AbstractModel):
         self.original_input_shape = x.shape[1:]
         x = x.view(x.size(0), -1)
         hidden = self.encoder(x)
+        hidden /= self.encoder[-1].out_features ** 0.5  # Scale by input dimension
         manifold_z = self.hyperbolic_encoding_layer(hidden)
         return manifold_z
 

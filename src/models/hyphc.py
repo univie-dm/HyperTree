@@ -4,7 +4,6 @@ import torch.nn.functional as F
 import numpy as np
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
-
 from typing import Any, Tuple
 from lightning.pytorch.utilities import grad_norm
 
@@ -36,6 +35,7 @@ class HyperbolicHCModel(AbstractModel):
         distances_type: str = 'geodesic',
         hyphc_dist_sum_loss: bool = True,
         evaluation_metrics: dict[str, bool] = {},
+        distances_version: str = 'mobius_direct'
     ):
         super().__init__(
             model_type=ae_model.model_type,
@@ -55,6 +55,7 @@ class HyperbolicHCModel(AbstractModel):
             global_epoch=global_epoch,
             distances_type=distances_type,
             evaluation_metrics=evaluation_metrics,
+            distances_version=distances_version
         )
         self.orginal_input_shape = ae_model.orginal_input_shape
         # HypHC parameters
@@ -193,7 +194,7 @@ class HyperbolicHCModel(AbstractModel):
             else:
                 raise ValueError(f"Unsupported manifold: {self.manifold}")
 
-            lca_depth = self.manifold.dist_0(lca)
+            lca_depth = self.manifold.dist_0(lca, version=self.distances_version)
             center = torch.zeros_like(lca).to(x.device)
             
 
@@ -249,7 +250,7 @@ class HyperbolicHCModel(AbstractModel):
             # 6) _halve(o_ref)
             proj = o_ref / (1. + torch.sqrt(1 - torch.sum(o_ref ** 2, dim=-1, keepdim=True)))
             # 7) manifold.dist_0(proj)
-            lca_depth = self.manifold.dist_0(proj)
+            lca_depth = self.manifold.dist_0(proj, version=self.distances_version)
 
             lca_depth = lca_depth.reshape(-1)
             lcas[indices[0,:batch_size], indices[1,:batch_size]] = lca_depth
@@ -265,7 +266,7 @@ class HyperbolicHCModel(AbstractModel):
         sampled_indices, np_sampled_triplet_indices = self.sample_triplets(n, device)
         # Compute the pairwise distances
         if self.distances_type == 'geodesic':
-            distances = compute_pairwise_distances(embeddings[sampled_indices], self.manifold)
+            distances = compute_pairwise_distances(embeddings[sampled_indices], self.manifold, version=self.distances_version)
             similarties = torch.reciprocal(1 + distances)
         elif self.distances_type == 'cosine_similarity':
             embeddings_normalized = torch.nn.functional.normalize(embeddings[sampled_indices], p=2, dim=-1)
@@ -328,6 +329,7 @@ class HyperbolicHCModel(AbstractModel):
         if self.model_type == 'feedforward':
             x = x.view(x.size(0), -1)
         hidden = self.encoder(x)
+        hidden /= self.encoder[-1].out_features ** 0.5  # Scale by input dimension
         manifold_z = self.hyperbolic_encoding_layer(hidden)
         return manifold_z
 
