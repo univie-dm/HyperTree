@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
@@ -33,6 +34,7 @@ class AbstractModel(pl.LightningModule):
         distances_type: str = 'geodesic',
         evaluation_metrics: dict[str, bool] = {},
         activation_function: str = 'relu',
+        distances_version: str = 'mobius_direct'
     ):
         super().__init__()
         self.model_type = model_type
@@ -40,7 +42,7 @@ class AbstractModel(pl.LightningModule):
         self.params_dtype = params_dtype
         self.latent_dim = latent_dim
         self.manifold_name = manifold_name
-
+        self.distances_version = distances_version
         if isinstance(curvature_magnitude, torch.Tensor):
             # Ensure we have our own copy
             c_tensor = curvature_magnitude.clone().detach()
@@ -120,18 +122,25 @@ class AbstractModel(pl.LightningModule):
 
                 embeddings = []
                 labels = []
+                str_labels = []
+                labels_map = self.trainer.datamodule.get_class_names() # type: ignore
 
                 for batch_idx, (x_aug, x, y) in enumerate(test_loader):
                     _, z = self(x.to(self.device))
                     embeddings.append(z)
                     labels.append(y)
-
+                    if labels_map is not None:
+                        str_labels.append([labels_map[int(label)] for label in y])
+                    
+                if labels_map is not None:
+                    # Flatten the list of lists into a single list
+                    str_labels = [label for batch_labels in str_labels for label in batch_labels]
                 all_embeddings = torch.cat(embeddings, dim=0)
                 all_labels = torch.cat(labels, dim=0)
 
                 # Compute the pairwise distances
                 if self.distances_type == 'geodesic':
-                    distance_matrix = compute_pairwise_distances(all_embeddings, self.manifold)
+                    distance_matrix = compute_pairwise_distances(all_embeddings, self.manifold, version=self.distances_version)
                 elif self.distances_type == 'cosine_similarity':
                     all_embeddings_normalized = torch.nn.functional.normalize(all_embeddings, p=2, dim=-1)
                     similarties = torch.mm(all_embeddings_normalized, all_embeddings_normalized.T).clamp(min=-1.0, max=1.0)
@@ -139,12 +148,14 @@ class AbstractModel(pl.LightningModule):
                 else:
                     raise ValueError(f"Invalid distances_type: {self.distances_type}")
 
+                str_labels_array = np.array(str_labels) if str_labels else None
                 evaluation_results = evaluation(
                     X=all_embeddings,
                     Y=all_labels,
                     distance_matrix=distance_matrix,
                     manifold=self.manifold,
                     metrics=self.evaluation_metrics,
+                    str_labels=str_labels_array
                 )
                 for key, value in evaluation_results.items():
                     self.metrics[f"test/{key}"] = value
@@ -163,7 +174,8 @@ class AbstractModel(pl.LightningModule):
         self.train()
 
     def on_train_epoch_end(self) -> None:
-        self.test_phase()
+        if self.current_epoch > 0:
+            self.test_phase()
         self.metrics[f'{self.stage}/epoch'] = self.current_epoch+1
         for key, value in self.metrics.items():
             if isinstance(value, list):

@@ -119,7 +119,8 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             clamping_factor=cfg.architecture.hyperbolic_clamping,
             smoothing_factor=cfg.architecture.hyperbolic_smoothing,
             learnable_scale=cfg.architecture.learnable_scale,
-            normalize=cfg.architecture.normalize
+            normalize=cfg.architecture.normalize,
+            distances_version=cfg.hyphc.distances_version
         )
     elif cfg.architecture.ae_type == 'convolutional':
         model = HyperbolicConvAE(
@@ -214,6 +215,7 @@ def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[Hyperb
         distances_type=cfg.hyphc.distances_type,
         hyphc_dist_sum_loss=cfg.hyphc.dist_sum_loss,
         evaluation_metrics=cfg.evaluation,
+        distances_version=cfg.hyphc.distances_version
     )
     return model
 
