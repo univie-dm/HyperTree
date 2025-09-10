@@ -42,6 +42,8 @@ class PoincareResNet(AbstractModel):
                  activation_function: str = 'relu',
                  clamping_factor: float = 1.0,
                  smoothing_factor: float = 50.0,
+                 learnable_scale: bool = False,
+                 normalize: bool = False
                  ):
         super().__init__(
             model_type='poincare_resnet_ae',
@@ -81,6 +83,8 @@ class PoincareResNet(AbstractModel):
         self.weight_decay = weight_decay
         self.clamping_factor = clamping_factor
         self.smoothing_factor = smoothing_factor
+        self.learnable_scale = learnable_scale
+        self.normalize = normalize
 
         channel_dims = [16, 32, 64]
         depths = [3,3,3]
@@ -99,6 +103,8 @@ class PoincareResNet(AbstractModel):
                 params_dtype=self.params_dtype,
                 clamping_factor=self.clamping_factor,
                 smoothing_factor=self.smoothing_factor,
+                learnable_scale=self.learnable_scale,
+                normalize=self.normalize
             )
 
         if isinstance(self.manifold, Euclidean) or hyperbolic_decoding is None:
@@ -118,6 +124,8 @@ class PoincareResNet(AbstractModel):
                 params_dtype=self.params_dtype,
                 clamping_factor=self.clamping_factor,
                 smoothing_factor=self.smoothing_factor,
+                learnable_scale=self.learnable_scale,
+                normalize=self.normalize
             )
 
         self.hyperbolic_encoding = hyperbolic_encoding
@@ -175,6 +183,8 @@ class PoincareResNet(AbstractModel):
         """Encodes the input image into a latent vector."""
         z = self.encoder(x)
         z = self.hyperbolic_encoding_layer(z)
+        if isinstance(self.manifold, Hyperboloid):
+            raise NotImplementedError("Hyperboloid manifold is not supported by the PoincareResNet.")
         return self.hyperbolic_layer(z)
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:

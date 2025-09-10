@@ -6,6 +6,7 @@ from typing import Tuple, Type
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from src.models.abstract import AbstractModel
+from ..hyperbolic_math.src.manifolds import Hyperboloid
 from ..hyperbolic_math.src.utils.helpers import get_delta
 
 
@@ -102,6 +103,8 @@ class HyperbolicContrastiveModel(AbstractModel):
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         hidden = self.encoder(x)
         tangent_z = self.to_tangent(hidden)
+        if isinstance(self.manifold, Hyperboloid):
+            raise NotImplementedError("Hyperboloid manifold is not supported by the PoincareResNet.")
         manifold_z = self.manifold.expmap_0(tangent_z)
         return manifold_z, tangent_z
 

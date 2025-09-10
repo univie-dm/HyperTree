@@ -31,13 +31,15 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "manifold_name" : cfg.architecture.manifold_name,
         "manifold_precision" : cfg.architecture.manifold_precision,
         "curvature_magnitude" : cfg.architecture.curvature_magnitude,
+        "activation_function": cfg.architecture.activation_function,
         "hyperbolic_clamping" : cfg.architecture.hyperbolic_clamping,
         "hyperbolic_smoothing" : cfg.architecture.hyperbolic_smoothing,
+        "learnable_scale": cfg.architecture.learnable_scale,
+        "normalize": cfg.architecture.normalize,
         # Dataset specific attributes
         "dataset_name" : cfg.dataset.name,
         "selected_classes" : cfg.dataset.get('selected_classes', None),
         "dataset_subset" : cfg.dataset.get('subset', None),
-        "activation_function": cfg.architecture.activation_function,
     }
     return md5(str(attr).encode()).hexdigest()
 
@@ -116,6 +118,8 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             activation_function=cfg.architecture.activation_function,
             clamping_factor=cfg.architecture.hyperbolic_clamping,
             smoothing_factor=cfg.architecture.hyperbolic_smoothing,
+            learnable_scale=cfg.architecture.learnable_scale,
+            normalize=cfg.architecture.normalize
         )
     elif cfg.architecture.ae_type == 'convolutional':
         model = HyperbolicConvAE(
@@ -137,6 +141,8 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             evaluation_metrics=cfg.evaluation,
             clamping_factor=cfg.architecture.hyperbolic_clamping,
             smoothing_factor=cfg.architecture.hyperbolic_smoothing,
+            learnable_scale=cfg.architecture.learnable_scale,
+            normalize=cfg.architecture.normalize
         )
     elif cfg.architecture.ae_type in ['resnet18', 'resnet34', 'resnet50']:
         model = HyperbolicResNet(
@@ -157,7 +163,9 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             activation_function=cfg.architecture.activation_function,
             clamping_factor=cfg.architecture.hyperbolic_clamping,
             smoothing_factor=cfg.architecture.hyperbolic_smoothing,
-            distances_type=cfg.hyphc.distances_type
+            distances_type=cfg.hyphc.distances_type,
+            learnable_scale=cfg.architecture.learnable_scale,
+            normalize=cfg.architecture.normalize
         )
     elif cfg.architecture.ae_type == 'poincare_resnet':
             model = PoincareResNet(
@@ -179,6 +187,8 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
                 activation_function=cfg.architecture.activation_function,
                 clamping_factor=cfg.architecture.hyperbolic_clamping,
                 smoothing_factor=cfg.architecture.hyperbolic_smoothing,
+                learnable_scale=cfg.architecture.learnable_scale,
+                normalize=cfg.architecture.normalize
         )
     else:
         raise ValueError("Invalid autoencoder type")

@@ -104,7 +104,7 @@ class HyperbolicHCModel(AbstractModel):
                 }
             else:
                 return optimizer
-            
+
     def _calculate_probabilistic_coverage_samples(self, n: int) -> int:
         """
         Calculates the number of triplets to sample for probabilistic coverage.

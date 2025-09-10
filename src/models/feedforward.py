@@ -1,4 +1,3 @@
-from math import e
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,7 +7,7 @@ from torch.nn.utils import spectral_norm
 from typing import List, Tuple
 from src.models.abstract import AbstractModel
 from src.models.utils import get_dtype_from_precision, get_hyperbolic_encoding_layer_by_name, get_hyperbolic_decoding_layer_by_name
-from src.hyperbolic_math.src.manifolds import Euclidean
+from src.hyperbolic_math.src.manifolds import Euclidean, Hyperboloid
 
 
 class HyperbolicAE(AbstractModel):
@@ -34,6 +33,8 @@ class HyperbolicAE(AbstractModel):
         activation_function: str = 'relu',
         clamping_factor: float = 1.0,
         smoothing_factor: float = 50.0,
+        learnable_scale: bool = False,
+        normalize: bool = False
     ):
         super().__init__(
             model_type='feedforward',
@@ -58,6 +59,8 @@ class HyperbolicAE(AbstractModel):
         self.hidden_dims = hidden_dims
         self.clamping_factor = clamping_factor
         self.smoothing_factor = smoothing_factor
+        self.learnable_scale = learnable_scale
+        self.normalize = normalize
         self.save_hyperparameters()
 
         # Encoder
@@ -86,6 +89,8 @@ class HyperbolicAE(AbstractModel):
                 params_dtype=self.params_dtype,
                 clamping_factor=self.clamping_factor,
                 smoothing_factor=self.smoothing_factor,
+                learnable_scale=self.learnable_scale,
+                normalize=self.normalize
             )
 
         # Add hyperbolic decoding layer(s)
@@ -106,7 +111,9 @@ class HyperbolicAE(AbstractModel):
                 params_dtype=self.params_dtype,
                 clamping_factor=self.clamping_factor,
                 smoothing_factor=self.smoothing_factor,
-                activation_function=self.activation_function
+                activation_function=self.activation_function,
+                learnable_scale=self.learnable_scale,
+                normalize=self.normalize
             )
 
         # Decoder
