@@ -41,14 +41,15 @@ hyphc:
   normalized_loss: True
   distances_type: 'cosine_similarity' # 'geodesic', 'cosine_similarity'
   dist_sum_loss: True
+  distances_version: 'lorentzian_proxy' # 'mobius_direct', 'lorentzian_proxy'
 
 ## Model architecture
 architecture:
-  ae_type: 'resnet34' # 'feedforward', 'convolutional', 'resnet18', 'resnet34', 'resnet50', 'poincare_resnet'
-  hidden_dims: [512, 256, 128, 64, 32]
+  ae_type: 'feedforward' # 'feedforward', 'convolutional', 'resnet18', 'resnet34', 'resnet50', 'poincare_resnet'
+  hidden_dims: [512, 256, 64, 16]
   latent_dim: 10
   hyperbolic_encoding: 'HyperbolicLinearPP' # 'EuclideanLinear_Exp', 'HyperbolicLinear', 'HyperbolicLinearPP'
-  hyperbolic_decoding: 'HyperbolicRegressionPP' # 'Log_EuclideanLinear', 'HyperbolicLinear_Log', 'HyperbolicLinearPP_Log',
+  hyperbolic_decoding: 'Log_EuclideanLinear' # 'Log_EuclideanLinear', 'HyperbolicLinear_Log', 'HyperbolicLinearPP_Log',
                                              # 'HyperbolicRegression', 'HyperbolicRegressionPP'
   precision: 'float32' # 'float32', 'float64'
   manifold_name: 'PoincareBall' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
@@ -72,7 +73,7 @@ evaluation:
   nearest_neighbors_accuracy: False
   spectral_clustering: True
   visualization: True
-  kmeans: False
+  kmeans: True
   visualization_sample_size: 5000
 
 ## Logging
