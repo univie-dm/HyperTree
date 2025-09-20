@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from lightning.pytorch.utilities import grad_norm
-from torch.nn.utils import spectral_norm
 
 from typing import List, Tuple
 from src.models.abstract import AbstractModel
@@ -34,9 +33,9 @@ class HyperbolicAE(AbstractModel):
         clamping_factor: float = 1.0,
         smoothing_factor: float = 50.0,
         learnable_scale: bool = False,
-        normalize: bool = False,
+        FHCNN_normalize: bool = False,
         distances_version: str = 'mobius_direct',
-        spectral_norm: bool = False
+        spectral_normalization: bool = False
     ):
         super().__init__(
             model_type='feedforward',
@@ -63,7 +62,7 @@ class HyperbolicAE(AbstractModel):
         self.clamping_factor = clamping_factor
         self.smoothing_factor = smoothing_factor
         self.learnable_scale = learnable_scale
-        self.normalize = normalize
+        self.FHCNN_normalize = FHCNN_normalize
         self.save_hyperparameters()
 
         # Encoder
@@ -71,12 +70,13 @@ class HyperbolicAE(AbstractModel):
         prev_dim = self.input_dim
         for hidden_dim in self.hidden_dims:
             encoder_layers.extend([
-                torch.nn.utils.spectral_norm(nn.Linear(prev_dim, hidden_dim)) if spectral_norm else nn.Linear(prev_dim, hidden_dim),
+                torch.nn.utils.spectral_norm(nn.Linear(prev_dim, hidden_dim)) if spectral_normalization else nn.Linear(prev_dim, hidden_dim),
                 nn.BatchNorm1d(hidden_dim),
                 self.activation_function
             ])
             prev_dim = hidden_dim
         self.encoder = nn.Sequential(*encoder_layers[:-2])  # Remove the last activation function
+        self.encoder.extend([nn.Tanh()])  # Add a Tanh activation at the end of the encoder
 
         # Add hyperbolic encoding layer(s)
         if isinstance(self.manifold, Euclidean) or hyperbolic_encoding is None:
@@ -93,7 +93,7 @@ class HyperbolicAE(AbstractModel):
                 clamping_factor=self.clamping_factor,
                 smoothing_factor=self.smoothing_factor,
                 learnable_scale=self.learnable_scale,
-                normalize=self.normalize
+                FHCNN_normalize=self.FHCNN_normalize
             )
 
         # Add hyperbolic decoding layer(s)
@@ -101,7 +101,7 @@ class HyperbolicAE(AbstractModel):
             print("Using Euclidean manifold or hyperbolic_encoding is 'None', "
                   "hyperbolic encoding layers will default to nn.Linear.", flush=True)
             self.hyperbolic_decoding_layer = nn.Sequential(
-                torch.nn.utils.spectral_norm(nn.Linear(self.latent_dim, self.hidden_dims[-1])) if spectral_norm else nn.Linear(self.latent_dim, self.hidden_dims[-1]),
+                torch.nn.utils.spectral_norm(nn.Linear(self.latent_dim, self.hidden_dims[-1])) if spectral_normalization else nn.Linear(self.latent_dim, self.hidden_dims[-1]),
                 nn.BatchNorm1d(self.hidden_dims[-1]),
                 self.activation_function
             )
@@ -116,7 +116,7 @@ class HyperbolicAE(AbstractModel):
                 smoothing_factor=self.smoothing_factor,
                 activation_function=self.activation_function,
                 learnable_scale=self.learnable_scale,
-                normalize=self.normalize
+                FHCNN_normalize=self.FHCNN_normalize
             )
 
         # Decoder
@@ -136,7 +136,7 @@ class HyperbolicAE(AbstractModel):
         self.original_input_shape = x.shape[1:]
         x = x.view(x.size(0), -1)
         hidden = self.encoder(x)
-        hidden /= self.encoder[-1].out_features ** 0.5  # Scale by input dimension
+        hidden = hidden / (self.hidden_dims[-1] ** 0.5)  # Scale by input dimension
         manifold_z = self.hyperbolic_encoding_layer(hidden)
         return manifold_z
 

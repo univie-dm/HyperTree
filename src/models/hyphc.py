@@ -75,6 +75,7 @@ class HyperbolicHCModel(AbstractModel):
         self.hyperbolic_encoding_layer: torch.nn.Module = ae_model.hyperbolic_encoding_layer
         self.hyperbolic_decoding_layer: torch.nn.Module = ae_model.hyperbolic_decoding_layer
         self.decoder: torch.nn.Sequential = ae_model.decoder
+        self.hidden_dims: list[int] = ae_model.hidden_dims
         if isinstance(ae_model, HyperbolicResNet):
             self.expansion = ae_model.expansion
         else:
@@ -267,6 +268,11 @@ class HyperbolicHCModel(AbstractModel):
         # Compute the pairwise distances
         if self.distances_type == 'geodesic':
             distances = compute_pairwise_distances(embeddings[sampled_indices], self.manifold, version=self.distances_version)
+            if self.distances_version == 'lorentzian_proxy':
+                #distances = distances + 2/self.manifold.c
+                if torch.any(distances < 0):
+                    print("Warning: Negative distances encountered with lorentzian_proxy distance version. Min:{}".format(distances.min().item()))
+                distances = distances.clamp(min=0.0)
             similarties = torch.reciprocal(1 + distances)
         elif self.distances_type == 'cosine_similarity':
             embeddings_normalized = torch.nn.functional.normalize(embeddings[sampled_indices], p=2, dim=-1)
@@ -329,7 +335,7 @@ class HyperbolicHCModel(AbstractModel):
         if self.model_type == 'feedforward':
             x = x.view(x.size(0), -1)
         hidden = self.encoder(x)
-        hidden /= self.encoder[-1].out_features ** 0.5  # Scale by input dimension
+        hidden = hidden / (self.hidden_dims[-1] ** 0.5)  # Scale by input dimension
         manifold_z = self.hyperbolic_encoding_layer(hidden)
         return manifold_z
 

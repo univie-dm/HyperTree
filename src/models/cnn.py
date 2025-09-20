@@ -44,7 +44,7 @@ class HyperbolicConvAE(AbstractModel):
         clamping_factor: float = 1.0,
         smoothing_factor: float = 50.0,
         learnable_scale: bool = False,
-        normalize: bool = False
+        FHCNN_normalize: bool = False
     ):
         super().__init__(
             model_type='convolutional',
@@ -74,7 +74,7 @@ class HyperbolicConvAE(AbstractModel):
         self.clamping_factor = clamping_factor
         self.smoothing_factor = smoothing_factor
         self.learnable_scale = learnable_scale
-        self.normalize = normalize
+        self.FHCNN_normalize = FHCNN_normalize
 
 
         conv1 = nn.Conv2d(
@@ -123,7 +123,7 @@ class HyperbolicConvAE(AbstractModel):
                 clamping_factor=self.clamping_factor,
                 smoothing_factor=self.smoothing_factor,
                 learnable_scale=self.learnable_scale,
-                normalize=self.normalize
+                FHCNN_normalize=self.FHCNN_normalize
             )
 
         self.hyperbolic_decoding_layer = get_hyperbolic_decoding_layer_by_name(
@@ -135,7 +135,7 @@ class HyperbolicConvAE(AbstractModel):
             clamping_factor=self.clamping_factor,
             smoothing_factor=self.smoothing_factor,
             learnable_scale=self.learnable_scale,
-            normalize=self.normalize
+            FHCNN_normalize=self.FHCNN_normalize
         )
 
         deconv1 = nn.ConvTranspose2d(

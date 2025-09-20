@@ -173,6 +173,17 @@ class AbstractModel(pl.LightningModule):
         self.metrics = {}
         self.train()
 
+    def on_train_end(self) -> None:
+        self.test_phase()
+        self.metrics[f'{self.stage}/epoch'] = self.current_epoch
+        for key, value in self.metrics.items():
+            if isinstance(value, list):
+                self.metrics[key] = sum(value) / len(value)
+        if isinstance(self.logger, WandbLogger):
+            self.logger.experiment.log(self.metrics, step=self.current_epoch+self.global_epoch)
+        self.metrics = {}
+        self.train()
+
     def on_train_epoch_end(self) -> None:
         if self.current_epoch > 0:
             self.test_phase()

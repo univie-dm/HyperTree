@@ -35,11 +35,12 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "hyperbolic_clamping" : cfg.architecture.hyperbolic_clamping,
         "hyperbolic_smoothing" : cfg.architecture.hyperbolic_smoothing,
         "learnable_scale": cfg.architecture.learnable_scale,
-        "normalize": cfg.architecture.normalize,
+        "FHCNN_normalize": cfg.architecture.FHCNN_normalize,
         # Dataset specific attributes
         "dataset_name" : cfg.dataset.name,
         "selected_classes" : cfg.dataset.get('selected_classes', None),
         "dataset_subset" : cfg.dataset.get('subset', None),
+        "spectral_normalization" : cfg.architecture.get('spectral_normalization', False),
     }
     return md5(str(attr).encode()).hexdigest()
 
@@ -119,8 +120,9 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             clamping_factor=cfg.architecture.hyperbolic_clamping,
             smoothing_factor=cfg.architecture.hyperbolic_smoothing,
             learnable_scale=cfg.architecture.learnable_scale,
-            normalize=cfg.architecture.normalize,
-            distances_version=cfg.hyphc.distances_version
+            FHCNN_normalize=cfg.architecture.FHCNN_normalize,
+            distances_version=cfg.hyphc.distances_version,
+            spectral_normalization=cfg.architecture.spectral_normalization
         )
     elif cfg.architecture.ae_type == 'convolutional':
         model = HyperbolicConvAE(
@@ -143,7 +145,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             clamping_factor=cfg.architecture.hyperbolic_clamping,
             smoothing_factor=cfg.architecture.hyperbolic_smoothing,
             learnable_scale=cfg.architecture.learnable_scale,
-            normalize=cfg.architecture.normalize
+            FHCNN_normalize=cfg.architecture.FHCNN_normalize
         )
     elif cfg.architecture.ae_type in ['resnet18', 'resnet34', 'resnet50']:
         model = HyperbolicResNet(

@@ -50,7 +50,7 @@ class DecoderBlock(nn.Module):
         if self.upsample is not None:
             identity = self.upsample(x)
 
-        out += identity
+        out = out + identity
         out = self.relu(out)
 
         return out

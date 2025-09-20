@@ -39,9 +39,9 @@ hyphc:
   triplet_subsampling_delta: 0.1 # The probability of missing a pair
   lca_version: 'ours' # 'ours', 'chami'
   normalized_loss: True
-  distances_type: 'cosine_similarity' # 'geodesic', 'cosine_similarity'
+  distances_type: 'geodesic' # 'geodesic', 'cosine_similarity'
   dist_sum_loss: True
-  distances_version: 'lorentzian_proxy' # 'mobius_direct', 'lorentzian_proxy'
+  distances_version: 'default' # 'mobius_direct', 'lorentzian_proxy', 'default'
 
 ## Model architecture
 architecture:
@@ -54,16 +54,16 @@ architecture:
   hyperbolic_decoding: 'Log_EuclideanLinear' # 'Log_EuclideanLinear'
                                              # Hyperboloid: 'HyperbolicLinear_Log', 'HyperbolicLinearHyperboloidFHNN_Log', 'HyperbolicLinearHyperboloidFHCNN_Log', 'HyperbolicRegression'
                                              # Poincare: 'HyperbolicLinear_Log', 'HyperbolicLinearPP_Log', 'HyperbolicRegression', 'HyperbolicRegressionPP'
-  precision: 'float32' # 'float32', 'float64'
-  manifold_name: 'PoincareBall' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
-  manifold_precision: 'float32' # 'float32', 'float64'
+  precision: 'float64' # 'float32', 'float64'
+  manifold_name: 'Hyperboloid' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
+  manifold_precision: 'float64' # 'float32', 'float64'
   curvature_magnitude: 1.0
   activation_function: 'relu' #'relu', 'swish'
   hyperbolic_clamping: 1.0
   hyperbolic_smoothing: 50.0
   learnable_scale: False # only used if hyperbolic_encoding is 'HyperbolicLinearHyperboloidFHNN', 'HyperbolicLinearHyperboloidFHCNN'
-  normalize: False # only used if hyperbolic_encoding is 'HyperbolicLinearHyperboloidFHCNN'
-  spectral_norm: False # True, False
+  FHCNN_normalize: True # only used if hyperbolic_encoding is 'HyperbolicLinearHyperboloidFHCNN'
+  spectral_normalization: False # True, False
 
 ## Evaluation Metrics to be used and logged
 evaluation:

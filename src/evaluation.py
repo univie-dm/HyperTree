@@ -21,6 +21,54 @@ from src.hyperbolic_math.src.utils.helpers import get_delta
 from src.hyperbolic_math.src.utils.vis_utils import create_figure, pointsTo2dPoincare
 from src.hyperbolic_math.src.utils.horo_pca import compute_frechet_mean, center_data
 
+def map_predicted_labels_to_str_labels(predicted_labels: np.ndarray, true_labels: np.ndarray, str_labels: Optional[npt.ArrayLike] = None) -> np.ndarray:
+    """
+    Map predicted cluster labels to string labels using majority voting.
+    
+    Parameters
+    ----------
+    predicted_labels : np.ndarray
+        Predicted cluster labels (integers)
+    true_labels : np.ndarray
+        True labels (integers)
+    str_labels : Optional[npt.ArrayLike]
+        String labels corresponding to true_labels
+        
+    Returns
+    -------
+    np.ndarray
+        Mapped string labels for predicted clusters, or original predicted labels if str_labels is None
+    """
+    if str_labels is None:
+        return predicted_labels
+    
+    # Ensure inputs are numpy arrays
+    str_labels = np.asarray(str_labels)
+    predicted_labels = np.asarray(predicted_labels)
+    true_labels = np.asarray(true_labels)
+    
+    unique_clusters = np.unique(predicted_labels)
+    mapped_labels = np.copy(predicted_labels).astype(object)
+    
+    for cluster_id in unique_clusters:
+        # Get indices of points in this cluster
+        cluster_mask = predicted_labels == cluster_id
+        cluster_true_labels = true_labels[cluster_mask]
+        cluster_str_labels = str_labels[cluster_mask]
+        
+        # Find the most common string label in this cluster via majority vote on true labels
+        true_label_counts = Counter(cluster_true_labels)
+        most_common_true_label = true_label_counts.most_common(1)[0][0]
+        
+        # Find the corresponding string label
+        true_label_mask = true_labels == most_common_true_label
+        representative_str_label = str_labels[true_label_mask][0]
+        
+        # Assign this string label to all points in the cluster
+        mapped_labels[cluster_mask] = representative_str_label
+    
+    return mapped_labels
+
 def nearest_neighbors_accuracy(
     distance_matrix: Union[np.ndarray, torch.Tensor],
     labels: Union[np.ndarray, torch.Tensor],
@@ -375,7 +423,15 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
                 "file_path": None,
                 "file_format": "png",
             }
-            fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_single[pca_sample_indices])
+            # Map predicted labels to string labels if available
+            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
+            visualization_labels = map_predicted_labels_to_str_labels(
+                pred_labels_single[pca_sample_indices], 
+                Y_numpy[pca_sample_indices], 
+                str_labels_subset
+            )
+            fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
             results["agglomerative_clustering_single_hyperbolic_embeddings"] = wandb.Image(fig)
             plt.close(fig)
     if metrics.get("agglomerative_clustering_complete", False):
@@ -401,7 +457,15 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
                     "file_path": None,
                     "file_format": "png",
             }
-            fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_complete[pca_sample_indices])
+            # Map predicted labels to string labels if available
+            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
+            visualization_labels = map_predicted_labels_to_str_labels(
+                pred_labels_complete[pca_sample_indices], 
+                Y_numpy[pca_sample_indices], 
+                str_labels_subset
+            )
+            fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
             results["agglomerative_clustering_complete_hyperbolic_embeddings"] = wandb.Image(fig)
             plt.close(fig)
     if metrics.get("agglomerative_clustering_average", False):
@@ -427,7 +491,15 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
                 "file_path": None,
                 "file_format": "png",
             }
-            fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_average[pca_sample_indices])
+            # Map predicted labels to string labels if available
+            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
+            visualization_labels = map_predicted_labels_to_str_labels(
+                pred_labels_average[pca_sample_indices], 
+                Y_numpy[pca_sample_indices], 
+                str_labels_subset
+            )
+            fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
             results["agglomerative_clustering_average_hyperbolic_embeddings"] = wandb.Image(fig)
             plt.close(fig)
     if metrics.get("agglomerative_clustering_ward", False):
@@ -446,11 +518,13 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
             "file_path": None,
             "file_format": "png",
         }
+        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
         if str_labels is not None:
-            labels = str_labels
+            str_labels_array = np.asarray(str_labels)
+            labels = str_labels_array[pca_sample_indices]
         else:
-            labels = Y.cpu().numpy()
-        fig = create_figure(two_d_pts, poincare_64, labels=labels[pca_sample_indices])
+            labels = Y_numpy[pca_sample_indices]
+        fig = create_figure(two_d_pts, poincare_64, labels=labels)
         results["hyperbolic_embeddings"] = wandb.Image(fig)
         plt.close(fig)
 
@@ -494,7 +568,15 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
                 "file_path": None,
                 "file_format": "png",
             }
-            fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_spectral[pca_sample_indices])
+            # Map predicted labels to string labels if available
+            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
+            visualization_labels = map_predicted_labels_to_str_labels(
+                pred_labels_spectral[pca_sample_indices], 
+                Y_numpy[pca_sample_indices], 
+                str_labels_subset
+            )
+            fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
             results["spectral_clustering_hyperbolic_embeddings"] = wandb.Image(fig)
             plt.close(fig)
     if metrics.get("kmeans", False):
@@ -516,7 +598,15 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
                 "file_path": None,
                 "file_format": "png",
             }
-            fig = create_figure(two_d_pts, poincare_64, labels=pred_labels_kmeans[pca_sample_indices])
+            # Map predicted labels to string labels if available
+            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
+            visualization_labels = map_predicted_labels_to_str_labels(
+                pred_labels_kmeans[pca_sample_indices], 
+                Y_numpy[pca_sample_indices], 
+                str_labels_subset
+            )
+            fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
             results["kmeans_hyperbolic_embeddings"] = wandb.Image(fig)
             plt.close(fig)
     return results

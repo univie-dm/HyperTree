@@ -49,7 +49,7 @@ def get_hyperbolic_encoding_layer_by_name(
     clamping_factor: float = 1.0,
     smoothing_factor: float = 50.0,
     learnable_scale: bool = False,
-    normalize: bool = True
+    FHCNN_normalize: bool = True
 ) -> Union[nn.Sequential, HyperbolicLinearPoincare, HyperbolicLinearPoincarePP]:
     if layer_name =='EuclideanLinear_Exp':
         layer = nn.Sequential(
@@ -89,7 +89,7 @@ def get_hyperbolic_encoding_layer_by_name(
                 params_dtype=params_dtype,
                 input_space='tangent',
                 learnable_scale=learnable_scale,
-                normalize=normalize)
+                normalize=FHCNN_normalize)
             )
     # PoincareBall layers
     elif layer_name == 'HyperbolicLinear' and isinstance(manifold, PoincareBall):
@@ -124,7 +124,7 @@ def get_hyperbolic_decoding_layer_by_name(
     smoothing_factor: float = 50.0,
     activation_function: nn.Module = nn.ReLU(),
     learnable_scale: bool = False,
-    normalize: bool = True
+    FHCNN_normalize: bool = True
 ) -> nn.Sequential:
     if layer_name == 'Log_EuclideanLinear':
         layer = nn.Sequential(
@@ -171,7 +171,7 @@ def get_hyperbolic_decoding_layer_by_name(
                 params_dtype=params_dtype,
                 input_space='manifold',
                 learnable_scale=learnable_scale,
-                normalize=normalize),
+                normalize=FHCNN_normalize),
             Logmap_0(manifold=manifold),
             HyperboloidTangent2DecoderInput(manifold=manifold),
             nn.BatchNorm1d(output_dim),

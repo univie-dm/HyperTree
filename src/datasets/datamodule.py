@@ -413,14 +413,14 @@ class GrayScaleDataModule(pl.LightningDataModule):
         # For MNIST:
         if self.dataset_name == "mnist":
             return {
-                0: "Zero", 1: "One", 2: "Two", 3: "Three", 4: "Four",
-                5: "Five", 6: "Six", 7: "Seven", 8: "Eight", 9: "Nine"
+                0: "0-Zero", 1: "1-One", 2: "2-Two", 3: "3-Three", 4: "4-Four",
+                5: "5-Five", 6: "6-Six", 7: "7-Seven", 8: "8-Eight", 9: "9-Nine"
             }
         # For FashionMNIST:
         elif self.dataset_name == "fmnist":
             return {
-                0: "T-shirt/top", 1: "Trouser", 2: "Pullover", 3: "Dress", 4: "Coat",
-                5: "Sandal", 6: "Shirt", 7: "Sneaker", 8: "Bag", 9: "Ankle boot"
+                0: "0-T-shirt/top", 1: "1-Trouser", 2: "2-Pullover", 3: "3-Dress", 4: "4-Coat",
+                5: "5-Sandal", 6: "6-Shirt", 7: "7-Sneaker", 8: "8-Bag", 9: "9-Ankle boot"
             }
         else:
             return None
