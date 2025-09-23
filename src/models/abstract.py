@@ -130,7 +130,15 @@ class AbstractModel(pl.LightningModule):
                     embeddings.append(z)
                     labels.append(y)
                     if labels_map is not None:
-                        str_labels.append([labels_map[int(label)] for label in y])
+                        batch_str_labels = []
+                        for label in y:
+                            label_value = labels_map[int(label)]
+                            # For GTSRB, extract only the coarse/super label (second element of tuple)
+                            if isinstance(label_value, tuple) and len(label_value) >= 2:
+                                batch_str_labels.append(label_value[1])  # Use coarse label
+                            else:
+                                batch_str_labels.append(label_value)
+                        str_labels.append(batch_str_labels)
                     
                 if labels_map is not None:
                     # Flatten the list of lists into a single list

@@ -188,3 +188,5 @@ sbatch_mnist.sh
 test_hyperboloid.sh
 sbatch_kmnist.sh
 sbatch_hyperboloid_mnist.sh
+figure_gen.py
+lca_paper_plot.svg

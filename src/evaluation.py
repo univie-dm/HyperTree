@@ -65,8 +65,9 @@ def map_predicted_labels_to_str_labels(predicted_labels: np.ndarray, true_labels
         representative_str_label = str_labels[true_label_mask][0]
         
         # Handle case where str_labels contains tuples (e.g., GTSRB with fine/coarse labels)
+        # Note: For GTSRB, we now extract only coarse labels in abstract.py, so this should be strings
         if isinstance(representative_str_label, (tuple, list, np.ndarray)):
-            # Convert tuple/array to string representation
+            # If still tuple/array, convert to string representation
             representative_str_label = str(representative_str_label)
         
         # Assign this string label to all points in the cluster
