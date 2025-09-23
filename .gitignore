@@ -182,3 +182,9 @@ settings.json
 test_run.sh
 test_sbatch.sh
 test_cifar.sh
+sbatch_fmnist.sh
+sbatch_cifar.sh
+sbatch_mnist.sh
+test_hyperboloid.sh
+sbatch_kmnist.sh
+sbatch_hyperboloid_mnist.sh

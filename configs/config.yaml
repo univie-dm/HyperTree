@@ -1,7 +1,7 @@
 ## Training parameters
 experiment:
   seed: 400
-  num_workers: 8
+  num_workers: 15
   batch_size: 512
   log_interval: 10
   optimizer: 'RiemannianAdam' # 'RiemannianAdam', 'RiemannianSGD'

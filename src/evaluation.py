@@ -64,6 +64,11 @@ def map_predicted_labels_to_str_labels(predicted_labels: np.ndarray, true_labels
         true_label_mask = true_labels == most_common_true_label
         representative_str_label = str_labels[true_label_mask][0]
         
+        # Handle case where str_labels contains tuples (e.g., GTSRB with fine/coarse labels)
+        if isinstance(representative_str_label, (tuple, list, np.ndarray)):
+            # Convert tuple/array to string representation
+            representative_str_label = str(representative_str_label)
+        
         # Assign this string label to all points in the cluster
         mapped_labels[cluster_mask] = representative_str_label
     
@@ -522,6 +527,8 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
         if str_labels is not None:
             str_labels_array = np.asarray(str_labels)
             labels = str_labels_array[pca_sample_indices]
+            # Convert labels to strings to handle cases where they are tuples/arrays (e.g., GTSRB)
+            labels = np.array([str(label) if isinstance(label, (tuple, list, np.ndarray)) else label for label in labels])
         else:
             labels = Y_numpy[pca_sample_indices]
         fig = create_figure(two_d_pts, poincare_64, labels=labels)

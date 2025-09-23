@@ -1,0 +1,12 @@
+name: 'gtsrb'
+subset: 'all'
+data_dir: './data'
+resize: 32
+channels: 3
+selected_classes: # [0,1,2,3,4,5,6,7,8] # For speed limit signs only
+# Alternative subsets for hierarchical analysis:
+# selected_classes: [0,1,2,3,4,5,6,7,8]  # Speed limit signs
+# selected_classes: [9,10,15,16,17,32,41,42]  # Prohibitory signs  
+# selected_classes: [11,12,13,14]  # Priority/Right-of-way signs
+# selected_classes: [18,19,20,21,22,23,24,25,26,27,28,29,30,31]  # Warning signs
+# selected_classes: [33,34,35,36,37,38,39,40]  # Mandatory signs

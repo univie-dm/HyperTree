@@ -7,8 +7,36 @@ import numpy as np
 from sklearn.datasets import load_iris
 from sklearn.preprocessing import StandardScaler
 from torchvision import transforms, datasets
+from torchvision.transforms import functional as F
 from torch.utils.data import DataLoader
 from typing import Literal, Optional, Union
+
+
+class SafeEqualize:
+    """Custom transform that applies equalize to both PIL images and tensors."""
+    def __call__(self, img):
+        if hasattr(img, 'mode'):  # PIL Image
+            return F.equalize(img)
+        elif torch.is_tensor(img):
+            # Convert tensor to uint8 format for equalization
+            if img.dtype != torch.uint8:
+                # Assume the tensor is in [0, 1] range if float, convert to [0, 255] uint8
+                if img.dtype in [torch.float32, torch.float64]:
+                    img_uint8 = (img * 255).clamp(0, 255).to(torch.uint8)
+                else:
+                    img_uint8 = img.to(torch.uint8)
+            else:
+                img_uint8 = img
+            
+            # Apply equalize and convert back to original dtype
+            equalized = F.equalize(img_uint8)
+            if img.dtype in [torch.float32, torch.float64]:
+                return equalized.to(img.dtype) / 255.0
+            else:
+                return equalized.to(img.dtype)
+        else:
+            # If it's numpy array or other format, return as-is
+            return img
 
 
 class MultiViewDataset(torch.utils.data.Dataset):
@@ -120,7 +148,10 @@ class ColorDataModule(pl.LightningDataModule):
         transform_list = []
         if self.resize:
             transform_list.append(transforms.Resize((self.resize, self.resize)))
-        transform_list.extend([transforms.ToTensor(), normalize_fn])
+        # Add SafeEqualize before ToTensor to work with PIL images
+        transform_list.extend([SafeEqualize(),
+                               transforms.ToTensor(), 
+                               normalize_fn])
         base_transform = transforms.Compose(transform_list)
 
         # ImageNet specific augmentation
@@ -193,7 +224,10 @@ class ColorDataModule(pl.LightningDataModule):
         else:
             raise ValueError(f"Invalid subset: {self.subset}")
 
-        self.ground_truth_labels = base_test.targets
+        if hasattr(base_test, 'targets'):
+            self.ground_truth_labels = base_test.targets
+        else:
+            self.ground_truth_labels = [label for _, label in base_test]
 
     def train_dataloader(self) -> DataLoader:
         if self.subset == 'all':
@@ -279,6 +313,47 @@ class ColorDataModule(pl.LightningDataModule):
                 # For regular CIFAR100, return both fine and coarse labels
                 return {i: (fine_labels[i], coarse_labels[fine_to_coarse[fine_labels[i]]])
                         for i in range(len(fine_labels))}
+        # For GTSRB:
+        elif self.dataset_name == "gtsrb":
+            # GTSRB fine class names (43 classes)
+            fine_labels = [
+                "Speed limit (20km/h)", "Speed limit (30km/h)", "Speed limit (50km/h)", 
+                "Speed limit (60km/h)", "Speed limit (70km/h)", "Speed limit (80km/h)", 
+                "End of speed limit (80km/h)", "Speed limit (100km/h)", "Speed limit (120km/h)", 
+                "No passing", "No passing for vehicles over 3.5 metric tons", 
+                "Right-of-way at the next intersection", "Priority road", "Yield", "Stop", 
+                "No vehicles", "Vehicles over 3.5 metric tons prohibited", "No entry", 
+                "General caution", "Dangerous curve to the left", "Dangerous curve to the right", 
+                "Double curve", "Bumpy road", "Slippery road", "Road narrows on the right", 
+                "Road work", "Traffic signals", "Pedestrians", "Children crossing", 
+                "Bicycles crossing", "Beware of ice/snow", "Wild animals crossing", 
+                "End of all speed and passing limits", "Turn right ahead", "Turn left ahead", 
+                "Ahead only", "Go straight or right", "Go straight or left", "Keep right", 
+                "Keep left", "Roundabout mandatory", "End of no passing", 
+                "End of no passing by vehicles over 3.5 metric tons"
+            ]
+            
+            # GTSRB hierarchical categories
+            coarse_labels = [
+                "Prohibitory", "Mandatory", "Warning", "Speed Limits"
+            ]
+            
+            # Mapping of fine classes to their hierarchical categories
+            fine_to_coarse = {
+                # Speed limit signs (0-8)
+                0: 3, 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3, 8: 3,
+                # Prohibitory signs (9-17, 32, 41, 42)
+                9: 0, 10: 0, 15: 0, 16: 0, 17: 0, 32: 0, 41: 0, 42: 0,
+                # Priority/Right-of-way signs (11-14)
+                11: 1, 12: 1, 13: 1, 14: 1,
+                # Warning signs (18-31)
+                18: 2, 19: 2, 20: 2, 21: 2, 22: 2, 23: 2, 24: 2, 25: 2, 26: 2, 27: 2, 28: 2, 29: 2, 30: 2, 31: 2,
+                # Mandatory signs (33-40)
+                33: 1, 34: 1, 35: 1, 36: 1, 37: 1, 38: 1, 39: 1, 40: 1
+            }
+            
+            return {i: (fine_labels[i], coarse_labels[fine_to_coarse[i]]) 
+                    for i in range(len(fine_labels))}
         # For ImageNet:
         elif self.dataset_name == "imagenet":
             # ImageNet class names are not directly available in torchvision
