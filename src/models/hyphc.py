@@ -155,21 +155,18 @@ class HyperbolicHCModel(AbstractModel):
             xy = (x * y).sum(dim=-1, keepdim=True)
 
             if isinstance(self.manifold, Hyperboloid):
-                # Compute the orthogonal geodesic projection(s) [z B A^T (A B A^T)^-1 A] of the Hyperboloid's origin z
-                # onto all 2d geodesic submanifold(s) spanned by all pair-wise combination of vectors x and y.
-                # That is, A is the batched tensor of (2, dim) matrices whose rows span on of the 2d submanifold we
-                # project onto, and B is the Minkowski inner product matrix
-                # Construct the matrix A
-                A = torch.stack([x, y], dim=1) # (B, 2, dim)
-                # 1) Compute the coefficients [z_coeffs = z B A^T (A B A^T)^-1] of the projection
-                z = self.manifold._create_origin_from_reference(x) # (B, d)
-                zBAt = self.manifold._minkowski_inner(z.unsqueeze(-1), A.transpose(-2, -1), axis=1).squeeze(1) # (B, 2)
-                ABAt = self.manifold._minkowski_inner(A.unsqueeze(-1), A.transpose(-2, -1).unsqueeze(1), axis=2).squeeze(2) # (B, 2, 2)
-                z_coeffs = torch.linalg.solve(ABAt, zBAt) # (B, 2)
-                # 2) Compute the orthogonal geodesic projection onto the submanifold(s)
-                mink_proj = (z_coeffs.unsqueeze(1) @ A).squeeze(1) # (B, d)
-                mink_proj_normalized = (-self.manifold.c * self.manifold._minkowski_inner(mink_proj, mink_proj)).sqrt() # (B, d)
-                lca = mink_proj / mink_proj_normalized # (B, d)
+                # Compute the orthogonal geodesic projection(s) onto the Minkowski subspace
+                sqrt_c = self.manifold.c.sqrt()
+                x0 = x.narrow(-1, 0, 1)
+                y0 = y.narrow(-1, 0, 1)
+                xy_mink = self.manifold._minkowski_inner(x, y)
+                denom = 1 - (self.manifold.c * xy_mink).pow(2).clamp(min=1e-15)
+                alpha = (sqrt_c * (x0 + self.manifold.c * xy_mink * y0)) / denom
+                beta = (sqrt_c * (y0 + self.manifold.c * xy_mink * x0)) / denom
+                z = alpha * x + beta * y
+                # Rescale the vector to lie on the Hyperboloid
+                z_mink = self.manifold._minkowski_inner(z, z)
+                lca = z / (-self.manifold.c * z_mink).clamp(min=1e-15).sqrt()
             elif isinstance(self.manifold, PoincareBall):
                 # Compute the center of geodesic circle Gamma through x and y
                 x2 = x.pow(2).sum(dim=-1, keepdim=True)
@@ -197,7 +194,6 @@ class HyperbolicHCModel(AbstractModel):
 
             lca_depth = self.manifold.dist_0(lca, version=self.distances_version)
             center = torch.zeros_like(lca).to(x.device)
-            
 
             # Compute the cosine of the angles at the origin in the triangles {x, origin, c}, {y, origin, c}  {x, origin, y}
             xlca = (x * lca).sum(dim=-1, keepdim=True)
