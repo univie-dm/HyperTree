@@ -8,7 +8,6 @@ from typing import Tuple, Union
 
 from src.datasets.datamodule import ColorDataModule, GrayScaleDataModule, TabularDataModule
 from src.models import HyperbolicAE, HyperbolicHCModel, HyperbolicResNet, HyperbolicConvAE
-from src.models.poincare_resnet import PoincareResNet
 
 
 def get_model_path(cfg: omegaconf.DictConfig):
@@ -170,6 +169,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             learnable_scale=cfg.architecture.learnable_scale,
             normalize=cfg.architecture.normalize
         )
+        """
     elif cfg.architecture.ae_type == 'poincare_resnet':
             model = PoincareResNet(
                 input_channels=cfg.dataset.channels,
@@ -193,11 +193,12 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
                 learnable_scale=cfg.architecture.learnable_scale,
                 normalize=cfg.architecture.normalize
         )
+        """
     else:
         raise ValueError("Invalid autoencoder type")
     return model
 
-def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[HyperbolicAE, HyperbolicResNet, PoincareResNet]) -> HyperbolicHCModel:
+def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[HyperbolicAE, HyperbolicResNet]) -> HyperbolicHCModel:
     model = HyperbolicHCModel(
         ae_model=pretrain_model,
         trainable_curvature=cfg.clustering.trainable_curvature,

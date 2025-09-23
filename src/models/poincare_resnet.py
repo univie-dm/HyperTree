@@ -1,3 +1,4 @@
+"""
 from numpy import save
 from src.models.abstract import AbstractModel
 from src.models.utils import get_dtype_from_precision, get_hyperbolic_decoding_layer_by_name, get_hyperbolic_encoding_layer_by_name
@@ -19,10 +20,6 @@ from src.poincare_resnet.models.resnets.hyperbolic import HyperbolicResNet
 from src.models.resnet import DecoderBlock, resize_conv1x1 # Re-use from the existing resnet
 
 class PoincareResNet(AbstractModel):
-    """
-    A complete autoencoder model built from the Poincaré ResNet, implemented
-    as a PyTorch Lightning module for easy pre-training.
-    """
     def __init__(self,
                  input_channels: int,
                  params_dtype: torch.dtype,
@@ -165,7 +162,6 @@ class PoincareResNet(AbstractModel):
         )
 
     def _make_decoder_layer(self, planes: int, blocks: int, scale: int = 1) -> nn.Sequential:
-        """Helper to create a decoder layer, re-using existing blocks."""
         upsample = None
         if scale != 1 or self.inplanes != planes:
             upsample = nn.Sequential(
@@ -180,7 +176,6 @@ class PoincareResNet(AbstractModel):
         return nn.Sequential(*layers)
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        """Encodes the input image into a latent vector."""
         z = self.encoder(x)
         z = self.hyperbolic_encoding_layer(z)
         if isinstance(self.manifold, Hyperboloid):
@@ -188,14 +183,12 @@ class PoincareResNet(AbstractModel):
         return self.hyperbolic_layer(z)
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
-        """Decodes a latent vector back into a reconstructed image."""
         # Reshape for decoder
         z = self.hyperbolic_decoding_layer(z)
         z = z.view(z.size(0), -1, 8, 8) # Reshape to 4D tensor (batch, channels, H, W)
         return self.decoder(z)
         
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """The full autoencoder forward pass."""
         latent_z = self.encode(x)
         reconstructed_x = self.decode(latent_z)
         return reconstructed_x, latent_z
@@ -217,3 +210,4 @@ class PoincareResNet(AbstractModel):
             save_image(x[0], 'original.png')
             save_image(x_hat[0], 'reconstructed.png')
         return loss
+"""
