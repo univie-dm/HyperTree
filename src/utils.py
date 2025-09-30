@@ -7,7 +7,7 @@ from pytorch_lightning.loggers import WandbLogger, CSVLogger
 from typing import Tuple, Union
 
 from src.datasets.datamodule import ColorDataModule, GrayScaleDataModule, TabularDataModule
-from src.models import HyperbolicAE, HyperbolicHCModel, HyperbolicResNet, HyperbolicConvAE, EnhancedHyperbolicConvAE
+from src.models import HyperbolicAE, HyperbolicHCModel, HyperbolicResNet, HyperbolicConvAE
 
 
 def get_model_path(cfg: omegaconf.DictConfig):
@@ -92,7 +92,7 @@ def get_datamodule(cfg: omegaconf.DictConfig, stage: str) -> Tuple[Union[Tabular
     datamodule.setup()
     return datamodule, input_dim, is_image
 
-def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[HyperbolicAE, HyperbolicResNet, HyperbolicConvAE, EnhancedHyperbolicConvAE]:
+def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[HyperbolicAE, HyperbolicResNet, HyperbolicConvAE]:
     if os.path.exists(f"data/models/{get_model_path(cfg)}.pt") and not cfg.pretraining.overwrite:
         model = torch.load(f"data/models/{get_model_path(cfg)}.pt", weights_only=False)
         print("Loaded model from {}".format(f"data/models/{get_model_path(cfg)}.pt"))
@@ -127,34 +127,6 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
         model = HyperbolicConvAE(
             image_size=cfg.dataset.resize,
             input_channels=cfg.dataset.channels,
-            hyperbolic_encoding=cfg.architecture.hyperbolic_encoding,
-            params_dtype=cfg.architecture.precision,
-            manifold_name=cfg.architecture.manifold_name,
-            manifold_precision=cfg.architecture.manifold_precision,
-            curvature_magnitude=cfg.architecture.curvature_magnitude,
-            trainable_curvature=cfg.pretraining.trainable_curvature,
-            hyperbolic_decoding=cfg.architecture.hyperbolic_decoding,
-            optimizer_name=cfg.experiment.optimizer,
-            learning_rate=cfg.pretraining.learning_rate,
-            log_interval=cfg.experiment.log_interval,
-            latent_dim=cfg.architecture.latent_dim,
-            stage='pretrain',
-            global_epoch=0,
-            evaluation_metrics=cfg.evaluation,
-            clamping_factor=cfg.architecture.hyperbolic_clamping,
-            smoothing_factor=cfg.architecture.hyperbolic_smoothing,
-            learnable_scale=cfg.architecture.learnable_scale,
-            FHCNN_normalize=cfg.architecture.FHCNN_normalize
-        )
-    elif cfg.architecture.ae_type == 'enhanced_convolutional':
-        model = EnhancedHyperbolicConvAE(
-            image_size=cfg.dataset.resize,
-            input_channels=cfg.dataset.channels,
-            base_channels=cfg.architecture.get('base_channels', 64),
-            depth_multiplier=cfg.architecture.get('depth_multiplier', 1.0),
-            use_attention=cfg.architecture.get('use_attention', True),
-            dropout_rate=cfg.architecture.get('dropout_rate', 0.1),
-            bottleneck_dim=cfg.architecture.get('bottleneck_dim', 128),
             hyperbolic_encoding=cfg.architecture.hyperbolic_encoding,
             params_dtype=cfg.architecture.precision,
             manifold_name=cfg.architecture.manifold_name,
