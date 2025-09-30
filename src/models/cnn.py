@@ -76,59 +76,15 @@ class HyperbolicConvAE(AbstractModel):
         self.learnable_scale = learnable_scale
         self.FHCNN_normalize = FHCNN_normalize
 
-        self.hidden_dims = [32, 64, 128, 64, latent_dim]
+        # Encoder Layers
+        self.enc_conv1 = self.conv_block(self.input_channels, 32)
+        self.enc_conv2 = self.conv_block(32, 64)
+        self.enc_conv3 = self.conv_block(64, 128)
+        self.pool = nn.MaxPool2d(2, 2)
 
-
-        self.conv1 = nn.Conv2d(
-            in_channels=self.input_channels,
-            out_channels=32,
-            kernel_size=8,
-            stride=4,
-            padding=1
-        )
-        self.conv2 = nn.Conv2d(
-            in_channels=32,
-            out_channels=64,
-            kernel_size=4,
-            stride=2,
-            padding=1
-        )
-        self.conv3 = nn.Conv2d(
-            in_channels=64,
-            out_channels=64,
-            kernel_size=3,
-            stride=1,
-            padding=1
-        )
-        flattened_dim = 128 * 3 * 3
-
-        self.encoder = nn.Sequential(
-            nn.Conv2d(
-                in_channels=self.input_channels,out_channels=8,kernel_size=8,stride=4,padding=1
-            ),
-            nn.BatchNorm2d(8),
-            nn.SiLU(),
-            nn.Conv2d(
-                in_channels=8,out_channels=16,kernel_size=4,stride=2,padding=1
-            ),
-            nn.BatchNorm2d(16),
-            nn.SiLU(),
-            nn.Conv2d(
-                in_channels=16,out_channels=32,kernel_size=3,stride=1,padding=1
-            ),
-            nn.BatchNorm2d(32),
-            nn.SiLU(),
-            nn.Conv2d(
-                in_channels=32,out_channels=64,kernel_size=3,stride=1,padding=1
-            ),
-            nn.BatchNorm2d(64),
-            nn.SiLU(),
-            nn.Conv2d(
-                in_channels=64,out_channels=128,kernel_size=3,stride=1,padding=1
-            ),
-            nn.Flatten(),
-            nn.Linear(flattened_dim, 64)  # Linear layer to map to latent dimension
-        )
+        flattened_dim = 128 * 4 * 4
+        self.enc_flatten = nn.Flatten()
+        self.enc_linear = nn.Linear(flattened_dim, 64)
 
         self.hyperbolic_encoding_layer = get_hyperbolic_encoding_layer_by_name(
                 layer_name=hyperbolic_encoding,
@@ -154,70 +110,80 @@ class HyperbolicConvAE(AbstractModel):
             FHCNN_normalize=self.FHCNN_normalize
         )
 
-        deconv1 = nn.ConvTranspose2d(
-            in_channels=64,
-            out_channels=64,
-            kernel_size=3,
-            stride=1,
-            padding=1
-        )
-        self.deconv1 = deconv1
-        deconv2 = nn.ConvTranspose2d(
-            in_channels=64,
-            out_channels=32,
-            kernel_size=4,
-            stride=2,
-            padding=1,
-            output_padding=1
-        )
-        self.deconv2 = deconv2
-        deconv3 = nn.ConvTranspose2d(
-            in_channels=32,
-            out_channels=self.input_channels,
-            kernel_size=8,
-            stride=4,
-            padding=1,
-            output_padding=2
-        )
-        self.deconv3 = deconv3
-        self.decoder = nn.Sequential(
-            nn.Linear(64, flattened_dim),
-            nn.Unflatten(1, (128, 3, 3)),  # Reshape to match the output of the encoder
-            nn.ConvTranspose2d(
-                in_channels=128, out_channels=64, kernel_size=3, stride=1, padding=1
-            ),
-            nn.BatchNorm2d(64),
+        # Decoder Layers
+        self.dec_linear = nn.Linear(64, flattened_dim)
+        self.dec_unflatten = nn.Unflatten(1, (128, 4, 4))
+        
+        self.dec_up1 = nn.ConvTranspose2d(128, 128, 2, stride=2)
+        self.dec_conv1 = self.conv_block(256, 64)
+
+        self.dec_up2 = nn.ConvTranspose2d(64, 64, 2, stride=2)
+        self.dec_conv2 = self.conv_block(128, 32)
+        
+        self.dec_up3 = nn.ConvTranspose2d(32, 32, 2, stride=2)
+        self.dec_conv3 = self.conv_block(64, 16)
+        
+        self.dec_final = nn.Conv2d(16, self.input_channels, kernel_size=1)
+
+    def conv_block(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, padding=1),
+            nn.BatchNorm2d(out_channels),
             nn.SiLU(),
-            nn.ConvTranspose2d(
-                in_channels=64, out_channels=32, kernel_size=4, stride=2, padding=1, output_padding=1
-            ),
-            nn.BatchNorm2d(32),
-            nn.SiLU(),
-            nn.ConvTranspose2d(
-                in_channels=32, out_channels=self.input_channels, kernel_size=8, stride=4, padding=1, output_padding=2
-            ),
+            nn.Conv2d(out_channels, out_channels, 3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.SiLU()
         )
 
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        """ Encodes the input image into a manifold representation. """
-        hidden = self.encoder(x)
+    def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, Tuple[torch.Tensor, ...]]:
+        """ Encodes the input image into a manifold representation and returns skip connections. """
+        s1 = self.enc_conv1(x)
+        p1 = self.pool(s1)
+        
+        s2 = self.enc_conv2(p1)
+        p2 = self.pool(s2)
+        
+        s3 = self.enc_conv3(p2)
+        p3 = self.pool(s3)
+        
+        flat = self.enc_flatten(p3)
+        hidden = self.enc_linear(flat)
         manifold_z = self.hyperbolic_encoding_layer(hidden)
-        return manifold_z
+        
+        return manifold_z, (s1, s2, s3)
 
-    def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
-        """ Decodes the manifold representation back into an image. """
+    def decode(self, manifold_z: torch.Tensor, skips: Tuple[torch.Tensor, ...]) -> torch.Tensor:
+        """ Decodes the manifold representation back into an image, using skip connections. """
+        s1, s2, s3 = skips
+        
         hidden = self.hyperbolic_decoding_layer(manifold_z)
         hidden = hidden.to(dtype=get_dtype_from_precision(self.params_dtype))
-        x_recon = self.decoder(hidden)
+        
+        x = self.dec_unflatten(self.dec_linear(hidden))
+        
+        x = self.dec_up1(x)
+        x = torch.cat([x, s3], dim=1)
+        x = self.dec_conv1(x)
+        
+        x = self.dec_up2(x)
+        x = torch.cat([x, s2], dim=1)
+        x = self.dec_conv2(x)
+        
+        x = self.dec_up3(x)
+        x = torch.cat([x, s1], dim=1)
+        x = self.dec_conv3(x)
+
+        x_recon = self.dec_final(x)
+        
         return x_recon
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Defines the full autoencoder forward pass.
+        Defines the full autoencoder forward pass with skip connections.
         Assumes input `x` has the same spatial dimensions as `image_size` in init.
         """
-        z = self.encode(x)
-        x_recon = self.decode(z)
+        z, skips = self.encode(x)
+        x_recon = self.decode(z, skips)
         return x_recon, z
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
