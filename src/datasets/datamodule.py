@@ -149,8 +149,7 @@ class ColorDataModule(pl.LightningDataModule):
         if self.resize:
             transform_list.append(transforms.Resize((self.resize, self.resize)))
         # Add SafeEqualize before ToTensor to work with PIL images
-        transform_list.extend([SafeEqualize(),
-                               transforms.ToTensor(), 
+        transform_list.extend([transforms.ToTensor(), 
                                normalize_fn])
         base_transform = transforms.Compose(transform_list)
 

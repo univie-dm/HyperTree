@@ -143,6 +143,13 @@ class AbstractModel(pl.LightningModule):
                 if labels_map is not None:
                     # Flatten the list of lists into a single list
                     str_labels = [label for batch_labels in str_labels for label in batch_labels]
+                    # Validate that str_labels has the same length as labels
+                    if len(str_labels) != len(torch.cat(labels, dim=0)):
+                        print(f"Warning: str_labels length ({len(str_labels)}) doesn't match labels length ({len(torch.cat(labels, dim=0))}). Using None.")
+                        str_labels = None
+                else:
+                    str_labels = None
+                    
                 all_embeddings = torch.cat(embeddings, dim=0)
                 all_labels = torch.cat(labels, dim=0)
 

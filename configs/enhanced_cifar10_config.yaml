@@ -1,0 +1,109 @@
+# Enhanced CIFAR-10 Configuration with Improved CNN Architecture
+## Training parameters
+experiment:
+  seed: 400
+  num_workers: 15
+  batch_size: 256  # Reduced from 512 for better gradient stability with deeper network
+  log_interval: 10
+  optimizer: 'RiemannianAdam' # 'RiemannianAdam', 'RiemannianSGD'
+  gradient_clip_value: 1.0 # None, Float
+
+## Pretraining parameters
+pretraining:
+  epochs: 20  # Increased from 10 for better convergence with deeper network
+  learning_rate: 1e-3  # Reduced from 3e-3 for stability
+  trainable_curvature: False
+  overwrite: False
+  weight_decay: 1e-4  # Added weight decay for regularization
+  augmentations: True  # Enable augmentations for better generalization
+
+## Clustering parameters
+clustering:
+  epochs: 30  # Increased for deeper network
+  trainable_curvature: False
+  accumulate_gradients: 1
+  learning_rate: 5e-4  # Reduced for fine-tuning
+  weight_decay: 1e-4
+  augmentations: False
+  # Learning rate scheduler
+  lr_scheduler:
+    type: 'warmup_cosine'  # Enable cosine annealing for better convergence
+    interval: 10  # Warmup epochs
+    cosine_min_factor: 0.01  # Minimum learning rate factor
+
+## HypHC parameters
+hyphc:
+  loss_weight: 1.0
+  temperature: 0.01
+  sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'chami', 'probabilistic_coverage'
+  triplet_subsampling_size: 200
+  triplet_subsampling_delta: 0.1 # The probability of missing a pair
+  lca_version: 'ours' # 'ours', 'chami'
+  normalized_loss: True
+  distances_type: 'geodesic' # 'geodesic', 'cosine_similarity'
+  dist_sum_loss: True
+  distances_version: 'default' # 'mobius_direct', 'lorentzian_proxy', 'default'
+
+## Enhanced Model architecture for CIFAR-10
+architecture:
+  ae_type: 'enhanced_convolutional' # Use the new enhanced architecture
+  # Enhanced CNN specific parameters
+  base_channels: 64  # Base number of channels (will be multiplied)
+  depth_multiplier: 1.0  # Multiplier for channel depth (1.0 = standard, 1.5 = 50% more channels)
+  use_attention: true  # Enable Squeeze-and-Excitation blocks
+  dropout_rate: 0.1  # Dropout rate for regularization
+  bottleneck_dim: 256  # Increased from 128 for better representation capacity
+  
+  # Standard parameters
+  latent_dim: 10 # Hyperboloid automatically uses latent_dim + 1
+  hyperbolic_encoding: 'HyperbolicLinearPP' # Poincare projection
+  hyperbolic_decoding: 'Log_EuclideanLinear' # Logarithmic map back to Euclidean
+  precision: 'float64' # Higher precision for hyperbolic operations
+  manifold_name: 'Hyperboloid' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
+  manifold_precision: 'float64'
+  curvature_magnitude: 1.0
+  activation_function: 'relu' # Using ReLU as base, but SiLU is used in the enhanced model
+  hyperbolic_clamping: 1.0
+  hyperbolic_smoothing: 50.0
+  learnable_scale: False
+  FHCNN_normalize: True
+  spectral_normalization: False # Disabled as the enhanced model handles regularization differently
+
+## Evaluation Metrics
+evaluation:
+  delta_hyperbolicity: False
+  dendrogram_purity_single: False
+  dendrogram_purity_complete: False
+  dendrogram_purity_average: False
+  dendrogram_purity_ward: False
+  agglomerative_clustering_single: False
+  agglomerative_clustering_complete: False
+  agglomerative_clustering_average: False
+  agglomerative_clustering_ward: False
+  nearest_neighbors_accuracy: False
+  spectral_clustering: True
+  visualization: False
+  kmeans: True
+  visualization_sample_size: 5000
+
+## Logging
+wandb:
+  enabled: True
+  project: 'hyper_clustering_enhanced'
+  entity: 'kevin-sidak-team'
+  save_dir: './logs'
+  tags: ['enhanced_cnn', 'cifar10', 'hyperbolic']
+
+## Hydra specifics
+hydra:
+  run:
+    dir: ${wandb.save_dir}/hydra/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: ${wandb.save_dir}/hydra/${now:%Y-%m-%d_%H-%M-%S}
+  output_subdir: null
+  job:
+    chdir: False
+
+defaults:
+  - _self_
+  - dataset: cifar10

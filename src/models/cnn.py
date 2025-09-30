@@ -2,10 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from lightning.pytorch.utilities import grad_norm
-from torch.nn.utils import spectral_norm
 from typing import Tuple
 
-# Assuming AbstractModel and utils are in a path like this based on your other files
+import wandb
+
 from src.models.abstract import AbstractModel
 from src.models.utils import get_dtype_from_precision, get_hyperbolic_encoding_layer_by_name, get_hyperbolic_decoding_layer_by_name
 from src.hyperbolic_math.src.manifolds import Hyperboloid
@@ -76,48 +76,64 @@ class HyperbolicConvAE(AbstractModel):
         self.learnable_scale = learnable_scale
         self.FHCNN_normalize = FHCNN_normalize
 
+        self.hidden_dims = [32, 64, 128, 64, latent_dim]
 
-        conv1 = nn.Conv2d(
+
+        self.conv1 = nn.Conv2d(
             in_channels=self.input_channels,
             out_channels=32,
             kernel_size=8,
             stride=4,
             padding=1
         )
-        self.conv1 = spectral_norm(conv1)
-        conv2 = nn.Conv2d(
+        self.conv2 = nn.Conv2d(
             in_channels=32,
             out_channels=64,
             kernel_size=4,
             stride=2,
             padding=1
         )
-        self.conv2 = spectral_norm(conv2)
-        conv3 = nn.Conv2d(
+        self.conv3 = nn.Conv2d(
             in_channels=64,
             out_channels=64,
             kernel_size=3,
             stride=1,
             padding=1
         )
-        self.conv3 = spectral_norm(conv3)
-        flattened_dim = 64 * 3 * 3
+        flattened_dim = 128 * 3 * 3
 
         self.encoder = nn.Sequential(
-            self.conv1,
-            nn.ReLU(),
-            self.conv2,
-            nn.ReLU(),
-            self.conv3,
-            nn.ReLU(),
+            nn.Conv2d(
+                in_channels=self.input_channels,out_channels=8,kernel_size=8,stride=4,padding=1
+            ),
+            nn.BatchNorm2d(8),
+            nn.SiLU(),
+            nn.Conv2d(
+                in_channels=8,out_channels=16,kernel_size=4,stride=2,padding=1
+            ),
+            nn.BatchNorm2d(16),
+            nn.SiLU(),
+            nn.Conv2d(
+                in_channels=16,out_channels=32,kernel_size=3,stride=1,padding=1
+            ),
+            nn.BatchNorm2d(32),
+            nn.SiLU(),
+            nn.Conv2d(
+                in_channels=32,out_channels=64,kernel_size=3,stride=1,padding=1
+            ),
+            nn.BatchNorm2d(64),
+            nn.SiLU(),
+            nn.Conv2d(
+                in_channels=64,out_channels=128,kernel_size=3,stride=1,padding=1
+            ),
             nn.Flatten(),
-            spectral_norm(nn.Linear(flattened_dim, 32))  # Linear layer to map to latent dimension
+            nn.Linear(flattened_dim, 64)  # Linear layer to map to latent dimension
         )
 
         self.hyperbolic_encoding_layer = get_hyperbolic_encoding_layer_by_name(
                 layer_name=hyperbolic_encoding,
                 manifold=self.manifold,
-                input_dim=32,
+                input_dim=64,
                 output_dim=self.latent_dim,
                 params_dtype=self.params_dtype,
                 clamping_factor=self.clamping_factor,
@@ -130,7 +146,7 @@ class HyperbolicConvAE(AbstractModel):
             layer_name=hyperbolic_decoding,
             manifold=self.manifold,
             input_dim=self.latent_dim,
-            output_dim=32,
+            output_dim=64,
             params_dtype=self.params_dtype,
             clamping_factor=self.clamping_factor,
             smoothing_factor=self.smoothing_factor,
@@ -145,7 +161,7 @@ class HyperbolicConvAE(AbstractModel):
             stride=1,
             padding=1
         )
-        self.deconv1 = spectral_norm(deconv1)
+        self.deconv1 = deconv1
         deconv2 = nn.ConvTranspose2d(
             in_channels=64,
             out_channels=32,
@@ -154,7 +170,7 @@ class HyperbolicConvAE(AbstractModel):
             padding=1,
             output_padding=1
         )
-        self.deconv2 = spectral_norm(deconv2)
+        self.deconv2 = deconv2
         deconv3 = nn.ConvTranspose2d(
             in_channels=32,
             out_channels=self.input_channels,
@@ -163,15 +179,23 @@ class HyperbolicConvAE(AbstractModel):
             padding=1,
             output_padding=2
         )
-        self.deconv3 = spectral_norm(deconv3)
+        self.deconv3 = deconv3
         self.decoder = nn.Sequential(
-            spectral_norm(nn.Linear(32, flattened_dim)),
-            nn.Unflatten(1, (64, 3, 3)),  # Reshape to match the output of the encoder
-            self.deconv1,
-            nn.ReLU(),
-            self.deconv2,
-            nn.ReLU(),
-            self.deconv3,
+            nn.Linear(64, flattened_dim),
+            nn.Unflatten(1, (128, 3, 3)),  # Reshape to match the output of the encoder
+            nn.ConvTranspose2d(
+                in_channels=128, out_channels=64, kernel_size=3, stride=1, padding=1
+            ),
+            nn.BatchNorm2d(64),
+            nn.SiLU(),
+            nn.ConvTranspose2d(
+                in_channels=64, out_channels=32, kernel_size=4, stride=2, padding=1, output_padding=1
+            ),
+            nn.BatchNorm2d(32),
+            nn.SiLU(),
+            nn.ConvTranspose2d(
+                in_channels=32, out_channels=self.input_channels, kernel_size=8, stride=4, padding=1, output_padding=2
+            ),
         )
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
@@ -194,8 +218,6 @@ class HyperbolicConvAE(AbstractModel):
         """
         z = self.encode(x)
         x_recon = self.decode(z)
-        # The F.interpolate call is removed as it can be non-deterministic and
-        # is not needed if input and output sizes are designed to match.
         return x_recon, z
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
@@ -208,14 +230,61 @@ class HyperbolicConvAE(AbstractModel):
         x_recon, _ = self(x)
 
         loss = F.mse_loss(x_recon, x)
+        if batch_idx == 0:
+            try:
+                x_0 = x[0] + x[0].min().abs()
+                x_0 = x_0 / x_0.max()
+                x_0 = x_0*255.0
+                x_recon_0 = x_recon[0] + x_recon[0].min().abs()
+                x_recon_0 = x_recon_0 / x_recon_0.max()
+                x_recon_0 = x_recon_0*255.0
+                # Convert from [C, H, W] to [H, W, C] for wandb
+                if len(x_0.shape) == 3 and x_0.shape[0] in [1, 3]:  # Check if channels-first
+                    x_0_img = x_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
+                    x_recon_0_img = x_recon_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
+                    if x_0_img.shape[2] == 1:  # Grayscale, squeeze channel dim
+                        x_0_img = x_0_img.squeeze(2)
+                        x_recon_0_img = x_recon_0_img.squeeze(2)
+                else:
+                    x_0_img = x_0.cpu().numpy().astype("uint8")
+                    x_recon_0_img = x_recon_0.cpu().numpy().astype("uint8")
+                self.metrics['input_image'] = wandb.Image(x_0_img, caption="Input image")
+                self.metrics['reconstructed_image'] = wandb.Image(x_recon_0_img, caption="Reconstructed image")
+            except Exception as e:
+                # If image logging fails, just skip it and continue training
+                print(f"Warning: Failed to log images to wandb: {e}")
+            
 
+        # Check for NaN or inf in loss and gradients
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"Warning: NaN or inf loss detected: {loss}")
+            return torch.tensor(0.0, requires_grad=True, device=loss.device)
+            
+        # Clip gradients to prevent explosion
+        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
+        
         for key, value in grad_norm(self, norm_type=2).items():
             if key == "grad_2.0_norm_total":
                 key = "grad_2.0_norm/total"
-            self.metrics.setdefault(f"{key}", []).append(value)
+            # Check for NaN/inf in gradient norms
+            if isinstance(value, torch.Tensor):
+                if not (torch.isnan(value) or torch.isinf(value)):
+                    self.metrics.setdefault(f"{key}", []).append(value)
+            else:
+                # Handle scalar values
+                if not (torch.isnan(torch.tensor(value)) or torch.isinf(torch.tensor(value))):
+                    self.metrics.setdefault(f"{key}", []).append(value)
 
         self.metrics.setdefault(f"{self.stage}/recon_loss", []).append(loss)
-        if self.manifold.c.requires_grad:
-            self.metrics.setdefault(f"{self.stage}/c", []).append(self.manifold.c.detach())
+        if hasattr(self.manifold, 'c') and hasattr(self.manifold.c, 'requires_grad') and self.manifold.c.requires_grad:
+            try:
+                c_tensor = self.manifold.c
+                c_detached = c_tensor.detach()
+                c_value = c_detached.item() if c_detached.numel() == 1 else c_detached
+                self.metrics.setdefault(f"{self.stage}/c", []).append(c_value)
+            except Exception as e:
+                print(f"Warning: Could not log curvature value: {e}")
+        
+        self.log("recon_loss", loss, prog_bar=True, logger=False)
 
         return loss
