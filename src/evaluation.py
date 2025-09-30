@@ -377,12 +377,6 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
             warning("Some points are out of the Poincare ball after dimensionality reduction. NO visualization generated")
         else:
             points_in_manifold = True
-        #hyperboloid = Hyperboloid(c=manifold.c.to(settings['plot_manifold_dtype']), dtype=settings['plot_manifold_dtype'])
-        #hyp_points = poincare_64.to_hyperboloid(two_d_pts)
-        #frechet_mean = compute_frechet_mean(hyp_points, hyperboloid)
-        #two_d_pts = center_data(hyp_points, frechet_mean, hyperboloid=hyperboloid)
-        #two_d_pts = hyperboloid.to_poincare(two_d_pts)
-        #TODO test tangent pca instead of horror pca
 
 
     if metrics.get("delta_hyperbolicity", False):

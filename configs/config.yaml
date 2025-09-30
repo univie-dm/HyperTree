@@ -84,9 +84,9 @@ evaluation:
 
 ## Logging
 wandb:
-  enabled: True
-  project: 'hyper_clustering'
-  entity: 'kevin-sidak-team'
+  enabled: False
+  project: 'none'
+  entity: 'none'
   save_dir: './logs'
   tags: []
 
