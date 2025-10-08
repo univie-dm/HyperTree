@@ -21,6 +21,392 @@ from src.hyperbolic_math.src.utils.helpers import get_delta
 from src.hyperbolic_math.src.utils.vis_utils import create_figure, pointsTo2dPoincare
 from src.hyperbolic_math.src.utils.horo_pca import compute_frechet_mean, center_data
 
+
+def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
+               manifold: Manifold, metrics: dict[str, bool] | None = None, str_labels:Optional[npt.ArrayLike]|None = None) -> dict:
+    """
+    Evaluate the performance of a model using specified metrics.
+
+    Parameters
+    ----------
+    X : list
+        List of predicted values
+    Y : list
+        List of true values
+    distance_matrix : torch.Tensor
+        Precomputed distance matrix
+    manifold : Manifold
+        The manifold on which the embeddings are defined
+    metrics : list
+        List of metric functions to evaluate
+
+    Returns
+    -------
+        dict: A dictionary with metric names as keys and their computed values.
+    """
+    results = {}
+    points_in_manifold = False
+    if metrics is None:
+        return results
+    
+
+    distance_matrix += 2/manifold.c
+    if distance_matrix.min() < 0:
+        warning("Distance matrix contains negative values. Clipping to zero. Minimum: {}".format(distance_matrix.min()))
+        distance_matrix = distance_matrix.clamp(min=0)
+
+    if metrics["visualization"]:
+        settings = {
+            "plot_manifold_dtype": torch.float64,
+            "dim_red_method": "HoroPCA",
+            "title": "Hyperbolic Embeddings",
+            "show_origin": True,
+            "save_figure": False,
+            "file_name": "hyperbolic_embeddings",
+            "file_path": None,
+            "file_format": "png",
+        }
+        sample_size = metrics['visualization_sample_size']
+        sample_size = min(sample_size, len(X))
+
+        pca_sample_indices = np.random.choice(len(X), sample_size, replace=False)
+        points_sampled = X[pca_sample_indices]
+
+        
+        poincare_64 = PoincareBall(c=manifold.c.to(settings['plot_manifold_dtype']), dtype=settings['plot_manifold_dtype'])
+        if manifold.name == 'PoincareBall':
+            points_sampled = poincare_64.to_hyperboloid(points_sampled)
+        points_sampled = points_sampled.to(torch.float64)
+        two_d_pts, _ = pointsTo2dPoincare(x=points_sampled, poincare=poincare_64, hyperplanes=None, settings=settings)
+        two_d_pts = two_d_pts.detach().clone().to(dtype=settings['plot_manifold_dtype'], device=manifold.c.device)
+        if not poincare_64.is_in_manifold(two_d_pts):
+            warning("Some points are out of the Poincare ball after dimensionality reduction. NO visualization generated")
+        else:
+            points_in_manifold = True
+
+
+    if metrics.get("delta_hyperbolicity", False):
+        delta_hyp, diam_hyp, rel_delta_hyp = get_delta(X, manifold)
+        results["delta_hyperbolicity"] = delta_hyp.item()
+        results["diameter_hyperbolicity"] = diam_hyp.item()
+        results["relative_delta_hyperbolicity"] = rel_delta_hyp.item()
+    if metrics.get("dendrogram_purity_single", False):
+        # Compute dendrogram purity for single linkage
+        dp_score_single = dendrogram_purity(distance_matrix, Y, "single")
+        results["dendrogram_purity_single"] = dp_score_single
+    if metrics.get("dendrogram_purity_complete", False):
+        # Compute dendrogram purity for complete linkage
+        dp_score_complete = dendrogram_purity(distance_matrix, Y, "complete")
+        results["dendrogram_purity_complete"] = dp_score_complete
+    if metrics.get("dendrogram_purity_average", False):
+        # Compute dendrogram purity for average linkage
+        dp_score_average = dendrogram_purity(distance_matrix, Y, "average")
+        results["dendrogram_purity_average"] = dp_score_average
+    if metrics.get("dendrogram_purity_ward", False):
+        # Compute dendrogram purity for ward linkage
+        dp_score_ward = dendrogram_purity(distance_matrix, Y, "ward")
+        results["dendrogram_purity_ward"] = dp_score_ward
+    if metrics.get("agglomerative_clustering_single", False):
+        # Compute agglomerative clustering metrics
+        agglomerative_clustering_single = AgglomerativeClustering(
+            n_clusters=len(np.unique(Y)),
+            metric='precomputed',
+            linkage='single'
+        )
+        pred_labels_single = agglomerative_clustering_single.fit_predict(distance_matrix.cpu().numpy())
+        nmi_single = normalized_mutual_info_score(Y, pred_labels_single)
+        ari_single = adjusted_rand_score(Y, pred_labels_single)
+        results["agglomerative_clustering_single_nmi"] = nmi_single
+        results["agglomerative_clustering_single_ari"] = ari_single
+        if metrics['visualization'] and points_in_manifold:
+            settings = {
+                "plot_manifold_dtype": torch.float64,
+                "dim_red_method": "HoroPCA",
+                "title": "Hyperbolic Embeddings Agglomerative Clustering Single Linkage",
+                "show_origin": True,
+                "save_figure": False,
+                "file_name": "hyperbolic_embeddings",
+                "file_path": None,
+                "file_format": "png",
+            }
+            # Map predicted labels to string labels if available
+            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
+            visualization_labels = map_predicted_labels_to_str_labels(
+                pred_labels_single[pca_sample_indices], 
+                Y_numpy[pca_sample_indices], 
+                str_labels_subset
+            )
+            fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
+            results["agglomerative_clustering_single_hyperbolic_embeddings"] = wandb.Image(fig)
+            plt.close(fig)
+    if metrics.get("agglomerative_clustering_complete", False):
+        # Compute agglomerative clustering metrics
+        agglomerative_clustering_complete = AgglomerativeClustering(
+            n_clusters=len(np.unique(Y)),
+            metric='precomputed',
+            linkage='complete'
+        )
+        pred_labels_complete = agglomerative_clustering_complete.fit_predict(distance_matrix.cpu().numpy())
+        nmi_complete = normalized_mutual_info_score(Y, pred_labels_complete)
+        ari_complete = adjusted_rand_score(Y, pred_labels_complete)
+        results["agglomerative_clustering_complete_nmi"] = nmi_complete
+        results["agglomerative_clustering_complete_ari"] = ari_complete
+        if metrics['visualization'] and points_in_manifold:
+            settings = {
+                    "plot_manifold_dtype": torch.float64,
+                    "dim_red_method": "HoroPCA",
+                    "title": "Hyperbolic Embeddings Agglomerative Clustering Complete Linkage",
+                    "show_origin": True,
+                    "save_figure": False,
+                    "file_name": "hyperbolic_embeddings",
+                    "file_path": None,
+                    "file_format": "png",
+            }
+            # Map predicted labels to string labels if available
+            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
+            visualization_labels = map_predicted_labels_to_str_labels(
+                pred_labels_complete[pca_sample_indices], 
+                Y_numpy[pca_sample_indices], 
+                str_labels_subset
+            )
+            fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
+            results["agglomerative_clustering_complete_hyperbolic_embeddings"] = wandb.Image(fig)
+            plt.close(fig)
+    if metrics.get("agglomerative_clustering_average", False):
+        # Compute agglomerative clustering metrics
+        agglomerative_clustering_average = AgglomerativeClustering(
+            n_clusters=len(np.unique(Y)),
+            metric='precomputed',
+            linkage='average'
+        )
+        pred_labels_average = agglomerative_clustering_average.fit_predict(distance_matrix.cpu().numpy())
+        nmi_average = normalized_mutual_info_score(Y, pred_labels_average)
+        ari_average = adjusted_rand_score(Y, pred_labels_average)
+        results["agglomerative_clustering_average_nmi"] = nmi_average
+        results["agglomerative_clustering_average_ari"] = ari_average
+        if metrics['visualization'] and points_in_manifold:
+            settings = {
+                "plot_manifold_dtype": torch.float64,
+                "dim_red_method": "HoroPCA",
+                "title": "Hyperbolic Embeddings Agglomerative Clustering Average Linkage",
+                "show_origin": True,
+                "save_figure": False,
+                "file_name": "hyperbolic_embeddings",
+                "file_path": None,
+                "file_format": "png",
+            }
+            # Map predicted labels to string labels if available
+            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
+            visualization_labels = map_predicted_labels_to_str_labels(
+                pred_labels_average[pca_sample_indices], 
+                Y_numpy[pca_sample_indices], 
+                str_labels_subset
+            )
+            fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
+            results["agglomerative_clustering_average_hyperbolic_embeddings"] = wandb.Image(fig)
+            plt.close(fig)
+    if metrics.get("agglomerative_clustering_ward", False):
+        # Compute agglomerative clustering metrics
+        #TODO: Implement agglomerative clustering with ward linkage. Sklearn does not support precomputed distance matrix with ward linkage.
+        pass
+    if metrics.get("visualization", False) and points_in_manifold:
+        # Create a figure with the points and labels
+        settings = {
+            "plot_manifold_dtype": torch.float64,
+            "dim_red_method": "HoroPCA",
+            "title": "Hyperbolic Embeddings",
+            "show_origin": True,
+            "save_figure": False,
+            "file_name": "hyperbolic_embeddings",
+            "file_path": None,
+            "file_format": "png",
+        }
+        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+        if str_labels is not None:
+            str_labels_array = np.asarray(str_labels)
+            labels = str_labels_array[pca_sample_indices]
+            # Convert labels to strings to handle cases where they are tuples/arrays (e.g., GTSRB)
+            # Also handle None values by converting them to "Unknown"
+            labels = np.array([str(label) if isinstance(label, (tuple, list, np.ndarray)) else (label if label is not None else "Unknown") for label in labels])
+        else:
+            labels = Y_numpy[pca_sample_indices]
+        fig = create_figure(two_d_pts, poincare_64, labels=labels)
+        results["hyperbolic_embeddings"] = wandb.Image(fig)
+        plt.close(fig)
+
+    if metrics.get("nearest_neighbors_accuracy", False):
+        # Compute nearest neighbors accuracy
+        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y, k=1)
+        results["1_nearest_neighbors_accuracy"] = nn_accuracy
+        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y, k=5)
+        results["5_nearest_neighbors_accuracy"] = nn_accuracy
+        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y, k=10)
+        results["10_nearest_neighbors_accuracy"] = nn_accuracy
+        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y, k=100)
+        results["100_nearest_neighbors_accuracy"] = nn_accuracy
+        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y, k=1000)
+        results["1000_nearest_neighbors_accuracy"] = nn_accuracy
+
+    if metrics.get("spectral_clustering", False):
+        affinity_matrix = distance_matrix.cpu().numpy()
+        spectral_clustering = SpectralClustering(
+            n_clusters=len(np.unique(Y)),
+            affinity='precomputed_nearest_neighbors',
+            n_neighbors=metrics.get('spectral_nn', 10),
+            assign_labels='kmeans',
+            random_state=int(torch.get_rng_state()[0].item())
+        )
+
+        #spectral_clustering = HyperbolicSpectralClustering(n_clusters=len(np.unique(Y)))
+        pred_labels_spectral = spectral_clustering.fit_predict(affinity_matrix)
+        nmi_spectral = normalized_mutual_info_score(Y, pred_labels_spectral)
+        ari_spectral = adjusted_rand_score(Y, pred_labels_spectral)
+        results["spectral_clustering_nmi"] = nmi_spectral
+        results["spectral_clustering_ari"] = ari_spectral
+        if metrics['visualization'] and points_in_manifold:
+            settings = {
+                "plot_manifold_dtype": torch.float64,
+                "dim_red_method": "HoroPCA",
+                "title": "Hyperbolic Embeddings Spectral Clustering",
+                "show_origin": True,
+                "save_figure": False,
+                "file_name": "hyperbolic_embeddings",
+                "file_path": None,
+                "file_format": "png",
+            }
+            # Map predicted labels to string labels if available
+            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
+            visualization_labels = map_predicted_labels_to_str_labels(
+                pred_labels_spectral[pca_sample_indices], 
+                Y_numpy[pca_sample_indices], 
+                str_labels_subset
+            )
+            fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
+            results["spectral_clustering_hyperbolic_embeddings"] = wandb.Image(fig)
+            plt.close(fig)
+    if metrics.get("kmeans", False):
+        # Compute k-means clustering metrics
+        kmeans = KMeans(n_clusters=len(np.unique(Y)), n_init='auto', random_state=int(torch.get_rng_state()[0].item()))
+        pred_labels_kmeans = kmeans.fit_predict(X.cpu().numpy())
+        nmi_kmeans = normalized_mutual_info_score(Y, pred_labels_kmeans)
+        ari_kmeans = adjusted_rand_score(Y, pred_labels_kmeans)
+        results["kmeans_nmi"] = nmi_kmeans
+        results["kmeans_ari"] = ari_kmeans
+        if metrics['visualization'] and points_in_manifold:
+            settings = {
+                "plot_manifold_dtype": torch.float64,
+                "dim_red_method": "HoroPCA",
+                "title": "Hyperbolic Embeddings KMeans Clustering",
+                "show_origin": True,
+                "save_figure": False,
+                "file_name": "hyperbolic_embeddings",
+                "file_path": None,
+                "file_format": "png",
+            }
+            # Map predicted labels to string labels if available
+            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
+            visualization_labels = map_predicted_labels_to_str_labels(
+                pred_labels_kmeans[pca_sample_indices], 
+                Y_numpy[pca_sample_indices], 
+                str_labels_subset
+            )
+            fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
+            results["kmeans_hyperbolic_embeddings"] = wandb.Image(fig)
+            plt.close(fig)
+
+    if metrics.get("dasgupta_cost", False):
+        # Compute Dasgupta cost for average linkage
+        dasgupta_cost_average = dasgupta_cost(torch.reciprocal(distance_matrix+1), "average")
+        results["dasgupta_cost"] = dasgupta_cost_average
+    return results
+class Node:
+    def __init__(self, id, left=None, right=None):
+        self.id = id
+        self.left = left
+        self.right = right
+        self._leaves_count = None
+
+    def get_leaves_count(self):
+        # Memoize the result to avoid re-computation
+        if self._leaves_count is not None:
+            return self._leaves_count
+        
+        if self.left is None and self.right is None: # It's a leaf node
+            self._leaves_count = 1
+        else:
+            self._leaves_count = self.left.get_leaves_count() + self.right.get_leaves_count()
+        return self._leaves_count
+
+def dasgupta_cost(
+    similarity_matrix: torch.Tensor,
+    linkage_method: str = 'average'
+) -> float:
+    """
+    Computes the Dasgupta cost correctly for a hierarchy built from a similarity matrix.
+    """
+    num_samples = similarity_matrix.shape[0]
+    if num_samples < 2:
+        return 0.0
+
+    # 1. Build the linkage matrix (same as before)
+    distance_matrix = 1 - similarity_matrix
+    condensed_distances = squareform(distance_matrix.cpu().numpy(), checks=False)
+    Z = linkage(condensed_distances, method=linkage_method)
+
+    # 2. Build a user-friendly tree structure from the linkage matrix
+    nodes = [Node(i) for i in range(num_samples)]
+    for i, merge in enumerate(Z):
+        node1_id, node2_id = int(merge[0]), int(merge[1])
+        new_node = Node(id=num_samples + i, left=nodes[node1_id], right=nodes[node2_id])
+        nodes.append(new_node)
+    root = nodes[-1]
+    
+    # Create a map from leaf_id to its parent nodes for efficient LCA finding
+    parent_map = {root: None}
+    q = [root]
+    while q:
+        node = q.pop(0)
+        if node.left:
+            parent_map[node.left] = node
+            q.append(node.left)
+        if node.right:
+            parent_map[node.right] = node
+            q.append(node.right)
+
+    # 3. Iterate over all unique pairs of leaves
+    total_cost = 0.0
+    for i in range(num_samples):
+        for j in range(i + 1, num_samples):
+            # 4. Find the LCA for the pair (i, j)
+            # Get ancestors of i
+            ancestors_i = set()
+            curr = nodes[i]
+            while curr is not None:
+                ancestors_i.add(curr)
+                curr = parent_map.get(curr)
+
+            # Find the first common ancestor by traversing up from j
+            lca_node = None
+            curr = nodes[j]
+            while curr is not None:
+                if curr in ancestors_i:
+                    lca_node = curr
+                    break
+                curr = parent_map.get(curr)
+            
+            # 5. Get subtree size and calculate cost contribution
+            if lca_node:
+                num_lca_leaves = lca_node.get_leaves_count()
+                similarity_ij = similarity_matrix[i, j].item()
+                total_cost += similarity_ij * num_lca_leaves
+
+    return total_cost
+
 def map_predicted_labels_to_str_labels(predicted_labels: np.ndarray, true_labels: np.ndarray, str_labels: Optional[npt.ArrayLike] = None) -> np.ndarray:
     """
     Map predicted cluster labels to string labels using majority voting.
@@ -316,299 +702,3 @@ class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
             raise ValueError(f"Unknown label assignment strategy: {self.assign_labels}")
 
         return self.labels_
-
-
-def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
-               manifold: Manifold, metrics: dict[str, bool] | None = None, str_labels:Optional[npt.ArrayLike]|None = None) -> dict:
-    """
-    Evaluate the performance of a model using specified metrics.
-
-    Parameters
-    ----------
-    X : list
-        List of predicted values
-    Y : list
-        List of true values
-    distance_matrix : torch.Tensor
-        Precomputed distance matrix
-    manifold : Manifold
-        The manifold on which the embeddings are defined
-    metrics : list
-        List of metric functions to evaluate
-
-    Returns
-    -------
-        dict: A dictionary with metric names as keys and their computed values.
-    """
-    results = {}
-    points_in_manifold = False
-    if metrics is None:
-        return results
-    
-
-    distance_matrix += 2/manifold.c
-    if distance_matrix.min() < 0:
-        warning("Distance matrix contains negative values. Clipping to zero. Minimum: {}".format(distance_matrix.min()))
-        distance_matrix = distance_matrix.clamp(min=0)
-
-    if metrics["visualization"]:
-        settings = {
-            "plot_manifold_dtype": torch.float64,
-            "dim_red_method": "HoroPCA",
-            "title": "Hyperbolic Embeddings",
-            "show_origin": True,
-            "save_figure": False,
-            "file_name": "hyperbolic_embeddings",
-            "file_path": None,
-            "file_format": "png",
-        }
-        sample_size = metrics['visualization_sample_size']
-        sample_size = min(sample_size, len(X))
-
-        pca_sample_indices = np.random.choice(len(X), sample_size, replace=False)
-        points_sampled = X[pca_sample_indices]
-
-        
-        poincare_64 = PoincareBall(c=manifold.c.to(settings['plot_manifold_dtype']), dtype=settings['plot_manifold_dtype'])
-        points_sampled = poincare_64.to_hyperboloid(points_sampled)
-        two_d_pts, _ = pointsTo2dPoincare(x=points_sampled, poincare=poincare_64, hyperplanes=None, settings=settings)
-        two_d_pts = two_d_pts.detach().clone().to(dtype=settings['plot_manifold_dtype'], device=manifold.c.device)
-        if not poincare_64.is_in_manifold(two_d_pts):
-            warning("Some points are out of the Poincare ball after dimensionality reduction. NO visualization generated")
-        else:
-            points_in_manifold = True
-
-
-    if metrics.get("delta_hyperbolicity", False):
-        delta_hyp, diam_hyp, rel_delta_hyp = get_delta(X, manifold)
-        results["delta_hyperbolicity"] = delta_hyp.item()
-        results["diameter_hyperbolicity"] = diam_hyp.item()
-        results["relative_delta_hyperbolicity"] = rel_delta_hyp.item()
-    if metrics.get("dendrogram_purity_single", False):
-        # Compute dendrogram purity for single linkage
-        dp_score_single = dendrogram_purity(distance_matrix, Y, "single")
-        results["dendrogram_purity_single"] = dp_score_single
-    if metrics.get("dendrogram_purity_complete", False):
-        # Compute dendrogram purity for complete linkage
-        dp_score_complete = dendrogram_purity(distance_matrix, Y, "complete")
-        results["dendrogram_purity_complete"] = dp_score_complete
-    if metrics.get("dendrogram_purity_average", False):
-        # Compute dendrogram purity for average linkage
-        dp_score_average = dendrogram_purity(distance_matrix, Y, "average")
-        results["dendrogram_purity_average"] = dp_score_average
-    if metrics.get("dendrogram_purity_ward", False):
-        # Compute dendrogram purity for ward linkage
-        dp_score_ward = dendrogram_purity(distance_matrix, Y, "ward")
-        results["dendrogram_purity_ward"] = dp_score_ward
-    if metrics.get("agglomerative_clustering_single", False):
-        # Compute agglomerative clustering metrics
-        agglomerative_clustering_single = AgglomerativeClustering(
-            n_clusters=len(np.unique(Y)),
-            metric='precomputed',
-            linkage='single'
-        )
-        pred_labels_single = agglomerative_clustering_single.fit_predict(distance_matrix.cpu().numpy())
-        nmi_single = normalized_mutual_info_score(Y, pred_labels_single)
-        ari_single = adjusted_rand_score(Y, pred_labels_single)
-        results["agglomerative_clustering_single_nmi"] = nmi_single
-        results["agglomerative_clustering_single_ari"] = ari_single
-        if metrics['visualization'] and points_in_manifold:
-            settings = {
-                "plot_manifold_dtype": torch.float64,
-                "dim_red_method": "HoroPCA",
-                "title": "Hyperbolic Embeddings Agglomerative Clustering Single Linkage",
-                "show_origin": True,
-                "save_figure": False,
-                "file_name": "hyperbolic_embeddings",
-                "file_path": None,
-                "file_format": "png",
-            }
-            # Map predicted labels to string labels if available
-            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
-            visualization_labels = map_predicted_labels_to_str_labels(
-                pred_labels_single[pca_sample_indices], 
-                Y_numpy[pca_sample_indices], 
-                str_labels_subset
-            )
-            fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
-            results["agglomerative_clustering_single_hyperbolic_embeddings"] = wandb.Image(fig)
-            plt.close(fig)
-    if metrics.get("agglomerative_clustering_complete", False):
-        # Compute agglomerative clustering metrics
-        agglomerative_clustering_complete = AgglomerativeClustering(
-            n_clusters=len(np.unique(Y)),
-            metric='precomputed',
-            linkage='complete'
-        )
-        pred_labels_complete = agglomerative_clustering_complete.fit_predict(distance_matrix.cpu().numpy())
-        nmi_complete = normalized_mutual_info_score(Y, pred_labels_complete)
-        ari_complete = adjusted_rand_score(Y, pred_labels_complete)
-        results["agglomerative_clustering_complete_nmi"] = nmi_complete
-        results["agglomerative_clustering_complete_ari"] = ari_complete
-        if metrics['visualization'] and points_in_manifold:
-            settings = {
-                    "plot_manifold_dtype": torch.float64,
-                    "dim_red_method": "HoroPCA",
-                    "title": "Hyperbolic Embeddings Agglomerative Clustering Complete Linkage",
-                    "show_origin": True,
-                    "save_figure": False,
-                    "file_name": "hyperbolic_embeddings",
-                    "file_path": None,
-                    "file_format": "png",
-            }
-            # Map predicted labels to string labels if available
-            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
-            visualization_labels = map_predicted_labels_to_str_labels(
-                pred_labels_complete[pca_sample_indices], 
-                Y_numpy[pca_sample_indices], 
-                str_labels_subset
-            )
-            fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
-            results["agglomerative_clustering_complete_hyperbolic_embeddings"] = wandb.Image(fig)
-            plt.close(fig)
-    if metrics.get("agglomerative_clustering_average", False):
-        # Compute agglomerative clustering metrics
-        agglomerative_clustering_average = AgglomerativeClustering(
-            n_clusters=len(np.unique(Y)),
-            metric='precomputed',
-            linkage='average'
-        )
-        pred_labels_average = agglomerative_clustering_average.fit_predict(distance_matrix.cpu().numpy())
-        nmi_average = normalized_mutual_info_score(Y, pred_labels_average)
-        ari_average = adjusted_rand_score(Y, pred_labels_average)
-        results["agglomerative_clustering_average_nmi"] = nmi_average
-        results["agglomerative_clustering_average_ari"] = ari_average
-        if metrics['visualization'] and points_in_manifold:
-            settings = {
-                "plot_manifold_dtype": torch.float64,
-                "dim_red_method": "HoroPCA",
-                "title": "Hyperbolic Embeddings Agglomerative Clustering Average Linkage",
-                "show_origin": True,
-                "save_figure": False,
-                "file_name": "hyperbolic_embeddings",
-                "file_path": None,
-                "file_format": "png",
-            }
-            # Map predicted labels to string labels if available
-            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
-            visualization_labels = map_predicted_labels_to_str_labels(
-                pred_labels_average[pca_sample_indices], 
-                Y_numpy[pca_sample_indices], 
-                str_labels_subset
-            )
-            fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
-            results["agglomerative_clustering_average_hyperbolic_embeddings"] = wandb.Image(fig)
-            plt.close(fig)
-    if metrics.get("agglomerative_clustering_ward", False):
-        # Compute agglomerative clustering metrics
-        #TODO: Implement agglomerative clustering with ward linkage. Sklearn does not support precomputed distance matrix with ward linkage.
-        pass
-    if metrics.get("visualization", False) and points_in_manifold:
-        # Create a figure with the points and labels
-        settings = {
-            "plot_manifold_dtype": torch.float64,
-            "dim_red_method": "HoroPCA",
-            "title": "Hyperbolic Embeddings",
-            "show_origin": True,
-            "save_figure": False,
-            "file_name": "hyperbolic_embeddings",
-            "file_path": None,
-            "file_format": "png",
-        }
-        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-        if str_labels is not None:
-            str_labels_array = np.asarray(str_labels)
-            labels = str_labels_array[pca_sample_indices]
-            # Convert labels to strings to handle cases where they are tuples/arrays (e.g., GTSRB)
-            labels = np.array([str(label) if isinstance(label, (tuple, list, np.ndarray)) else label for label in labels])
-        else:
-            labels = Y_numpy[pca_sample_indices]
-        fig = create_figure(two_d_pts, poincare_64, labels=labels)
-        results["hyperbolic_embeddings"] = wandb.Image(fig)
-        plt.close(fig)
-
-    if metrics.get("nearest_neighbors_accuracy", False):
-        # Compute nearest neighbors accuracy
-        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y, k=1)
-        results["1_nearest_neighbors_accuracy"] = nn_accuracy
-        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y, k=5)
-        results["5_nearest_neighbors_accuracy"] = nn_accuracy
-        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y, k=10)
-        results["10_nearest_neighbors_accuracy"] = nn_accuracy
-        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y, k=100)
-        results["100_nearest_neighbors_accuracy"] = nn_accuracy
-        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y, k=1000)
-        results["1000_nearest_neighbors_accuracy"] = nn_accuracy
-
-    if metrics.get("spectral_clustering", False):
-        affinity_matrix = distance_matrix.cpu().numpy()
-        spectral_clustering = SpectralClustering(
-            n_clusters=len(np.unique(Y)),
-            affinity='precomputed_nearest_neighbors',
-            n_neighbors=metrics.get('spectral_nn', 10),
-            assign_labels='kmeans',
-            random_state=int(torch.get_rng_state()[0].item())
-        )
-
-        #spectral_clustering = HyperbolicSpectralClustering(n_clusters=len(np.unique(Y)))
-        pred_labels_spectral = spectral_clustering.fit_predict(affinity_matrix)
-        nmi_spectral = normalized_mutual_info_score(Y, pred_labels_spectral)
-        ari_spectral = adjusted_rand_score(Y, pred_labels_spectral)
-        results["spectral_clustering_nmi"] = nmi_spectral
-        results["spectral_clustering_ari"] = ari_spectral
-        if metrics['visualization'] and points_in_manifold:
-            settings = {
-                "plot_manifold_dtype": torch.float64,
-                "dim_red_method": "HoroPCA",
-                "title": "Hyperbolic Embeddings Spectral Clustering",
-                "show_origin": True,
-                "save_figure": False,
-                "file_name": "hyperbolic_embeddings",
-                "file_path": None,
-                "file_format": "png",
-            }
-            # Map predicted labels to string labels if available
-            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
-            visualization_labels = map_predicted_labels_to_str_labels(
-                pred_labels_spectral[pca_sample_indices], 
-                Y_numpy[pca_sample_indices], 
-                str_labels_subset
-            )
-            fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
-            results["spectral_clustering_hyperbolic_embeddings"] = wandb.Image(fig)
-            plt.close(fig)
-    if metrics.get("kmeans", False):
-        # Compute k-means clustering metrics
-        kmeans = KMeans(n_clusters=len(np.unique(Y)), n_init='auto', random_state=int(torch.get_rng_state()[0].item()))
-        pred_labels_kmeans = kmeans.fit_predict(X.cpu().numpy())
-        nmi_kmeans = normalized_mutual_info_score(Y, pred_labels_kmeans)
-        ari_kmeans = adjusted_rand_score(Y, pred_labels_kmeans)
-        results["kmeans_nmi"] = nmi_kmeans
-        results["kmeans_ari"] = ari_kmeans
-        if metrics['visualization'] and points_in_manifold:
-            settings = {
-                "plot_manifold_dtype": torch.float64,
-                "dim_red_method": "HoroPCA",
-                "title": "Hyperbolic Embeddings KMeans Clustering",
-                "show_origin": True,
-                "save_figure": False,
-                "file_name": "hyperbolic_embeddings",
-                "file_path": None,
-                "file_format": "png",
-            }
-            # Map predicted labels to string labels if available
-            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
-            visualization_labels = map_predicted_labels_to_str_labels(
-                pred_labels_kmeans[pca_sample_indices], 
-                Y_numpy[pca_sample_indices], 
-                str_labels_subset
-            )
-            fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
-            results["kmeans_hyperbolic_embeddings"] = wandb.Image(fig)
-            plt.close(fig)
-    return results

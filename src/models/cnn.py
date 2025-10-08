@@ -82,6 +82,11 @@ class HyperbolicConvAE(AbstractModel):
         self.enc_conv3 = self.conv_block(64, 128)
         self.pool = nn.MaxPool2d(2, 2)
 
+        # Skip connection layers
+        self.skip1 = nn.Conv2d(32, 32, kernel_size=1, stride=1)
+        self.skip2 = nn.Conv2d(64, 64, kernel_size=1, stride=1)
+        self.skip3 = nn.Conv2d(128, 128, kernel_size=1, stride=1)
+
         flattened_dim = 128 * 4 * 4
         self.enc_flatten = nn.Flatten()
         self.enc_linear = nn.Linear(flattened_dim, 64)
@@ -162,14 +167,17 @@ class HyperbolicConvAE(AbstractModel):
         x = self.dec_unflatten(self.dec_linear(hidden))
         
         x = self.dec_up1(x)
+        s3 = self.skip3(s3)
         x = torch.cat([x, s3], dim=1)
         x = self.dec_conv1(x)
         
         x = self.dec_up2(x)
+        s2 = self.skip2(s2)
         x = torch.cat([x, s2], dim=1)
         x = self.dec_conv2(x)
         
         x = self.dec_up3(x)
+        s1 = self.skip1(s1)
         x = torch.cat([x, s1], dim=1)
         x = self.dec_conv3(x)
 

@@ -103,6 +103,64 @@ class AbstractModel(pl.LightningModule):
         x_recon = self.decode(manifold_z)
         return x_recon, manifold_z
 
+    def compute_contrastive_loss(
+        self, 
+        z_i: torch.Tensor, 
+        z_j: torch.Tensor, 
+        temperature: float = 0.1,
+        use_euclidean: bool = False
+    ) -> torch.Tensor:
+        """
+        Compute simplified NT-Xent (normalized temperature-scaled cross entropy) loss
+        for hyperbolic or Euclidean embeddings. Memory-efficient implementation.
+        
+        Args:
+            z_i: Embeddings from original images, shape (batch_size, latent_dim)
+            z_j: Embeddings from augmented images, shape (batch_size, latent_dim)
+            temperature: Temperature parameter for softmax
+            use_euclidean: If True, use cosine similarity instead of geodesic distance
+                          (useful when z_i, z_j are from projection head in Euclidean space)
+            
+        Returns:
+            Contrastive loss value
+        """
+        batch_size = z_i.shape[0]
+        z_i = z_i.view(batch_size, -1)
+        z_j = z_j.view(batch_size, -1)
+        z = torch.cat([z_i, z_j], dim=0)  # Shape: (2*batch_size, latent_dim)
+        
+        # Compute pairwise distances/similarities
+        if use_euclidean or self.distances_type == 'cosine_similarity':
+            # Use cosine similarity for Euclidean space (SimCLR approach)
+            z_normalized = torch.nn.functional.normalize(z, p=2, dim=-1)
+            similarity_matrix = torch.mm(z_normalized, z_normalized.T) / temperature
+        elif self.distances_type == 'geodesic':
+            # Use geodesic distance for hyperbolic embeddings
+            distance_matrix = compute_pairwise_distances(z, self.manifold, version=self.distances_version)
+            # Clamp distances to prevent numerical instability
+            distance_matrix = distance_matrix.clamp(max=1e5)  # Prevent overflow in exp
+            similarity_matrix = -distance_matrix / temperature
+        else:
+            raise ValueError(f"Invalid distances_type: {self.distances_type}")
+        
+        # Create labels for contrastive loss
+        # For each sample i in first half, positive is at i+batch_size
+        # For each sample i in second half, positive is at i-batch_size
+        labels = torch.cat([torch.arange(batch_size, 2 * batch_size, device=z.device),
+                           torch.arange(0, batch_size, device=z.device)], dim=0)
+        
+        # Mask to remove self-similarities
+        mask = torch.eye(2 * batch_size, dtype=torch.bool, device=z.device)
+        similarity_matrix = similarity_matrix.masked_fill(mask, float('-inf'))
+        
+        # Compute log-softmax
+        log_prob = torch.nn.functional.log_softmax(similarity_matrix, dim=1)
+        
+        # Compute loss
+        loss = -log_prob[torch.arange(2 * batch_size, device=z.device), labels].mean()
+        
+        return loss
+
     def configure_optimizers(self) -> Any:
         if self.optimizer_name == 'RiemannianAdam':
             optimizer = RiemannianAdam(self.parameters(), lr=self.learning_rate, eps=5e-4, expmap_update=True, weight_decay=self.weight_decay)
@@ -134,8 +192,10 @@ class AbstractModel(pl.LightningModule):
                         for label in y:
                             label_value = labels_map[int(label)]
                             # For GTSRB, extract only the coarse/super label (second element of tuple)
+                            # For CIFAR10/CIFAR100_20, the second element is None, so use the first element
                             if isinstance(label_value, tuple) and len(label_value) >= 2:
-                                batch_str_labels.append(label_value[1])  # Use coarse label
+                                # Use coarse label if available, otherwise use fine label
+                                batch_str_labels.append(label_value[1] if label_value[1] is not None else label_value[0])
                             else:
                                 batch_str_labels.append(label_value)
                         str_labels.append(batch_str_labels)

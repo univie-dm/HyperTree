@@ -167,33 +167,12 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             smoothing_factor=cfg.architecture.hyperbolic_smoothing,
             distances_type=cfg.hyphc.distances_type,
             learnable_scale=cfg.architecture.learnable_scale,
-            normalize=cfg.architecture.normalize
+            normalize=cfg.architecture.FHCNN_normalize,
+            distances_version=cfg.hyphc.distances_version,
+            contrastive_enabled=cfg.pretraining.contrastive_loss.enabled,
+            contrastive_weight=cfg.pretraining.contrastive_loss.weight,
+            contrastive_temperature=cfg.pretraining.contrastive_loss.temperature,
         )
-        """
-    elif cfg.architecture.ae_type == 'poincare_resnet':
-            model = PoincareResNet(
-                input_channels=cfg.dataset.channels,
-                params_dtype=cfg.architecture.precision,
-                latent_dim=cfg.architecture.latent_dim,
-                manifold_name=cfg.architecture.manifold_name,
-                manifold_precision=cfg.architecture.manifold_precision,
-                curvature_magnitude=cfg.architecture.curvature_magnitude,
-                trainable_curvature=cfg.pretraining.trainable_curvature,
-                optimizer_name=cfg.experiment.optimizer,
-                learning_rate=cfg.pretraining.learning_rate,
-                log_interval=cfg.experiment.log_interval,
-                evaluation_metrics=cfg.evaluation,
-                hyperbolic_encoding=cfg.architecture.hyperbolic_encoding,
-                hyperbolic_decoding=cfg.architecture.hyperbolic_decoding,
-                distances_type=cfg.hyphc.distances_type,
-                weight_decay=cfg.pretraining.weight_decay,
-                activation_function=cfg.architecture.activation_function,
-                clamping_factor=cfg.architecture.hyperbolic_clamping,
-                smoothing_factor=cfg.architecture.hyperbolic_smoothing,
-                learnable_scale=cfg.architecture.learnable_scale,
-                normalize=cfg.architecture.normalize
-        )
-        """
     else:
         raise ValueError("Invalid autoencoder type")
     return model

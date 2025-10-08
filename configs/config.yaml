@@ -15,6 +15,11 @@ pretraining:
   overwrite: False
   weight_decay: 0.0
   augmentations: False
+  # Contrastive learning parameters
+  contrastive_loss:
+    enabled: False
+    weight: 1.0
+    temperature: 0.5
 
 ## Clustering parameters
 clustering:
@@ -80,6 +85,7 @@ evaluation:
   spectral_clustering: True
   visualization: True
   kmeans: True
+  dasgupta_cost: False
   visualization_sample_size: 5000
 
 ## Logging

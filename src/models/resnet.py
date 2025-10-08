@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from torchvision.models import resnet18, resnet34, resnet50
+import wandb
 from src.models.abstract import AbstractModel
 from src.models.utils import get_dtype_from_precision, get_hyperbolic_encoding_layer_by_name, get_hyperbolic_decoding_layer_by_name
 from src.hyperbolic_math.src.manifolds import Euclidean, Hyperboloid
@@ -79,7 +80,11 @@ class HyperbolicResNet(AbstractModel):
         smoothing_factor: float = 50.0,
         distances_type: str = 'geodesic',
         learnable_scale: bool = False,
-        normalize: bool = False
+        normalize: bool = False,
+        distances_version: str = 'mobius_direct',
+        contrastive_enabled: bool = False,
+        contrastive_weight: float = 0.5,
+        contrastive_temperature: float = 0.1
     ):
         super().__init__(
             model_type=model_type,
@@ -98,13 +103,20 @@ class HyperbolicResNet(AbstractModel):
             global_epoch=global_epoch,
             evaluation_metrics=evaluation_metrics,
             activation_function=activation_function,
-            distances_type=distances_type
+            distances_type=distances_type,
+            distances_version=distances_version
         )
         self.output_size = output_size
         self.clamping_factor = clamping_factor
         self.smoothing_factor = smoothing_factor
         self.learnable_scale = learnable_scale
         self.normalize = normalize
+        self.contrastive_enabled = contrastive_enabled
+        self.contrastive_weight = contrastive_weight
+        self.contrastive_temperature = contrastive_temperature
+
+        self.hidden_dims = [1000, 512, 128, self.latent_dim]
+
         self.save_hyperparameters()
 
         # Decoder params
@@ -120,21 +132,16 @@ class HyperbolicResNet(AbstractModel):
             self.encoder = resnet50(weights=None)
         else:
             raise ValueError(f"Invalid model type: {self.model_type}")
-        
+
         self.projection_head = nn.Sequential(
             nn.Flatten(),
             nn.Linear(1000, 512),
             nn.BatchNorm1d(512),
             self.activation_function,
-            nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
-            self.activation_function,
-            nn.Linear(256, 128),
+            nn.Linear(512, 128),
             nn.BatchNorm1d(128),
             self.activation_function,
-            nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
-            self.activation_function
+            nn.Linear(128, self.latent_dim),
         )
 
         self.encoder = nn.Sequential(self.encoder, self.projection_head)
@@ -143,19 +150,36 @@ class HyperbolicResNet(AbstractModel):
         if isinstance(self.manifold, Euclidean) or hyperbolic_encoding is None:
             print("Using Euclidean manifold or hyperbolic_encoding is 'None', "
                   "hyperbolic encoding layers will default to nn.Linear.", flush=True)
-            self.hyperbolic_encoding_layer = nn.Linear(64, self.latent_dim)
+            self.hyperbolic_encoding_layer = nn.Identity()
         else:
             self.hyperbolic_encoding_layer = get_hyperbolic_encoding_layer_by_name(
                 layer_name=hyperbolic_encoding,
                 manifold=self.manifold,
-                input_dim=64,
+                input_dim=self.latent_dim,
                 output_dim=self.latent_dim,
                 params_dtype=self.params_dtype,
                 clamping_factor=self.clamping_factor,
                 smoothing_factor=self.smoothing_factor,
                 learnable_scale=self.learnable_scale,
-                normalize=self.normalize
+                FHCNN_normalize=self.normalize
             )
+        
+        # Contrastive projection head (separate from encoder, following SimCLR)
+        # This head is only used for contrastive learning and discarded after pretraining
+        if self.contrastive_enabled:
+            print("Adding contrastive projection head for SimCLR-style learning.", flush=True)
+            # Projection dimension - typically same as latent_dim or 2x latent_dim
+            proj_dim = max(128, self.latent_dim * 2)
+            self.contrastive_projection = nn.Sequential(
+                nn.Linear(self.latent_dim + (1 if isinstance(self.manifold, Hyperboloid) else 0), 
+                         proj_dim),
+                nn.BatchNorm1d(proj_dim),
+                self.activation_function,
+                nn.Linear(proj_dim, proj_dim),
+                nn.BatchNorm1d(proj_dim),
+            )
+        else:
+            self.contrastive_projection = nn.Identity()
 
         # Add hyperbolic decoding layer(s)
         if isinstance(self.manifold, Euclidean) or hyperbolic_decoding is None:
@@ -172,7 +196,7 @@ class HyperbolicResNet(AbstractModel):
                 clamping_factor=self.clamping_factor,
                 smoothing_factor=self.smoothing_factor,
                 learnable_scale=self.learnable_scale,
-                normalize=self.normalize
+                FHCNN_normalize=self.normalize
             )
 
         # Decoder
@@ -233,19 +257,75 @@ class HyperbolicResNet(AbstractModel):
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug, x, _ = batch
-        x_recon, _ = self(x)
-        #x_aug_recon, _ = self(x_aug)
-
+        x_recon, z = self(x)
+        
         # Reconstruction loss
         x_recon_loss = F.mse_loss(x_recon, x)
-        #x_aug_recon_loss = F.mse_loss(x_aug_recon, x_aug)
-        #loss = (x_recon_loss + x_aug_recon_loss) / 2
         loss = x_recon_loss
+        
+        # Contrastive loss (if enabled)
+        if self.contrastive_enabled:
+            # Encode augmented images
+            z_aug = self.encode(x_aug)
+            
+            # Apply contrastive projection head (SimCLR-style)
+            # These projections are only used for contrastive loss, not reconstruction
+            z_proj = self.contrastive_projection(z.view(z.size(0), -1))
+            z_aug_proj = self.contrastive_projection(z_aug.view(z_aug.size(0), -1))
+            
+            # Use Euclidean cosine similarity since projection head outputs are in Euclidean space
+            contrastive_loss = self.compute_contrastive_loss(
+                z_proj, z_aug_proj, 
+                temperature=self.contrastive_temperature,
+                use_euclidean=True  # Projection head outputs are Euclidean
+            )
+            loss = loss + self.contrastive_weight * contrastive_loss
+            
+            # Log contrastive-specific metrics
+            self.metrics.setdefault("pretrain/contrastive_loss", []).append(contrastive_loss)
 
         # Logging
         self.metrics.setdefault("pretrain/x_recon_loss", []).append(x_recon_loss)
-        #self.metrics.setdefault("pretrain/x_aug_recon_loss", []).append(x_aug_recon_loss)
         self.metrics.setdefault("pretrain/total_loss", []).append(loss)
-        self.metrics.setdefault("pretrain/c", []).append(self.manifold.c.detach())
+        self.metrics.setdefault("pretrain/c", []).append(self.manifold.c.detach().item() if self.manifold.c.numel() == 1 else self.manifold.c.detach().cpu())
+        self.log('recon_loss', x_recon_loss, prog_bar=True, on_epoch=True, logger=False)
+
+        if batch_idx == 0:
+            self._log_images_to_wandb(x, x_recon)
 
         return loss
+
+    def _log_images_to_wandb(self, x: torch.Tensor, x_recon: torch.Tensor):
+        """Log original and reconstructed images to wandb."""
+        try:
+            x_0 = x[0] + x[0].min().abs()
+            x_0 = x_0 / x_0.max()
+            x_0 = x_0*255.0
+            x_recon_0 = x_recon[0] + x_recon[0].min().abs()
+            x_recon_0 = x_recon_0 / x_recon_0.max()
+            x_recon_0 = x_recon_0*255.0
+            # Convert from [C, H, W] to [H, W, C] for wandb
+            if len(x_0.shape) == 3 and x_0.shape[0] in [1, 3]:  # Check if channels-first
+                x_0_img = x_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
+                x_recon_0_img = x_recon_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
+                if x_0_img.shape[2] == 1:  # Grayscale, squeeze channel dim
+                    x_0_img = x_0_img.squeeze(2)
+                    x_recon_0_img = x_recon_0_img.squeeze(2)
+            else:
+                x_0_img = x_0.cpu().numpy().astype("uint8")
+                x_recon_0_img = x_recon_0.cpu().numpy().astype("uint8")
+
+            x_combined = torch.cat((x[0], x_recon[0]), dim=2)  # Concatenate along width
+            x_combined = x_combined + x_combined.min().abs()
+            x_combined = x_combined / x_combined.max()
+            x_combined = x_combined*255.0
+            if len(x_combined.shape) == 3 and x_combined.shape[0] in [1, 3]:  # Check if channels-first
+                x_combined_img = x_combined.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
+                if x_combined_img.shape[2] == 1:  # Grayscale, squeeze channel dim
+                    x_combined_img = x_combined_img.squeeze(2)
+            else:
+                x_combined_img = x_combined.cpu().numpy().astype("uint8")
+            self.metrics['test/image'] = wandb.Image(x_combined_img, caption="image")
+        except Exception as e:
+            print(f"Error logging images to wandb: {e}", flush=True)
+            pass

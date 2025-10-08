@@ -339,7 +339,7 @@ class HyperbolicHCModel(AbstractModel):
         x = self.hyperbolic_decoding_layer(manifold_z)
         # Cast back from the manifold precision to the model's precision
         x = x.to(dtype=get_dtype_from_precision(self.params_dtype))
-        if self.model_type in ['resnet18', 'resnet34']:
+        if self.model_type in ['resnet18', 'resnet34', 'resnet50']:
             x = x.view(-1, 512 * self.expansion, 4, 4)
         elif self.model_type == 'poincare_resnet_ae':
             x = x.view(-1, 64, 8, 8)

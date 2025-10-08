@@ -159,20 +159,33 @@ class ColorDataModule(pl.LightningDataModule):
                 transforms.RandomResizedCrop(224, scale=(0.08, 1.0)),
                 transforms.RandomHorizontalFlip(),
                 transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
-                transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
+                transforms.RandomApply([transforms.GaussianBlur(kernel_size=23, sigma=(0.1, 2.0))], p=0.5),
                 transforms.ToTensor(),
                 normalize_fn
             ])
-        else:
+        elif self.dataset_name == "gtsrb":
+            # GTSRB specific augmentation (already resized to 32x32)
             aug_transform = transforms.Compose([
-                *transform_list[:-2],
-                transforms.RandomResizedCrop((self.resize, self.resize) if self.resize else (32, 32)),
+                transforms.RandomResizedCrop(32, scale=(0.6, 1.0)),
                 transforms.RandomApply([
                     transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
                     p=0.8),
                 transforms.RandomGrayscale(p=0.2),
                 transforms.RandomHorizontalFlip(p=0.5),
-                transforms.RandomSolarize(threshold=0.5, p=0.2),
+                transforms.RandomRotation(degrees=15),
+                transforms.ToTensor(),
+                normalize_fn
+            ])
+        else:
+            # CIFAR and other datasets augmentation
+            aug_transform = transforms.Compose([
+                *transform_list[:-2],
+                transforms.RandomResizedCrop((self.resize, self.resize) if self.resize else (32, 32), scale=(0.6, 1.0)),
+                transforms.RandomApply([
+                    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
+                    p=0.8),
+                transforms.RandomGrayscale(p=0.2),
+                transforms.RandomHorizontalFlip(p=0.5),
                 transforms.ToTensor(),
                 normalize_fn
             ])
