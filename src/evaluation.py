@@ -73,7 +73,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
         points_sampled = X[pca_sample_indices]
 
         
-        poincare_64 = PoincareBall(c=manifold.c.to(settings['plot_manifold_dtype']), dtype=settings['plot_manifold_dtype'])
+        poincare_64 = PoincareBall(c=manifold.c.detach().to(settings['plot_manifold_dtype']), dtype=settings['plot_manifold_dtype'])
         if manifold.name == 'PoincareBall':
             points_sampled = poincare_64.to_hyperboloid(points_sampled)
         points_sampled = points_sampled.to(torch.float64)
