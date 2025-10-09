@@ -84,7 +84,8 @@ class HyperbolicResNet(AbstractModel):
         distances_version: str = 'mobius_direct',
         contrastive_enabled: bool = False,
         contrastive_weight: float = 0.5,
-        contrastive_temperature: float = 0.1
+        contrastive_temperature: float = 0.1,
+        lr_scheduler_params: dict | None = None
     ):
         super().__init__(
             model_type=model_type,
@@ -104,7 +105,8 @@ class HyperbolicResNet(AbstractModel):
             evaluation_metrics=evaluation_metrics,
             activation_function=activation_function,
             distances_type=distances_type,
-            distances_version=distances_version
+            distances_version=distances_version,
+            lr_scheduler_params=lr_scheduler_params
         )
         self.output_size = output_size
         self.clamping_factor = clamping_factor
@@ -257,7 +259,7 @@ class HyperbolicResNet(AbstractModel):
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug, x, _ = batch
-        x_recon, z = self(x)
+        x_recon, z = self(x)        
         
         # Reconstruction loss
         x_recon_loss = F.mse_loss(x_recon, x)
@@ -289,18 +291,23 @@ class HyperbolicResNet(AbstractModel):
         self.metrics.setdefault("pretrain/total_loss", []).append(loss)
         self.metrics.setdefault("pretrain/c", []).append(self.manifold.c.detach().item() if self.manifold.c.numel() == 1 else self.manifold.c.detach().cpu())
         self.log('recon_loss', x_recon_loss, prog_bar=True, on_epoch=True, logger=False)
+        self.log("loss", loss, logger=False, prog_bar=True, on_epoch=True, on_step=False)
 
         if batch_idx == 0:
-            self._log_images_to_wandb(x, x_recon)
+            self._log_images_to_wandb(x, x_recon, x_aug if self.contrastive_enabled else None)
 
         return loss
 
-    def _log_images_to_wandb(self, x: torch.Tensor, x_recon: torch.Tensor):
+    def _log_images_to_wandb(self, x: torch.Tensor, x_recon: torch.Tensor, x_aug: torch.Tensor = None):
         """Log original and reconstructed images to wandb."""
         try:
             x_0 = x[0] + x[0].min().abs()
             x_0 = x_0 / x_0.max()
             x_0 = x_0*255.0
+            x_aug_0 = x_aug[0] + x_aug[0].min().abs() if x_aug is not None else None
+            if x_aug_0 is not None:
+                x_aug_0 = x_aug_0 / x_aug_0.max()
+                x_aug_0 = x_aug_0*255.0
             x_recon_0 = x_recon[0] + x_recon[0].min().abs()
             x_recon_0 = x_recon_0 / x_recon_0.max()
             x_recon_0 = x_recon_0*255.0
@@ -308,14 +315,24 @@ class HyperbolicResNet(AbstractModel):
             if len(x_0.shape) == 3 and x_0.shape[0] in [1, 3]:  # Check if channels-first
                 x_0_img = x_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
                 x_recon_0_img = x_recon_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
+                if x_aug_0 is not None:
+                    x_aug_0_img = x_aug_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
+                    if x_aug_0_img.shape[2] == 1:  # Grayscale, squeeze channel dim
+                        x_aug_0_img = x_aug_0_img.squeeze(2)
                 if x_0_img.shape[2] == 1:  # Grayscale, squeeze channel dim
                     x_0_img = x_0_img.squeeze(2)
                     x_recon_0_img = x_recon_0_img.squeeze(2)
+                    if x_aug_0 is not None:
+                        x_aug_0_img = x_aug_0_img.squeeze(2)
             else:
                 x_0_img = x_0.cpu().numpy().astype("uint8")
                 x_recon_0_img = x_recon_0.cpu().numpy().astype("uint8")
-
-            x_combined = torch.cat((x[0], x_recon[0]), dim=2)  # Concatenate along width
+                if x_aug_0 is not None:
+                    x_aug_0_img = x_aug_0.cpu().numpy().astype("uint8")
+            if x_aug_0 is not None:
+                x_combined = torch.cat((x_0, x_aug_0, x_recon_0), dim=2)  # Concatenate along width
+            else:
+                x_combined = torch.cat((x_0, x_recon_0), dim=2)  # Concatenate along width
             x_combined = x_combined + x_combined.min().abs()
             x_combined = x_combined / x_combined.max()
             x_combined = x_combined*255.0

@@ -34,7 +34,8 @@ class AbstractModel(pl.LightningModule):
         distances_type: str = 'geodesic',
         evaluation_metrics: dict[str, bool] = {},
         activation_function: str = 'relu',
-        distances_version: str = 'mobius_direct'
+        distances_version: str = 'mobius_direct',
+        lr_scheduler_params: dict | None = None,
     ):
         super().__init__()
         self.model_type = model_type
@@ -82,6 +83,8 @@ class AbstractModel(pl.LightningModule):
         self.distances_type = distances_type
         self.evaluation_metrics = evaluation_metrics
         self.weight_decay = weight_decay
+        self.lr_scheduler_params = lr_scheduler_params
+        self.save_hyperparameters()
 
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
@@ -168,7 +171,26 @@ class AbstractModel(pl.LightningModule):
             optimizer = RiemannianSGD(self.parameters(), lr=self.learning_rate, momentum=0.9, expmap_update=True, weight_decay=self.weight_decay)
         else:
             raise ValueError(f"Invalid optimizer name: {self.optimizer_name}")
-        return optimizer
+
+        if self.lr_scheduler_params is None:
+            return optimizer
+        if self.lr_scheduler_params['type'] is None:
+            return optimizer
+        elif self.lr_scheduler_params['type'] == 'warmup_cosine':
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                optimizer,
+                T_0=self.lr_scheduler_params['interval'],
+                eta_min=self.lr_scheduler_params['cosine_min_factor'] * self.learning_rate,
+            )
+        elif self.lr_scheduler_params['type'] == 'ReduceLROnPlateau':
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, 
+                mode=self.lr_scheduler_params.get('mode', 'min'), 
+                factor=self.lr_scheduler_params.get('factor', 0.1), 
+                patience=self.lr_scheduler_params.get('patience', 10))
+        else:
+            raise ValueError(f"Invalid scheduler name: {self.lr_scheduler_params['scheduler_name']}")
+        return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": 'loss'}
 
     def test_phase(self) -> None:
         if not isinstance(self.logger, WandbLogger):
@@ -240,6 +262,7 @@ class AbstractModel(pl.LightningModule):
     def on_train_start(self) -> None:
         self.test_phase()
         self.metrics[f'{self.stage}/epoch'] = self.current_epoch
+        self.metrics[f'{self.stage}/lr'] = self.optimizers().param_groups[0]['lr']
         for key, value in self.metrics.items():
             if isinstance(value, list):
                 self.metrics[key] = sum(value) / len(value)

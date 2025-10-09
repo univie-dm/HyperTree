@@ -88,7 +88,14 @@ class HyperbolicHCModel(AbstractModel):
         self.decoder.load_state_dict(ae_model.decoder.state_dict())
 
     def configure_optimizers(self) -> Any:
-        optimizer = super().configure_optimizers()
+        parent_result = super().configure_optimizers()
+        
+        # Extract optimizer from parent result (could be dict or optimizer object)
+        if isinstance(parent_result, dict):
+            optimizer = parent_result['optimizer']
+        else:
+            optimizer = parent_result
+            
         if self.lr_scheduler_params is not None:
             if self.lr_scheduler_params['type'] == 'warmup_cosine':
                 scheduler = CosineAnnealingWarmRestarts(
@@ -105,7 +112,9 @@ class HyperbolicHCModel(AbstractModel):
                     }
                 }
             else:
-                return optimizer
+                return parent_result
+        else:
+            return parent_result
 
     def _calculate_probabilistic_coverage_samples(self, n: int) -> int:
         """
@@ -381,7 +390,6 @@ class HyperbolicHCModel(AbstractModel):
         self.metrics.setdefault("clustering/similarties_sum", []).append(similarties_sum)
         self.metrics.setdefault("clustering/total_loss", []).append(total_loss)
         self.metrics.setdefault('clustering/c', []).append(self.manifold.c.item())
-        self.metrics.setdefault('clustering/lr', []).append(self.optimizers().param_groups[0]['lr'])
         self.metrics['latent_space/mean'] = manifold_z.mean().item()
         self.metrics['latent_space/std'] = manifold_z.std().item()
         self.metrics['latent_space/max'] = manifold_z.max().item()

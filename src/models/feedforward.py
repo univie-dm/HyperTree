@@ -35,7 +35,8 @@ class HyperbolicAE(AbstractModel):
         learnable_scale: bool = False,
         FHCNN_normalize: bool = False,
         distances_version: str = 'mobius_direct',
-        spectral_normalization: bool = False
+        spectral_normalization: bool = False,
+        lr_scheduler_params: dict | None = None
     ):
         super().__init__(
             model_type='feedforward',
@@ -55,7 +56,8 @@ class HyperbolicAE(AbstractModel):
             evaluation_metrics=evaluation_metrics,
             activation_function=activation_function,
             distances_type=distances_type,
-            distances_version=distances_version
+            distances_version=distances_version,
+            lr_scheduler_params=lr_scheduler_params
         )
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
@@ -171,5 +173,6 @@ class HyperbolicAE(AbstractModel):
         #self.metrics.setdefault("pretrain/x_aug_recon_loss", []).append(x_aug_recon_loss)
         self.metrics.setdefault("pretrain/total_loss", []).append(loss)
         self.metrics.setdefault("pretrain/c", []).append(self.manifold.c.detach())
+        self.log("loss", loss, logger=False, prog_bar=True, on_epoch=True, on_step=False)
 
         return loss

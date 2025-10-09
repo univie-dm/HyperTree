@@ -190,3 +190,5 @@ sbatch_kmnist.sh
 sbatch_hyperboloid_mnist.sh
 figure_gen.py
 lca_paper_plot.svg
+generated_jobs/
+slurm/

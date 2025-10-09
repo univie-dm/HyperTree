@@ -179,13 +179,15 @@ class ColorDataModule(pl.LightningDataModule):
         else:
             # CIFAR and other datasets augmentation
             aug_transform = transforms.Compose([
-                *transform_list[:-2],
-                transforms.RandomResizedCrop((self.resize, self.resize) if self.resize else (32, 32), scale=(0.6, 1.0)),
-                transforms.RandomApply([
-                    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
-                    p=0.8),
-                transforms.RandomGrayscale(p=0.2),
+                transforms.RandomResizedCrop(size=self.resize if self.resize else 32, scale=(0.2, 1.0)),
                 transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomApply([
+                    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)
+                ], p=0.8),
+                transforms.RandomGrayscale(p=0.2),
+                transforms.RandomApply([
+                    transforms.GaussianBlur(kernel_size=3)
+                ], p=0.5),
                 transforms.ToTensor(),
                 normalize_fn
             ])
@@ -222,7 +224,7 @@ class ColorDataModule(pl.LightningDataModule):
             base_test.targets = [label for i, label in enumerate(base_test.targets) if test_mask[i]]
 
         if self.subset == 'all':
-            self.train_dataset = MultiViewDataset(base_train, base_transform, base_transform)
+            self.train_dataset = MultiViewDataset(base_train, base_transform, aug_transform if self.use_augmentations else base_transform)
             self.test_dataset = MultiViewDataset(base_test, base_transform, base_transform)
             self.full_dataset = torch.utils.data.ConcatDataset([self.train_dataset, self.test_dataset])
         elif self.subset == 'smallest':
@@ -466,7 +468,7 @@ class GrayScaleDataModule(pl.LightningDataModule):
             base_test.data = base_test.data[test_mask]
             base_test.targets = [label for i, label in enumerate(base_test.targets) if test_mask[i]]
         if self.subset == 'all':
-            self.train_dataset = MultiViewDataset(base_train, base_transform, base_transform)
+            self.train_dataset = MultiViewDataset(base_train, base_transform, aug_transform if self.use_augmentations else base_transform)
             self.test_dataset = MultiViewDataset(base_test, base_transform, base_transform)
             self.full_dataset = torch.utils.data.ConcatDataset([self.train_dataset, self.test_dataset])
         elif self.subset == 'smallest':

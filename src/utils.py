@@ -121,7 +121,8 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             learnable_scale=cfg.architecture.learnable_scale,
             FHCNN_normalize=cfg.architecture.FHCNN_normalize,
             distances_version=cfg.hyphc.distances_version,
-            spectral_normalization=cfg.architecture.spectral_normalization
+            spectral_normalization=cfg.architecture.spectral_normalization,
+            lr_scheduler_params=cfg.pretraining.get('lr_scheduler', None),
         )
     elif cfg.architecture.ae_type == 'convolutional':
         model = HyperbolicConvAE(
@@ -144,7 +145,8 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             clamping_factor=cfg.architecture.hyperbolic_clamping,
             smoothing_factor=cfg.architecture.hyperbolic_smoothing,
             learnable_scale=cfg.architecture.learnable_scale,
-            FHCNN_normalize=cfg.architecture.FHCNN_normalize
+            FHCNN_normalize=cfg.architecture.FHCNN_normalize,
+            lr_scheduler_params=cfg.pretraining.get('lr_scheduler', None),
         )
     elif cfg.architecture.ae_type in ['resnet18', 'resnet34', 'resnet50']:
         model = HyperbolicResNet(
@@ -172,6 +174,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             contrastive_enabled=cfg.pretraining.contrastive_loss.enabled,
             contrastive_weight=cfg.pretraining.contrastive_loss.weight,
             contrastive_temperature=cfg.pretraining.contrastive_loss.temperature,
+            lr_scheduler_params=cfg.pretraining.get('lr_scheduler', None),
         )
     else:
         raise ValueError("Invalid autoencoder type")

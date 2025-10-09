@@ -20,6 +20,11 @@ pretraining:
     enabled: False
     weight: 1.0
     temperature: 0.5
+  lr_scheduler:
+    type: # 'warmup_cosine', 'ReduceLROnPlateau'
+    interval: 40  # Number of epochs for warmup phase
+    cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
+    patience: 20 # Number of epochs
 
 ## Clustering parameters
 clustering:
@@ -34,6 +39,7 @@ clustering:
     type: # 'warmup_cosine'
     interval: 40  # Number of epochs for warmup phase
     cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
+    patience: 20 # Number of epochs
 
 ## HypHC parameters
 hyphc:

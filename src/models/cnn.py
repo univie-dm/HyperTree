@@ -44,7 +44,8 @@ class HyperbolicConvAE(AbstractModel):
         clamping_factor: float = 1.0,
         smoothing_factor: float = 50.0,
         learnable_scale: bool = False,
-        FHCNN_normalize: bool = False
+        FHCNN_normalize: bool = False,
+        lr_scheduler_params: dict = None,
     ):
         super().__init__(
             model_type='convolutional',
