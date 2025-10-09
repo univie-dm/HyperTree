@@ -35,11 +35,12 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "hyperbolic_smoothing" : cfg.architecture.hyperbolic_smoothing,
         "learnable_scale": cfg.architecture.learnable_scale,
         "FHCNN_normalize": cfg.architecture.FHCNN_normalize,
+        "spectral_normalization" : cfg.architecture.get('spectral_normalization', False),
+        "lr_scheduler_pretrain": cfg.pretraining.get('lr_scheduler', None),
         # Dataset specific attributes
         "dataset_name" : cfg.dataset.name,
         "selected_classes" : cfg.dataset.get('selected_classes', None),
         "dataset_subset" : cfg.dataset.get('subset', None),
-        "spectral_normalization" : cfg.architecture.get('spectral_normalization', False),
     }
     return md5(str(attr).encode()).hexdigest()
 

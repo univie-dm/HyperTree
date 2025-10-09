@@ -163,6 +163,7 @@ def create_array_script(combinations, sweep_config, sbatch_config, output_path):
     lines.append(f"#SBATCH -c {sbatch_config['cpus']}")
     lines.append(f"#SBATCH --mem={sbatch_config['mem']}")
     lines.append(f"#SBATCH --gres={sbatch_config['gres']}")
+    lines.append(f"#SBATCH --constraint={sbatch_config.get('constraint', '')}")
     lines.append(f"#SBATCH --array=0-{len(combinations)-1}")
     
     output_dir = sbatch_config.get('output_dir', 'logs')

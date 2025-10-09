@@ -274,6 +274,7 @@ class AbstractModel(pl.LightningModule):
     def on_train_end(self) -> None:
         self.test_phase()
         self.metrics[f'{self.stage}/epoch'] = self.current_epoch
+        self.metrics[f'{self.stage}/lr'] = self.optimizers().param_groups[0]['lr']
         for key, value in self.metrics.items():
             if isinstance(value, list):
                 self.metrics[key] = sum(value) / len(value)
@@ -286,6 +287,7 @@ class AbstractModel(pl.LightningModule):
         if self.current_epoch > 0:
             self.test_phase()
         self.metrics[f'{self.stage}/epoch'] = self.current_epoch+1
+        self.metrics[f'{self.stage}/lr'] = self.optimizers().param_groups[0]['lr']
         for key, value in self.metrics.items():
             if isinstance(value, list):
                 self.metrics[key] = sum(value) / len(value)
