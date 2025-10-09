@@ -192,3 +192,6 @@ figure_gen.py
 lca_paper_plot.svg
 generated_jobs/
 slurm/
+sbatch_config.yaml
+sweep.py
+sweep.yaml
