@@ -1,7 +1,7 @@
 ## Training parameters
 experiment:
   seed: 400
-  num_workers: 15
+  num_workers: 8
   batch_size: 512
   log_interval: 10
   optimizer: 'RiemannianAdam' # 'RiemannianAdam', 'RiemannianSGD'
@@ -56,7 +56,7 @@ hyphc:
 
 ## Model architecture
 architecture:
-  ae_type: 'feedforward' # 'feedforward', 'convolutional', 'resnet18', 'resnet34', 'resnet50', 'poincare_resnet'
+  ae_type: 'feedforward' # 'feedforward', 'convolutional', 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152'
   hidden_dims: [512, 256, 64, 16]
   latent_dim: 10 # Hyperboloid automatically uses latent_dim + 1, i.e. latent_dim actually refers to the dimension of the hyperbolic manifold
   hyperbolic_encoding: 'HyperbolicLinearPP' # 'EuclideanLinear_Exp'
@@ -66,7 +66,7 @@ architecture:
                                              # Hyperboloid: 'HyperbolicLinear_Log', 'HyperbolicLinearHyperboloidFHNN_Log', 'HyperbolicLinearHyperboloidFHCNN_Log', 'HyperbolicRegression'
                                              # Poincare: 'HyperbolicLinear_Log', 'HyperbolicLinearPP_Log', 'HyperbolicRegression', 'HyperbolicRegressionPP'
   precision: 'float64' # 'float32', 'float64'
-  manifold_name: 'Hyperboloid' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
+  manifold_name: 'PoincareBall' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
   manifold_precision: 'float64' # 'float32', 'float64'
   curvature_magnitude: 1.0
   activation_function: 'relu' #'relu', 'swish'

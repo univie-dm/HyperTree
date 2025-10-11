@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from torchvision.models import resnet18, resnet34, resnet50
+from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
 import wandb
 from src.models.abstract import AbstractModel
 from src.models.utils import get_dtype_from_precision, get_hyperbolic_encoding_layer_by_name, get_hyperbolic_decoding_layer_by_name
@@ -132,6 +132,10 @@ class HyperbolicResNet(AbstractModel):
             self.encoder = resnet34(weights=None)
         elif self.model_type == 'resnet50':
             self.encoder = resnet50(weights=None)
+        elif self.model_type == 'resnet101':
+            self.encoder = resnet101(weights=None)
+        elif self.model_type == 'resnet152':
+            self.encoder = resnet152(weights=None)
         else:
             raise ValueError(f"Invalid model type: {self.model_type}")
 

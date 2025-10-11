@@ -255,13 +255,13 @@ class ColorDataModule(pl.LightningDataModule):
             raise RuntimeError("Dataset not initialized. Please call setup() first.")
 
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True,
-                          num_workers=self.num_workers)
+                          num_workers=self.num_workers, pin_memory=True)
 
     def test_dataloader(self) -> DataLoader:
         if self.test_dataset is None:
             raise RuntimeError("Dataset not initialized. Please call setup() first.")
         return DataLoader(self.test_dataset, batch_size=self.batch_size,
-                          num_workers=self.num_workers)
+                          num_workers=self.num_workers, pin_memory=True)
 
     @staticmethod
     def _get_coarse_label(fine_label):
@@ -492,11 +492,11 @@ class GrayScaleDataModule(pl.LightningDataModule):
         else:
             dataset = self.train_dataset
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True,
-                          num_workers=self.num_workers)
+                          num_workers=self.num_workers, pin_memory=True)
 
     def test_dataloader(self) -> DataLoader:
         return DataLoader(self.test_dataset, batch_size=self.batch_size,
-                          num_workers=self.num_workers)
+                          num_workers=self.num_workers, pin_memory=True)
 
     def get_class_names(self) -> Union[None, dict]:
         # For MNIST:
