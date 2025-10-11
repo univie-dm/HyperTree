@@ -149,7 +149,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             FHCNN_normalize=cfg.architecture.FHCNN_normalize,
             lr_scheduler_params=cfg.pretraining.get('lr_scheduler', None),
         )
-    elif cfg.architecture.ae_type in ['resnet18', 'resnet34', 'resnet50']:
+    elif cfg.architecture.ae_type in ['resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152']:
         model = HyperbolicResNet(
             model_type=cfg.architecture.ae_type,
             hyperbolic_encoding=cfg.architecture.hyperbolic_encoding,
