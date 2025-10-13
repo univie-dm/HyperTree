@@ -191,7 +191,9 @@ def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[Hyperb
         stage='clustering',
         global_epoch=cfg.pretraining.epochs,
         lr_scheduler_params=cfg.clustering.lr_scheduler if hasattr(cfg.clustering, 'lr_scheduler') else None,
-        hyphc_weight=cfg.hyphc.loss_weight,
+        hyphc_start_weight=cfg.hyphc.min_loss_weight,
+        hyphc_end_weight=cfg.hyphc.max_loss_weight,
+        hyphc_weight_interval=cfg.hyphc.loss_weight_interval,
         hyphc_temperature=cfg.hyphc.temperature,
         hyphc_sampling_strategy=cfg.hyphc.sampling_strategy,
         hyphc_triplet_subsampling_size=cfg.hyphc.triplet_subsampling_size,
@@ -201,7 +203,11 @@ def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[Hyperb
         distances_type=cfg.hyphc.distances_type,
         hyphc_dist_sum_loss=cfg.hyphc.dist_sum_loss,
         evaluation_metrics=cfg.evaluation,
-        distances_version=cfg.hyphc.distances_version
+        distances_version=cfg.hyphc.distances_version,
+        freeze_encoder=cfg.clustering.freeze_encoder,
+        contrastive_enabled=cfg.clustering.contrastive_loss.enabled,
+        contrastive_weight=cfg.clustering.contrastive_loss.weight,
+        contrastive_temperature=cfg.clustering.contrastive_loss.temperature
     )
     return model
 

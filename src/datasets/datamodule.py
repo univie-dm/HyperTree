@@ -1,5 +1,3 @@
-from email.mime import base
-from sympy import use
 import torch
 import pytorch_lightning as pl
 import numpy as np
@@ -227,7 +225,7 @@ class ColorDataModule(pl.LightningDataModule):
             self.train_dataset = MultiViewDataset(base_train, base_transform, aug_transform if self.use_augmentations else base_transform)
             self.test_dataset = MultiViewDataset(base_test, base_transform, base_transform)
             self.full_dataset = torch.utils.data.ConcatDataset([self.train_dataset, self.test_dataset])
-        elif self.subset == 'smallest':
+        elif self.subset == 'test':
             self.train_dataset = MultiViewDataset(base_test, base_transform, aug_transform)
             self.test_dataset = MultiViewDataset(base_test, base_transform, base_transform)
             self.full_dataset = self.test_dataset  # Don't concatenate for 'smallest'

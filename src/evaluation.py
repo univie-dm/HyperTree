@@ -16,10 +16,9 @@ from sklearn.neighbors import kneighbors_graph
 from scipy.sparse import csgraph, identity
 from collections import Counter
 
-from src.hyperbolic_math.src.manifolds import Hyperboloid, PoincareBall, Manifold
+from src.hyperbolic_math.src.manifolds import PoincareBall, Manifold
 from src.hyperbolic_math.src.utils.helpers import get_delta
 from src.hyperbolic_math.src.utils.vis_utils import create_figure, pointsTo2dPoincare
-from src.hyperbolic_math.src.utils.horo_pca import compute_frechet_mean, center_data
 
 
 def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
@@ -440,7 +439,6 @@ def map_predicted_labels_to_str_labels(predicted_labels: np.ndarray, true_labels
         # Get indices of points in this cluster
         cluster_mask = predicted_labels == cluster_id
         cluster_true_labels = true_labels[cluster_mask]
-        cluster_str_labels = str_labels[cluster_mask]
         
         # Find the most common string label in this cluster via majority vote on true labels
         true_label_counts = Counter(cluster_true_labels)
@@ -650,7 +648,6 @@ class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
         """
         if D.shape[0] != D.shape[1]:
             raise ValueError("Input D must be a square distance matrix.")
-        n_samples = D.shape[0]
 
         # Step 1: Construct the affinity matrix
         if self.affinity == 'rbf':

@@ -25,7 +25,9 @@ class HyperbolicHCModel(AbstractModel):
         stage: str = 'clustering',
         global_epoch: int = 0,
         lr_scheduler_params: dict | None = None,
-        hyphc_weight: float = 1.0,
+        hyphc_start_weight: float = 1.0,
+        hyphc_end_weight: float = 1.0,
+        hyphc_weight_interval: int = 0,
         hyphc_temperature: float = 0.05,
         hyphc_sampling_strategy: str = 'all_subsample_triplets',
         hyphc_triplet_subsampling_size: int = 100,
@@ -35,7 +37,11 @@ class HyperbolicHCModel(AbstractModel):
         distances_type: str = 'geodesic',
         hyphc_dist_sum_loss: bool = True,
         evaluation_metrics: dict[str, bool] = {},
-        distances_version: str = 'mobius_direct'
+        distances_version: str = 'mobius_direct',
+        freeze_encoder: bool = False,
+        contrastive_enabled: bool = False,
+        contrastive_weight: float = 0.1,
+        contrastive_temperature: float = 0.5
     ):
         super().__init__(
             model_type=ae_model.model_type,
@@ -59,7 +65,9 @@ class HyperbolicHCModel(AbstractModel):
         )
         self.orginal_input_shape = ae_model.orginal_input_shape
         # HypHC parameters
-        self.hyphc_weight = hyphc_weight
+        self.hyphc_start_weight = hyphc_start_weight
+        self.hyphc_end_weight = hyphc_end_weight
+        self.hyphc_weight_interval = hyphc_weight_interval
         self.hyphc_temperature = hyphc_temperature
         self.hyphc_sampling_strategy = hyphc_sampling_strategy
         self.hyphc_triplet_subsampling_delta = hyphc_triplet_subsampling_delta
@@ -69,6 +77,9 @@ class HyperbolicHCModel(AbstractModel):
         self.distances_type = distances_type
         self.hyphc_dist_sum_loss = hyphc_dist_sum_loss
         self.lr_scheduler_params = lr_scheduler_params
+        self.contrastive_enabled = contrastive_enabled
+        self.contrastive_weight = contrastive_weight
+        self.contrastive_temperature = contrastive_temperature
 
         # Load encoding and decoding modules with their weights
         self.encoder: torch.nn.Sequential = ae_model.encoder
@@ -86,6 +97,17 @@ class HyperbolicHCModel(AbstractModel):
         self.hyperbolic_encoding_layer.load_state_dict(ae_model.hyperbolic_encoding_layer.state_dict())
         self.hyperbolic_decoding_layer.load_state_dict(ae_model.hyperbolic_decoding_layer.state_dict())
         self.decoder.load_state_dict(ae_model.decoder.state_dict())
+        
+        if freeze_encoder:
+            for param in self.encoder.parameters():
+                param.requires_grad = False
+                
+        if hyphc_end_weight < 0 or hyphc_start_weight < 0:
+            raise ValueError("hyphc_start_weight and hyphc_end_weight must be non-negative.")
+        if hyphc_weight_interval < 0:
+            raise ValueError("hyphc_weight_interval must be non-negative.")
+        if hyphc_start_weight > hyphc_end_weight:
+            raise ValueError("hyphc_start_weight must be less than or equal to hyphc_end_weight.")
 
     def configure_optimizers(self) -> Any:
         parent_result = super().configure_optimizers()
@@ -202,7 +224,6 @@ class HyperbolicHCModel(AbstractModel):
                 raise ValueError(f"Unsupported manifold: {self.manifold}")
 
             lca_depth = self.manifold.dist_0(lca, version=self.distances_version)
-            center = torch.zeros_like(lca).to(x.device)
 
             # Compute the cosine of the angles at the origin in the triangles {x, origin, c}, {y, origin, c}  {x, origin, y}
             xlca = (x * lca).sum(dim=-1, keepdim=True)
@@ -336,7 +357,7 @@ class HyperbolicHCModel(AbstractModel):
 
         return total_loss, triplet_loss, similarties_sum, normalized_loss
 
-    def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
         if self.model_type == 'feedforward':
             x = x.view(x.size(0), -1)
         hidden = self.encoder(x)
@@ -377,9 +398,34 @@ class HyperbolicHCModel(AbstractModel):
             hyphc_loss = normalized_loss
         else:
             hyphc_loss = standard_hyphc_loss
+            
+        hyphc_loss_weight = self.hyphc_start_weight
+        if self.hyphc_weight_interval > 0:
+            hyphc_loss_weight = self.hyphc_start_weight + (self.hyphc_end_weight - self.hyphc_start_weight) * min(self.current_epoch / self.hyphc_weight_interval, 1.0)
+        else:
+            hyphc_loss_weight = self.hyphc_end_weight
 
         # Compute total loss
-        total_loss = recon_loss + hyphc_loss * self.hyphc_weight
+        total_loss = recon_loss + hyphc_loss * hyphc_loss_weight
+        
+        if self.contrastive_enabled:
+            # Encode the augmented view to get its hyperbolic embedding
+            manifold_z_aug = self.encode(x_aug)
+
+            # Compute the hyperbolic contrastive loss using the parent method
+            # We set use_euclidean=False to use geodesic distance
+            contrastive_loss = self.compute_contrastive_loss(
+                z_i=manifold_z,
+                z_j=manifold_z_aug,
+                temperature=self.contrastive_temperature,
+                use_euclidean=False  # This makes it a hyperbolic contrastive loss
+            )
+
+            # Add the weighted contrastive loss to the total loss
+            total_loss = total_loss + self.contrastive_weight * contrastive_loss
+            
+            # Log the new loss for monitoring
+            self.metrics.setdefault("clustering/contrastive_loss", []).append(contrastive_loss)
 
         # Logging
         self.metrics.setdefault("clustering/recon_loss", []).append(recon_loss)
@@ -390,10 +436,12 @@ class HyperbolicHCModel(AbstractModel):
         self.metrics.setdefault("clustering/similarties_sum", []).append(similarties_sum)
         self.metrics.setdefault("clustering/total_loss", []).append(total_loss)
         self.metrics.setdefault('clustering/c', []).append(self.manifold.c.item())
-        self.metrics['latent_space/mean'] = manifold_z.mean().item()
-        self.metrics['latent_space/std'] = manifold_z.std().item()
-        self.metrics['latent_space/max'] = manifold_z.max().item()
-        self.metrics['latent_space/min'] = manifold_z.min().item()
+        self.metrics.setdefault('latent_space/mean', []).append(manifold_z.mean().item())
+        self.metrics.setdefault('latent_space/std', []).append(manifold_z.std().item())
+        self.metrics.setdefault('latent_space/max', []).append(manifold_z.max().item())
+        self.metrics.setdefault('latent_space/min', []).append(manifold_z.min().item())
+
+        self.metrics['clustering/hyphc_loss_weight'] = hyphc_loss_weight
 
         for key, value in grad_norm(self, norm_type=2).items():
             if key == "grad_2.0_norm_total":

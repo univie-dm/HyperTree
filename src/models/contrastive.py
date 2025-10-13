@@ -2,7 +2,7 @@ import torch
 import pytorch_lightning as pl
 import torch.nn.functional as F
 
-from typing import Tuple, Type
+from typing import Tuple
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from src.models.abstract import AbstractModel

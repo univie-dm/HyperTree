@@ -40,10 +40,17 @@ clustering:
     interval: 40  # Number of epochs for warmup phase
     cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
     patience: 20 # Number of epochs
+  freeze_encoder: False
+  contrastive_loss:
+    enabled: False
+    weight: 0.1
+    temperature: 0.5
 
 ## HypHC parameters
 hyphc:
-  loss_weight: 1.0
+  max_loss_weight: 1.0
+  min_loss_weight: 0.0
+  loss_weight_interval: 0 # 0 equals to max_loss_weight all times
   temperature: 0.01
   sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'chami', 'probabilistic_coverage'
   triplet_subsampling_size: 200

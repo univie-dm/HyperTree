@@ -3,7 +3,9 @@ import torch.nn as nn
 
 from typing import Dict, Union
 from src.hyperbolic_math.src.manifolds import Manifold, Hyperboloid, PoincareBall
-from src.hyperbolic_math.src.nn_layers import *
+from src.hyperbolic_math.src.nn_layers import HyperbolicLinearPoincare, HyperbolicLinearPoincarePP, \
+    HyperbolicLinearHyperboloid, HyperbolicLinearHyperboloidFHNN, HyperbolicLinearHyperboloidFHCNN, \
+    HyperbolicRegressionPoincare, HyperbolicRegressionPoincarePP, HyperbolicRegressionHyperboloid, Expmap_0, Logmap_0
 
 
 def get_dtype_from_precision(precision: str) -> torch.dtype:

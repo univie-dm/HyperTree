@@ -1,3 +1,7 @@
+from src.utils import get_datamodule, get_pretrain_model, get_clustering_model, get_model_path, get_logger
+from lightning.pytorch import seed_everything
+from omegaconf import DictConfig
+from threadpoolctl import threadpool_limits
 import hydra
 import os
 import torch
@@ -8,10 +12,8 @@ import pytorch_lightning as pl
 from icecream import install
 install()
 
-from lightning.pytorch import seed_everything
-from omegaconf import DictConfig
-from threadpoolctl import threadpool_limits
-from src.utils import get_datamodule, get_pretrain_model, get_clustering_model, get_model_path, get_logger
+
+
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")

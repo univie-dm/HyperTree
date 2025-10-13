@@ -6,7 +6,7 @@ from lightning.pytorch.utilities import grad_norm
 from typing import List, Tuple
 from src.models.abstract import AbstractModel
 from src.models.utils import get_dtype_from_precision, get_hyperbolic_encoding_layer_by_name, get_hyperbolic_decoding_layer_by_name
-from src.hyperbolic_math.src.manifolds import Euclidean, Hyperboloid
+from src.hyperbolic_math.src.manifolds import Euclidean
 
 
 class HyperbolicAE(AbstractModel):
