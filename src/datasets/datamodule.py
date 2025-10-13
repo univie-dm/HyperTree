@@ -92,7 +92,7 @@ class ColorDataModule(pl.LightningDataModule):
         self.full_dataset = None
         self.ground_truth_labels = None
 
-    def setup(self, stage: str = None) -> None:
+    def setup(self) -> None:
         dataset_class = self.dataset_map[self.dataset_name]
 
         # Special handling for CIFAR100_20
@@ -107,7 +107,7 @@ class ColorDataModule(pl.LightningDataModule):
         if self.dataset_name == "gtsrb":
             # Force resize for GTSRB to handle inconsistent image sizes
             base_transforms = [transforms.Resize((32, 32))] + base_transforms
-            temp_dataset = dataset_class(self.data_dir, split='train',
+            temp_dataset = dataset_class(self.data_dir, split='train', # type: ignore
                                          transform=transforms.Compose(base_transforms),
                                          download=True)
         elif self.dataset_name in ["cifar10", "cifar100", "cifar100_20"] and self.use_augmentations:
@@ -127,7 +127,7 @@ class ColorDataModule(pl.LightningDataModule):
             ]
             try:
                 if dataset_class == datasets.ImageNet:
-                    temp_dataset = dataset_class(self.data_dir, split='train',
+                    temp_dataset = dataset_class(self.data_dir, split='train', # type: ignore
                                            transform=transforms.Compose(base_transforms))
                 else:
                     temp_dataset = dataset_class(self.data_dir, train=True,
@@ -191,12 +191,12 @@ class ColorDataModule(pl.LightningDataModule):
             ])
 
         if self.dataset_name == "gtsrb":
-            base_train = dataset_class(self.data_dir, split='train', transform=None, download=True)
-            base_test = dataset_class(self.data_dir, split='test', transform=None, download=True)
+            base_train = dataset_class(self.data_dir, split='train', transform=None, download=True) # type: ignore
+            base_test = dataset_class(self.data_dir, split='test', transform=None, download=True) # type: ignore
         elif self.dataset_name == "imagenet":
             try:
-                base_train = dataset_class(self.data_dir, split='train', transform=None)
-                base_test = dataset_class(self.data_dir, split='val', transform=None)
+                base_train = dataset_class(self.data_dir, split='train', transform=None) # type: ignore
+                base_test = dataset_class(self.data_dir, split='val', transform=None) # type: ignore
             except Exception as e:
                 print(f"Error loading ImageNet dataset: {e}")
                 print("Please make sure you have downloaded the ImageNet dataset to the specified data directory.")
@@ -412,7 +412,7 @@ class GrayScaleDataModule(pl.LightningDataModule):
         }
         self.use_augmentations = use_augmentations
 
-    def setup(self, stage: str = None) -> None:
+    def setup(self) -> None:
         dataset_class = self.dataset_map[self.dataset_name]
 
         # First download the dataset
@@ -489,10 +489,14 @@ class GrayScaleDataModule(pl.LightningDataModule):
             dataset = self.test_dataset
         else:
             dataset = self.train_dataset
+        if dataset is None:
+            raise RuntimeError("Dataset not initialized. Please call setup() first.")
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True,
                           num_workers=self.num_workers, pin_memory=True)
 
     def test_dataloader(self) -> DataLoader:
+        if self.test_dataset is None:
+            raise RuntimeError("Test dataset not initialized. Please call setup() first.")
         return DataLoader(self.test_dataset, batch_size=self.batch_size,
                           num_workers=self.num_workers, pin_memory=True)
 
@@ -584,17 +588,17 @@ class TabularDataModule(pl.LightningDataModule):
         # Download datasets if needed (not needed for iris)
         pass
 
-    def setup(self, stage: str = None) -> None:
+    def setup(self) -> None:
         # Load dataset
         dataset_fn = self.dataset_map[self.dataset_name]
         dataset = dataset_fn()
 
         # Standardize features
         scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(dataset.data)
+        X_scaled = scaler.fit_transform(dataset.data) # type: ignore
 
         # Split into train/test
-        num_samples = len(dataset.data)
+        num_samples = len(dataset.data) # type: ignore
         num_train = int(num_samples * self.train_ratio)
         indices = np.random.permutation(num_samples)
         train_idx, test_idx = indices[:num_train], indices[num_train:]
@@ -607,33 +611,33 @@ class TabularDataModule(pl.LightningDataModule):
         if self.subset == 'all':
             self.train_dataset = TabularMultiViewDataset(
                 X_scaled[train_idx],
-                dataset.target[train_idx],
+                dataset.target[train_idx], # type: ignore
                 transform=base_transform,
                 aug_transform=base_transform
             )
             self.test_dataset = TabularMultiViewDataset(
                 X_scaled[test_idx],
-                dataset.target[test_idx],
+                dataset.target[test_idx], # type: ignore
                 transform=base_transform,
                 aug_transform=base_transform
             )
         else:
             self.train_dataset = TabularMultiViewDataset(
                 X_scaled[train_idx],
-                dataset.target[train_idx],
+                dataset.target[train_idx], # type: ignore
                 transform=base_transform,
                 aug_transform=aug_transform
             )
             self.test_dataset = TabularMultiViewDataset(
                 X_scaled[test_idx],
-                dataset.target[test_idx],
+                dataset.target[test_idx], # type: ignore
                 transform=base_transform,
                 aug_transform=base_transform
             )
 
         self.full_dataset = torch.utils.data.ConcatDataset([self.train_dataset, self.test_dataset])
-        self.ground_truth_labels = dataset.target
-        self.input_dim = dataset.data.shape[1]  # Number of features
+        self.ground_truth_labels = dataset.target # type: ignore
+        self.input_dim = dataset.data.shape[1]  # Number of features # type: ignore
 
     def train_dataloader(self) -> DataLoader:
         if self.subset == 'all':
@@ -641,7 +645,7 @@ class TabularDataModule(pl.LightningDataModule):
         else:
             dataset = self.train_dataset
         return DataLoader(
-            dataset,
+            dataset, # type: ignore
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers
@@ -649,7 +653,7 @@ class TabularDataModule(pl.LightningDataModule):
 
     def test_dataloader(self) -> DataLoader:
         return DataLoader(
-            self.test_dataset,
+            self.test_dataset, # type: ignore
             batch_size=self.batch_size,
             num_workers=self.num_workers
         )

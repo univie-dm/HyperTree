@@ -172,7 +172,8 @@ class HyperbolicAE(AbstractModel):
         self.metrics.setdefault("pretrain/x_recon_loss", []).append(x_recon_loss)
         #self.metrics.setdefault("pretrain/x_aug_recon_loss", []).append(x_aug_recon_loss)
         self.metrics.setdefault("pretrain/total_loss", []).append(loss)
-        self.metrics.setdefault("pretrain/c", []).append(self.manifold.c.detach())
+        if isinstance(self.manifold.c, torch.Tensor):
+            self.metrics.setdefault("pretrain/c", []).append(self.manifold.c.detach())
         self.log("loss", loss, logger=False, prog_bar=True, on_epoch=True, on_step=False)
 
         return loss

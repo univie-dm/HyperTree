@@ -50,7 +50,7 @@ class HyperbolicHCModel(AbstractModel):
             latent_dim=ae_model.latent_dim,
             manifold_name=ae_model.manifold_name,
             manifold_precision=ae_model.manifold.dtype,
-            curvature_magnitude=ae_model.manifold.c,
+            curvature_magnitude=ae_model.manifold.c if isinstance(ae_model.manifold.c, torch.Tensor) else torch.tensor(ae_model.manifold.c),
             trainable_curvature=trainable_curvature,
             hyperbolic_decoding=ae_model.hyperbolic_decoding,
             optimizer_name=ae_model.optimizer_name,
@@ -82,24 +82,24 @@ class HyperbolicHCModel(AbstractModel):
         self.contrastive_temperature = contrastive_temperature
 
         # Load encoding and decoding modules with their weights
-        self.encoder: torch.nn.Sequential = ae_model.encoder
-        self.hyperbolic_encoding_layer: torch.nn.Module = ae_model.hyperbolic_encoding_layer
-        self.hyperbolic_decoding_layer: torch.nn.Module = ae_model.hyperbolic_decoding_layer
-        self.decoder: torch.nn.Sequential = ae_model.decoder
-        self.hidden_dims: list[int] = ae_model.hidden_dims
+        self.encoder = ae_model.encoder  # type: ignore
+        self.hyperbolic_encoding_layer = ae_model.hyperbolic_encoding_layer  # type: ignore
+        self.hyperbolic_decoding_layer = ae_model.hyperbolic_decoding_layer  # type: ignore
+        self.decoder = ae_model.decoder  # type: ignore
+        self.hidden_dims = ae_model.hidden_dims  # type: ignore
         if isinstance(ae_model, HyperbolicResNet):
             self.expansion = ae_model.expansion
         else:
             self.expansion = 1
 
         # Ensure weights are copied by loading state dict
-        self.encoder.load_state_dict(ae_model.encoder.state_dict())
-        self.hyperbolic_encoding_layer.load_state_dict(ae_model.hyperbolic_encoding_layer.state_dict())
-        self.hyperbolic_decoding_layer.load_state_dict(ae_model.hyperbolic_decoding_layer.state_dict())
-        self.decoder.load_state_dict(ae_model.decoder.state_dict())
+        self.encoder.load_state_dict(ae_model.encoder.state_dict()) # type: ignore
+        self.hyperbolic_encoding_layer.load_state_dict(ae_model.hyperbolic_encoding_layer.state_dict()) # type: ignore
+        self.hyperbolic_decoding_layer.load_state_dict(ae_model.hyperbolic_decoding_layer.state_dict()) # type: ignore
+        self.decoder.load_state_dict(ae_model.decoder.state_dict()) # type: ignore
         
         if freeze_encoder:
-            for param in self.encoder.parameters():
+            for param in self.encoder.parameters(): # type: ignore
                 param.requires_grad = False
                 
         if hyphc_end_weight < 0 or hyphc_start_weight < 0:
@@ -177,6 +177,9 @@ class HyperbolicHCModel(AbstractModel):
     def compute_lca_depth(self, points: torch.Tensor, batch_size: int=1_000) -> torch.Tensor:
         """Generalized, corrected, and numerically stabilized implementation of
            Chami et al.'s (2020) LCA depth computation using inverse geometry."""
+           
+        if not isinstance(self.manifold.c, torch.Tensor):
+            self.manifold.c = torch.tensor(self.manifold.c, dtype=points.dtype, device=points.device)
         device = points.device
         lcas = torch.zeros((points.shape[0], points.shape[0]), dtype=points.dtype).to(device)
         indices = torch.triu_indices(points.shape[0], points.shape[0], 1).to(device)
@@ -360,22 +363,24 @@ class HyperbolicHCModel(AbstractModel):
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         if self.model_type == 'feedforward':
             x = x.view(x.size(0), -1)
-        hidden = self.encoder(x)
-        hidden = hidden / (self.hidden_dims[-1] ** 0.5)  # Scale by input dimension
-        manifold_z = self.hyperbolic_encoding_layer(hidden)
+        hidden = self.encoder(x) # type: ignore
+        hidden = hidden / (self.hidden_dims[-1] ** 0.5)  # Scale by input dimension # type: ignore
+        manifold_z = self.hyperbolic_encoding_layer(hidden) # type: ignore
         return manifold_z
 
     def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
-        x = self.hyperbolic_decoding_layer(manifold_z)
+        x = self.hyperbolic_decoding_layer(manifold_z) # type: ignore
         # Cast back from the manifold precision to the model's precision
         x = x.to(dtype=get_dtype_from_precision(self.params_dtype))
         if self.model_type in ['resnet18', 'resnet34', 'resnet50']:
             x = x.view(-1, 512 * self.expansion, 4, 4)
         elif self.model_type == 'poincare_resnet_ae':
             x = x.view(-1, 64, 8, 8)
-        x_recon = self.decoder(x)
-        if isinstance(self.orginal_input_shape, tuple):
-            x_recon = x_recon.view(-1, *self.orginal_input_shape)
+        x_recon = self.decoder(x) # type: ignore
+        shape = self.orginal_input_shape
+        if not isinstance(shape, (tuple, list)):
+            shape = (shape,)
+        x_recon = x_recon.view(-1, *shape)
         return x_recon
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
@@ -435,7 +440,8 @@ class HyperbolicHCModel(AbstractModel):
         self.metrics.setdefault("clustering/triplet_loss", []).append(triplet_loss)
         self.metrics.setdefault("clustering/similarties_sum", []).append(similarties_sum)
         self.metrics.setdefault("clustering/total_loss", []).append(total_loss)
-        self.metrics.setdefault('clustering/c', []).append(self.manifold.c.item())
+        if isinstance(self.manifold.c, torch.Tensor):
+            self.metrics.setdefault('clustering/c', []).append(self.manifold.c.item())
         self.metrics.setdefault('latent_space/mean', []).append(manifold_z.mean().item())
         self.metrics.setdefault('latent_space/std', []).append(manifold_z.std().item())
         self.metrics.setdefault('latent_space/max', []).append(manifold_z.max().item())

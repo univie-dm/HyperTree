@@ -21,17 +21,16 @@ class HyperbolicConvAE(AbstractModel):
     """
     def __init__(
         self,
+        hyperbolic_decoding: str,
+        hyperbolic_encoding: str,
         image_size: int = 32, # This parameter is now a strict architectural requirement.
         input_channels: int = 3, # Number of input channels (3 for RGB, 1 for grayscale)
-        # Parameters to match AbstractModel
-        hyperbolic_encoding: str | None = None,
         params_dtype: str = 'float32',
         latent_dim: int = 2,
         manifold_name: str = 'PoincareBall',
         manifold_precision: str = 'float32',
         curvature_magnitude: float = 1.0,
         trainable_curvature: bool = False,
-        hyperbolic_decoding: str | None = None,
         optimizer_name: str = 'RiemannianAdam',
         learning_rate: float = 1e-3,
         log_interval: int = 5,
@@ -44,7 +43,7 @@ class HyperbolicConvAE(AbstractModel):
         smoothing_factor: float = 50.0,
         learnable_scale: bool = False,
         FHCNN_normalize: bool = False,
-        lr_scheduler_params: dict = None,
+        lr_scheduler_params: dict | None = None,
     ):
         super().__init__(
             model_type='convolutional',
@@ -253,6 +252,8 @@ class HyperbolicConvAE(AbstractModel):
         if hasattr(self.manifold, 'c') and hasattr(self.manifold.c, 'requires_grad') and self.manifold.c.requires_grad:
             try:
                 c_tensor = self.manifold.c
+                if not isinstance(c_tensor, torch.Tensor):
+                    c_tensor = torch.tensor(c_tensor)
                 c_detached = c_tensor.detach()
                 c_value = c_detached.item() if c_detached.numel() == 1 else c_detached
                 self.metrics.setdefault(f"{self.stage}/c", []).append(c_value)

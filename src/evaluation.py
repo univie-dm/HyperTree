@@ -48,8 +48,11 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
     if metrics is None:
         return results
     
+    if not isinstance(manifold.c, torch.Tensor):
+        manifold.c = torch.tensor(manifold.c, device=X.device, dtype=X.dtype)
+    
 
-    distance_matrix += 2/manifold.c
+    distance_matrix += 2 / manifold.c if isinstance(manifold.c, torch.Tensor) else 2 / torch.tensor(manifold.c)
     if distance_matrix.min() < 0:
         warning("Distance matrix contains negative values. Clipping to zero. Minimum: {}".format(distance_matrix.min()))
         distance_matrix = distance_matrix.clamp(min=0)
@@ -77,7 +80,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
             points_sampled = poincare_64.to_hyperboloid(points_sampled)
         points_sampled = points_sampled.to(torch.float64)
         two_d_pts, _ = pointsTo2dPoincare(x=points_sampled, poincare=poincare_64, hyperplanes=None, settings=settings)
-        two_d_pts = two_d_pts.detach().clone().to(dtype=settings['plot_manifold_dtype'], device=manifold.c.device)
+        two_d_pts = two_d_pts.detach().clone().to(dtype=settings['plot_manifold_dtype'], device=manifold.c.device) # type: ignore
         if not poincare_64.is_in_manifold(two_d_pts):
             warning("Some points are out of the Poincare ball after dimensionality reduction. NO visualization generated")
         else:
@@ -130,7 +133,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
             }
             # Map predicted labels to string labels if available
             Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
+            str_labels_subset = np.asarray(str_labels)[pca_sample_indices] if str_labels is not None else None 
             visualization_labels = map_predicted_labels_to_str_labels(
                 pred_labels_single[pca_sample_indices], 
                 Y_numpy[pca_sample_indices], 
@@ -164,7 +167,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
             }
             # Map predicted labels to string labels if available
             Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
+            str_labels_subset = np.asarray(str_labels)[pca_sample_indices] if str_labels is not None else None
             visualization_labels = map_predicted_labels_to_str_labels(
                 pred_labels_complete[pca_sample_indices], 
                 Y_numpy[pca_sample_indices], 
@@ -198,7 +201,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
             }
             # Map predicted labels to string labels if available
             Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
+            str_labels_subset = np.asarray(str_labels)[pca_sample_indices] if str_labels is not None else None
             visualization_labels = map_predicted_labels_to_str_labels(
                 pred_labels_average[pca_sample_indices], 
                 Y_numpy[pca_sample_indices], 
@@ -278,7 +281,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
             }
             # Map predicted labels to string labels if available
             Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
+            str_labels_subset = np.asarray(str_labels)[pca_sample_indices] if str_labels is not None else None
             visualization_labels = map_predicted_labels_to_str_labels(
                 pred_labels_spectral[pca_sample_indices], 
                 Y_numpy[pca_sample_indices], 
@@ -308,7 +311,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
             }
             # Map predicted labels to string labels if available
             Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-            str_labels_subset = str_labels[pca_sample_indices] if str_labels is not None else None
+            str_labels_subset = np.asarray(str_labels)[pca_sample_indices] if str_labels is not None else None
             visualization_labels = map_predicted_labels_to_str_labels(
                 pred_labels_kmeans[pca_sample_indices], 
                 Y_numpy[pca_sample_indices], 
@@ -338,7 +341,7 @@ class Node:
         if self.left is None and self.right is None: # It's a leaf node
             self._leaves_count = 1
         else:
-            self._leaves_count = self.left.get_leaves_count() + self.right.get_leaves_count()
+            self._leaves_count = self.left.get_leaves_count() + self.right.get_leaves_count() # type: ignore
         return self._leaves_count
 
 def dasgupta_cost(
@@ -371,10 +374,10 @@ def dasgupta_cost(
     while q:
         node = q.pop(0)
         if node.left:
-            parent_map[node.left] = node
+            parent_map[node.left] = node # type: ignore
             q.append(node.left)
         if node.right:
-            parent_map[node.right] = node
+            parent_map[node.right] = node # type: ignore
             q.append(node.right)
 
     # 3. Iterate over all unique pairs of leaves
@@ -507,7 +510,7 @@ def nearest_neighbors_accuracy(
 
 def dendrogram_purity(
     distance_matrix: torch.Tensor,
-    labels: np.ndarray,
+    labels: np.ndarray | torch.Tensor,
     linkage_method: str = 'average'
 ) -> float:
     """
@@ -659,7 +662,7 @@ class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
                                             mode='distance', metric='precomputed',
                                             include_self=False)
             # Make the graph symmetric
-            affinity_matrix = 0.5 * (connectivity + connectivity.T)
+            affinity_matrix = 0.5 * (connectivity + connectivity.T) # type: ignore
             # Apply the RBF kernel to the sparse graph
             affinity_matrix.data = np.exp(-self.gamma * (affinity_matrix.data ** 2))
         else:
@@ -678,7 +681,7 @@ class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
             laplacian_shifted,
             k=self.n_clusters,
             which='SM',  # Smallest Magnitude
-            tol=1e-6,
+            tol=1e-6, # type: ignore
             v0=np.ones(laplacian.shape[0]) # Initial vector for stability
         )
 

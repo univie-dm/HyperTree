@@ -181,7 +181,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
         raise ValueError("Invalid autoencoder type")
     return model
 
-def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[HyperbolicAE, HyperbolicResNet]) -> HyperbolicHCModel:
+def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[HyperbolicAE, HyperbolicResNet, HyperbolicConvAE]) -> HyperbolicHCModel:
     model = HyperbolicHCModel(
         ae_model=pretrain_model,
         trainable_curvature=cfg.clustering.trainable_curvature,
