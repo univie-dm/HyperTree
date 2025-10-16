@@ -13,9 +13,6 @@ from icecream import install
 install()
 
 
-
-
-
 @hydra.main(version_base=None, config_path="configs", config_name="config")
 @threadpool_limits.wrap(limits=45, user_api="openmp")
 @threadpool_limits.wrap(limits=1, user_api="blas")
@@ -44,6 +41,7 @@ def main(cfg: DictConfig) -> None:
                          enable_checkpointing=False,
                          gradient_clip_algorithm='norm' if cfg.experiment.gradient_clip_value is not None else None,
                          gradient_clip_val=cfg.experiment.gradient_clip_value if cfg.experiment.gradient_clip_value is not None else 1.0,
+                         log_every_n_steps=-1,
                          )
     datamodule, input_dim, _ = get_datamodule(cfg, stage='pretrain')
     pretrain_model = get_pretrain_model(cfg, input_dim)
@@ -77,4 +75,9 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as e:
+        wandb.finish(exit_code=-1)
+        print(f"Error occurred: {e}", flush=True)
+        exit(-1)

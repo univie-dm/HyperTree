@@ -378,9 +378,12 @@ class HyperbolicHCModel(AbstractModel):
             x = x.view(-1, 64, 8, 8)
         x_recon = self.decoder(x) # type: ignore
         shape = self.orginal_input_shape
-        if not isinstance(shape, (tuple, list)):
-            shape = (shape,)
-        x_recon = x_recon.view(-1, *shape)
+        if shape is not None:
+            if not isinstance(shape, (tuple, list)):
+                shape = (shape,)
+            # Ensure all elements in shape are not None
+            if all(s is not None for s in shape):
+                x_recon = x_recon.view(-1, *shape)
         return x_recon
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:

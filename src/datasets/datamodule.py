@@ -92,7 +92,7 @@ class ColorDataModule(pl.LightningDataModule):
         self.full_dataset = None
         self.ground_truth_labels = None
 
-    def setup(self) -> None:
+    def setup(self, stage: str | None = None) -> None:
         dataset_class = self.dataset_map[self.dataset_name]
 
         # Special handling for CIFAR100_20
@@ -186,6 +186,7 @@ class ColorDataModule(pl.LightningDataModule):
                 transforms.RandomApply([
                     transforms.GaussianBlur(kernel_size=3)
                 ], p=0.5),
+                transforms.RandomSolarize(threshold=0.5,p=0.2),
                 transforms.ToTensor(),
                 normalize_fn
             ])
@@ -412,7 +413,7 @@ class GrayScaleDataModule(pl.LightningDataModule):
         }
         self.use_augmentations = use_augmentations
 
-    def setup(self) -> None:
+    def setup(self, stage: str | None = None) -> None:
         dataset_class = self.dataset_map[self.dataset_name]
 
         # First download the dataset
@@ -588,7 +589,7 @@ class TabularDataModule(pl.LightningDataModule):
         # Download datasets if needed (not needed for iris)
         pass
 
-    def setup(self) -> None:
+    def setup(self, stage: str | None = None) -> None:
         # Load dataset
         dataset_fn = self.dataset_map[self.dataset_name]
         dataset = dataset_fn()

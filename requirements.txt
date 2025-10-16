@@ -4,7 +4,12 @@ torchvision
 scikit-learn
 hydra-core
 omegaconf
-rich
-scikit-learn-extra
 wandb
 pandas
+tqdm
+matplotlib
+jupyterlab
+icecream
+seaborn
+ruff
+numpy
