@@ -425,8 +425,8 @@ class HyperbolicHCModel(AbstractModel):
             # We set use_euclidean=False to use geodesic distance
             # BYOL-style: compare original with first augmentation
             contrastive_loss = self.compute_contrastive_loss(
-                z_i=manifold_z,
-                z_j=manifold_z_aug_1,
+                z_i=manifold_z_aug_1,
+                z_j=manifold_z_aug_2,
                 temperature=self.contrastive_temperature,
                 use_euclidean=False  # This makes it a hyperbolic contrastive loss
             )
