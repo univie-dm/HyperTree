@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
+import wandb
 
 from typing import Tuple, Any
 from pytorch_lightning.loggers import WandbLogger
@@ -262,7 +263,7 @@ class AbstractModel(pl.LightningModule):
     def on_train_start(self) -> None:
         self.test_phase()
         self.metrics[f'{self.stage}/epoch'] = self.current_epoch
-        self.metrics[f'{self.stage}/lr'] = self.optimizers().param_groups[0]['lr']
+        self.metrics[f'{self.stage}/lr'] = self.optimizers().param_groups[0]['lr'] # type: ignore
         for key, value in self.metrics.items():
             if isinstance(value, list):
                 self.metrics[key] = sum(value) / len(value)
@@ -274,7 +275,7 @@ class AbstractModel(pl.LightningModule):
     def on_train_end(self) -> None:
         self.test_phase()
         self.metrics[f'{self.stage}/epoch'] = self.current_epoch
-        self.metrics[f'{self.stage}/lr'] = self.optimizers().param_groups[0]['lr']
+        self.metrics[f'{self.stage}/lr'] = self.optimizers().param_groups[0]['lr'] # type: ignore
         for key, value in self.metrics.items():
             if isinstance(value, list):
                 self.metrics[key] = sum(value) / len(value)
@@ -287,7 +288,7 @@ class AbstractModel(pl.LightningModule):
         if self.current_epoch > 0:
             self.test_phase()
         self.metrics[f'{self.stage}/epoch'] = self.current_epoch+1
-        self.metrics[f'{self.stage}/lr'] = self.optimizers().param_groups[0]['lr']
+        self.metrics[f'{self.stage}/lr'] = self.optimizers().param_groups[0]['lr'] # type: ignore
         for key, value in self.metrics.items():
             if isinstance(value, list):
                 self.metrics[key] = sum(value) / len(value)
@@ -295,3 +296,89 @@ class AbstractModel(pl.LightningModule):
             self.logger.experiment.log(self.metrics, step=self.current_epoch+self.global_epoch+1)
         self.metrics = {}
         self.train()
+
+    def _log_images_to_wandb(self, x: torch.Tensor, x_recon: torch.Tensor, x_aug: torch.Tensor | None = None):
+        """Log original and reconstructed images to wandb."""
+        try:
+            x_0 = x[0] + x[0].min().abs()
+            x_0 = x_0 / x_0.max()
+            x_0 = x_0*255.0
+            
+            x_recon_0 = x_recon[0] + x_recon[0].min().abs()
+            x_recon_0 = x_recon_0 / x_recon_0.max()
+            x_recon_0 = x_recon_0*255.0
+            
+            # Handle augmented images (could be concatenated x_aug_1 and x_aug_2)
+            x_aug_1_0 = None
+            x_aug_2_0 = None
+            if x_aug is not None and x_aug.size(0) > 0:  # Check that x_aug is not empty
+                batch_size = x.size(0)
+                # First half is x_aug_1, second half is x_aug_2 (due to concatenation)
+                x_aug_1_0 = x_aug[0] + x_aug[0].min().abs()
+                x_aug_1_0 = x_aug_1_0 / x_aug_1_0.max()
+                x_aug_1_0 = x_aug_1_0 * 255.0
+                
+                if x_aug.size(0) > batch_size:  # We have both aug views concatenated
+                    x_aug_2_0 = x_aug[batch_size] + x_aug[batch_size].min().abs()
+                    x_aug_2_0 = x_aug_2_0 / x_aug_2_0.max()
+                    x_aug_2_0 = x_aug_2_0 * 255.0
+            
+            # Convert from [C, H, W] to [H, W, C] for wandb
+            if len(x_0.shape) == 3 and x_0.shape[0] in [1, 3]:  # Check if channels-first
+                x_0_img = x_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
+                x_recon_0_img = x_recon_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
+                
+                if x_aug_1_0 is not None:
+                    x_aug_1_0_img = x_aug_1_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
+                    if x_aug_1_0_img.shape[2] == 1:  # Grayscale, squeeze channel dim
+                        x_aug_1_0_img = x_aug_1_0_img.squeeze(2)
+                
+                if x_aug_2_0 is not None:
+                    x_aug_2_0_img = x_aug_2_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
+                    if x_aug_2_0_img.shape[2] == 1:  # Grayscale, squeeze channel dim
+                        x_aug_2_0_img = x_aug_2_0_img.squeeze(2)
+                
+                if x_0_img.shape[2] == 1:  # Grayscale, squeeze channel dim
+                    x_0_img = x_0_img.squeeze(2)
+                    x_recon_0_img = x_recon_0_img.squeeze(2)
+            else:
+                x_0_img = x_0.cpu().numpy().astype("uint8")
+                x_recon_0_img = x_recon_0.cpu().numpy().astype("uint8")
+                if x_aug_1_0 is not None:
+                    x_aug_1_0_img = x_aug_1_0.cpu().numpy().astype("uint8")
+                if x_aug_2_0 is not None:
+                    x_aug_2_0_img = x_aug_2_0.cpu().numpy().astype("uint8")
+            
+            # Create combined image: [original | aug1 | aug2 | reconstruction]
+            if x_aug_1_0 is not None and x_aug_2_0 is not None:
+                # Show all four: original, aug1, aug2, reconstruction
+                x_combined = torch.cat((x_0, x_aug_1_0, x_aug_2_0, x_recon_0), dim=2)  # Concatenate along width
+            elif x_aug_1_0 is not None:
+                # Show three: original, aug1, reconstruction
+                x_combined = torch.cat((x_0, x_aug_1_0, x_recon_0), dim=2)  # Concatenate along width
+            else:
+                # Show two: original, reconstruction
+                x_combined = torch.cat((x_0, x_recon_0), dim=2)  # Concatenate along width
+                
+            x_combined = x_combined + x_combined.min().abs()
+            x_combined = x_combined / x_combined.max()
+            x_combined = x_combined*255.0
+            if len(x_combined.shape) == 3 and x_combined.shape[0] in [1, 3]:  # Check if channels-first
+                x_combined_img = x_combined.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
+                if x_combined_img.shape[2] == 1:  # Grayscale, squeeze channel dim
+                    x_combined_img = x_combined_img.squeeze(2)
+            else:
+                x_combined_img = x_combined.cpu().numpy().astype("uint8")
+            
+            # Create caption based on what's shown
+            if x_aug_1_0 is not None and x_aug_2_0 is not None:
+                caption = "Original | Aug1 | Aug2 | Reconstruction"
+            elif x_aug_1_0 is not None:
+                caption = "Original | Aug1 | Reconstruction"
+            else:
+                caption = "Original | Reconstruction"
+                
+            self.metrics['test/image'] = wandb.Image(x_combined_img, caption=caption)
+        except Exception as e:
+            print(f"Error logging images to wandb: {e}", flush=True)
+            pass

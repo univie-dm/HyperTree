@@ -460,4 +460,9 @@ class HyperbolicHCModel(AbstractModel):
             self.metrics.setdefault(f"{key}", []).append(value)
 
         self.log('train_loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, logger=False)
+        
+        if batch_idx == 0:
+            x_aug_for_logging = torch.concat([x_aug_1, x_aug_2], dim=0) if self.contrastive_enabled else torch.empty((0, *x.shape[1:]), dtype=x.dtype, device=x.device)
+            self._log_images_to_wandb(x, x_recon, x_aug_for_logging)
+        
         return total_loss

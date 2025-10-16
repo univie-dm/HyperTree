@@ -242,7 +242,7 @@ class HyperbolicResNet(AbstractModel):
                 nn.BatchNorm2d(planes)
             )
         layers = []
-        layers.append(DecoderBlock(self.inplanes, planes, scale, upsample))
+        layers.append(DecoderBlock(self.inplanes, planes, scale, upsample)) #type: ignore
         self.inplanes = planes
         for _ in range(1, blocks):
             layers.append(DecoderBlock(self.inplanes, planes))
@@ -286,7 +286,7 @@ class HyperbolicResNet(AbstractModel):
             contrastive_loss = self.compute_contrastive_loss(
                 z_proj, z_aug_proj_1,
                 temperature=self.contrastive_temperature,
-                use_euclidean=True  # Projection head outputs are Eucl  idean
+                use_euclidean=True  # Projection head outputs are Euclidean
             )
             loss = loss + self.contrastive_weight * contrastive_loss
             
@@ -296,60 +296,12 @@ class HyperbolicResNet(AbstractModel):
         # Logging
         self.metrics.setdefault("pretrain/x_recon_loss", []).append(x_recon_loss)
         self.metrics.setdefault("pretrain/total_loss", []).append(loss)
-        self.metrics.setdefault("pretrain/c", []).append(self.manifold.c.detach().item() if self.manifold.c.numel() == 1 else self.manifold.c.detach().cpu())
+        self.metrics.setdefault("pretrain/c", []).append(self.manifold.c.detach().item() if self.manifold.c.numel() == 1 else self.manifold.c.detach().cpu()) #type: ignore
         self.log('recon_loss', x_recon_loss, prog_bar=True, on_epoch=True, logger=False)
         self.log("loss", loss, logger=False, prog_bar=True, on_epoch=True, on_step=False)
 
         if batch_idx == 0:
-            self._log_images_to_wandb(x, x_recon, x_aug_1 if self.contrastive_enabled else None)
+            x_aug_for_logging = torch.concat([x_aug_1, x_aug_2], dim=0) if self.contrastive_enabled else torch.empty((0, *x.shape[1:]), dtype=x.dtype, device=x.device)
+            self._log_images_to_wandb(x, x_recon, x_aug_for_logging)
 
         return loss
-
-    def _log_images_to_wandb(self, x: torch.Tensor, x_recon: torch.Tensor, x_aug: torch.Tensor = None):
-        """Log original and reconstructed images to wandb."""
-        try:
-            x_0 = x[0] + x[0].min().abs()
-            x_0 = x_0 / x_0.max()
-            x_0 = x_0*255.0
-            x_aug_0 = x_aug[0] + x_aug[0].min().abs() if x_aug is not None else None
-            if x_aug_0 is not None:
-                x_aug_0 = x_aug_0 / x_aug_0.max()
-                x_aug_0 = x_aug_0*255.0
-            x_recon_0 = x_recon[0] + x_recon[0].min().abs()
-            x_recon_0 = x_recon_0 / x_recon_0.max()
-            x_recon_0 = x_recon_0*255.0
-            # Convert from [C, H, W] to [H, W, C] for wandb
-            if len(x_0.shape) == 3 and x_0.shape[0] in [1, 3]:  # Check if channels-first
-                x_0_img = x_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
-                x_recon_0_img = x_recon_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
-                if x_aug_0 is not None:
-                    x_aug_0_img = x_aug_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
-                    if x_aug_0_img.shape[2] == 1:  # Grayscale, squeeze channel dim
-                        x_aug_0_img = x_aug_0_img.squeeze(2)
-                if x_0_img.shape[2] == 1:  # Grayscale, squeeze channel dim
-                    x_0_img = x_0_img.squeeze(2)
-                    x_recon_0_img = x_recon_0_img.squeeze(2)
-                    if x_aug_0 is not None:
-                        x_aug_0_img = x_aug_0_img.squeeze(2)
-            else:
-                x_0_img = x_0.cpu().numpy().astype("uint8")
-                x_recon_0_img = x_recon_0.cpu().numpy().astype("uint8")
-                if x_aug_0 is not None:
-                    x_aug_0_img = x_aug_0.cpu().numpy().astype("uint8")
-            if x_aug_0 is not None:
-                x_combined = torch.cat((x_0, x_aug_0, x_recon_0), dim=2)  # Concatenate along width
-            else:
-                x_combined = torch.cat((x_0, x_recon_0), dim=2)  # Concatenate along width
-            x_combined = x_combined + x_combined.min().abs()
-            x_combined = x_combined / x_combined.max()
-            x_combined = x_combined*255.0
-            if len(x_combined.shape) == 3 and x_combined.shape[0] in [1, 3]:  # Check if channels-first
-                x_combined_img = x_combined.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
-                if x_combined_img.shape[2] == 1:  # Grayscale, squeeze channel dim
-                    x_combined_img = x_combined_img.squeeze(2)
-            else:
-                x_combined_img = x_combined.cpu().numpy().astype("uint8")
-            self.metrics['test/image'] = wandb.Image(x_combined_img, caption="image")
-        except Exception as e:
-            print(f"Error logging images to wandb: {e}", flush=True)
-            pass
