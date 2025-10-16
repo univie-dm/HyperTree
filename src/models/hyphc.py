@@ -387,7 +387,7 @@ class HyperbolicHCModel(AbstractModel):
         return x_recon
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
-        x_aug, x, _ = batch
+        x_aug_1, x_aug_2, x, _ = batch
         x_recon, manifold_z = self(x)
         #x_aug_recon, manifold_z_aug = self(x_aug)
 
@@ -417,14 +417,16 @@ class HyperbolicHCModel(AbstractModel):
         total_loss = recon_loss + hyphc_loss * hyphc_loss_weight
         
         if self.contrastive_enabled:
-            # Encode the augmented view to get its hyperbolic embedding
-            manifold_z_aug = self.encode(x_aug)
+            # Encode both augmented views to get their hyperbolic embeddings
+            manifold_z_aug_1 = self.encode(x_aug_1)
+            manifold_z_aug_2 = self.encode(x_aug_2)
 
             # Compute the hyperbolic contrastive loss using the parent method
             # We set use_euclidean=False to use geodesic distance
+            # BYOL-style: compare original with first augmentation
             contrastive_loss = self.compute_contrastive_loss(
                 z_i=manifold_z,
-                z_j=manifold_z_aug,
+                z_j=manifold_z_aug_1,
                 temperature=self.contrastive_temperature,
                 use_euclidean=False  # This makes it a hyperbolic contrastive loss
             )

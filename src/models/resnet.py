@@ -262,7 +262,7 @@ class HyperbolicResNet(AbstractModel):
         return x_recon
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
-        x_aug, x, _ = batch
+        x_aug_1, x_aug_2, x, _ = batch
         x_recon, z = self(x)        
         
         # Reconstruction loss
@@ -272,18 +272,21 @@ class HyperbolicResNet(AbstractModel):
         # Contrastive loss (if enabled)
         if self.contrastive_enabled:
             # Encode augmented images
-            z_aug = self.encode(x_aug)
-            
+            z_aug_1 = self.encode(x_aug_1)
+            z_aug_2 = self.encode(x_aug_2)
+
             # Apply contrastive projection head (SimCLR-style)
             # These projections are only used for contrastive loss, not reconstruction
             z_proj = self.contrastive_projection(z.view(z.size(0), -1))
-            z_aug_proj = self.contrastive_projection(z_aug.view(z_aug.size(0), -1))
+            z_aug_proj_1 = self.contrastive_projection(z_aug_1.view(z_aug_1.size(0), -1))
+            z_aug_proj_2 = self.contrastive_projection(z_aug_2.view(z_aug_2.size(0), -1))
             
             # Use Euclidean cosine similarity since projection head outputs are in Euclidean space
+            # BYOL-style: compare original with first augmentation
             contrastive_loss = self.compute_contrastive_loss(
-                z_proj, z_aug_proj, 
+                z_proj, z_aug_proj_1,
                 temperature=self.contrastive_temperature,
-                use_euclidean=True  # Projection head outputs are Euclidean
+                use_euclidean=True  # Projection head outputs are Eucl  idean
             )
             loss = loss + self.contrastive_weight * contrastive_loss
             
@@ -298,7 +301,7 @@ class HyperbolicResNet(AbstractModel):
         self.log("loss", loss, logger=False, prog_bar=True, on_epoch=True, on_step=False)
 
         if batch_idx == 0:
-            self._log_images_to_wandb(x, x_recon, x_aug if self.contrastive_enabled else None)
+            self._log_images_to_wandb(x, x_recon, x_aug_1 if self.contrastive_enabled else None)
 
         return loss
 

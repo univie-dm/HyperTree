@@ -45,12 +45,6 @@ def get_model_path(cfg: omegaconf.DictConfig):
     return md5(str(attr).encode()).hexdigest()
 
 def get_datamodule(cfg: omegaconf.DictConfig, stage: str) -> Tuple[Union[TabularDataModule, GrayScaleDataModule, ColorDataModule], int, bool]:
-    if stage == 'pretrain':
-        use_augmentations = cfg.pretraining.augmentations
-    elif stage == 'clustering':
-        use_augmentations = cfg.clustering.augmentations
-    else:
-        raise ValueError(f"Invalid stage: {stage}. Expected 'pretrain' or 'clustering'.")
     # Determine dataset type and create appropriate datamodule
     if hasattr(cfg.dataset, 'type') and cfg.dataset.type == 'tabular':
         datamodule = TabularDataModule(
@@ -71,7 +65,6 @@ def get_datamodule(cfg: omegaconf.DictConfig, stage: str) -> Tuple[Union[Tabular
             subset=cfg.dataset.subset,
             num_workers=cfg.experiment.num_workers,
             selected_classes=cfg.dataset.get('selected_classes', None),
-            use_augmentations=use_augmentations,
         )
         input_dim = cfg.dataset.resize * cfg.dataset.resize * cfg.dataset.channels
         is_image = True
@@ -83,7 +76,6 @@ def get_datamodule(cfg: omegaconf.DictConfig, stage: str) -> Tuple[Union[Tabular
             resize=cfg.dataset.resize,
             subset=cfg.dataset.subset,
             num_workers=cfg.experiment.num_workers,
-            use_augmentations=use_augmentations,
             selected_classes=cfg.dataset.get('selected_classes', None),
         )
         input_dim = cfg.dataset.resize * cfg.dataset.resize * cfg.dataset.channels

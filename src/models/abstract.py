@@ -205,7 +205,7 @@ class AbstractModel(pl.LightningModule):
                 str_labels = []
                 labels_map = self.trainer.datamodule.get_class_names() # type: ignore
 
-                for batch_idx, (x_aug, x, y) in enumerate(test_loader):
+                for batch_idx, (_, _, x, y) in enumerate(test_loader):
                     _, z = self(x.to(self.device))
                     embeddings.append(z)
                     labels.append(y)

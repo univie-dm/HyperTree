@@ -151,16 +151,14 @@ class HyperbolicAE(AbstractModel):
         return x_recon
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
-        x_aug, x, _ = batch
+        _, _, x, _ = batch
+        # Feedforward model uses only clean images for reconstruction
         x_recon, _, = self(x)
-        #x_aug_recon, _, = self(x_aug)
 
         # Reconstruction loss
         if x_recon.shape != x.shape:
             x_recon = x_recon.view_as(x)
         x_recon_loss = F.mse_loss(x_recon, x)
-        #x_aug_recon_loss = F.mse_loss(x_aug_recon, x_aug)
-        #loss = (x_recon_loss + x_aug_recon_loss) / 2
         loss = x_recon_loss
 
         for key, value in grad_norm(self, norm_type=2).items():
@@ -170,7 +168,6 @@ class HyperbolicAE(AbstractModel):
 
         # Logging
         self.metrics.setdefault("pretrain/x_recon_loss", []).append(x_recon_loss)
-        #self.metrics.setdefault("pretrain/x_aug_recon_loss", []).append(x_aug_recon_loss)
         self.metrics.setdefault("pretrain/total_loss", []).append(loss)
         if isinstance(self.manifold.c, torch.Tensor):
             self.metrics.setdefault("pretrain/c", []).append(self.manifold.c.detach())
