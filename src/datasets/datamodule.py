@@ -3,7 +3,8 @@ import pytorch_lightning as pl
 import numpy as np
 from sklearn.datasets import load_iris
 from sklearn.preprocessing import StandardScaler
-from torchvision import transforms, datasets
+from torchvision import datasets
+from torchvision.transforms import v2 as transforms
 from torch.utils.data import DataLoader
 from typing import Literal, Optional, Union, Dict, Tuple
 
@@ -14,27 +15,29 @@ class BYOLTransform:
     """
     def __init__(self, normalize_fn: transforms.Normalize, resize: int = 32):
         self.transform1 = transforms.Compose([
-            transforms.RandomResizedCrop(size=resize, scale=(0.2, 1.0)),
+            transforms.RandomResizedCrop(size=(resize, resize), scale=(0.2, 1.0), antialias=True),
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomApply([
                 transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)
             ], p=0.8),
             transforms.RandomGrayscale(p=0.2),
             transforms.RandomApply([
-                transforms.GaussianBlur(kernel_size=3)
+                transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0))
             ], p=0.1),
             transforms.RandomSolarize(threshold=0.5, p=0.2),
-            transforms.ToTensor(),
+            transforms.ToImage(),
+            transforms.ToDtype(torch.float32, scale=True),
             normalize_fn
         ])
         self.transform2 = transforms.Compose([
-            transforms.RandomResizedCrop(size=resize, scale=(0.2, 1.0)),
+            transforms.RandomResizedCrop(size=(resize, resize), scale=(0.2, 1.0), antialias=True),
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomApply([
                 transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)
             ], p=0.8),
             transforms.RandomGrayscale(p=0.2),
-            transforms.ToTensor(),
+            transforms.ToImage(),
+            transforms.ToDtype(torch.float32, scale=True),
             normalize_fn
         ])
 
@@ -57,7 +60,14 @@ class MultiViewDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         img, label = self.dataset[idx]
         base_img = self.base_transform(img)
-        aug_img_1, aug_img_2 = self.aug_transform(img)
+        
+        if isinstance(self.aug_transform, BYOLTransform):
+            aug_img_1, aug_img_2 = self.aug_transform(img)
+        else:
+            # For non-BYOL transforms, use the same augmentation twice
+            aug_img_1 = self.aug_transform(img)
+            aug_img_2 = self.aug_transform(img)
+        
         return aug_img_1, aug_img_2, base_img, label
 
 
@@ -90,7 +100,7 @@ class ColorDataModule(pl.LightningDataModule):
     def get_normalize_fn(data: torch.Tensor) -> transforms.Normalize:
         channel_means = data.mean([0, 2, 3])
         channel_stds = data.std([0, 2, 3])
-        return transforms.Normalize(channel_means, channel_stds)
+        return transforms.Normalize(mean=channel_means.tolist(), std=channel_stds.tolist())
 
     def setup(self, stage: Optional[str] = None) -> None:
         dataset_class = self.dataset_map[self.hparams.dataset_name]
@@ -105,10 +115,14 @@ class ColorDataModule(pl.LightningDataModule):
             base_test = dataset_class(self.hparams.data_dir, train=False, transform=None, download=True)
 
         # --- Normalization ---
-        temp_transform = transforms.Compose([
-            transforms.Resize((32, 32)) if self.hparams.dataset_name == "gtsrb" else transforms.Identity(),
-            transforms.ToTensor()
+        temp_transform_list = []
+        if self.hparams.dataset_name == "gtsrb":
+            temp_transform_list.append(transforms.Resize((32, 32), antialias=True))
+        temp_transform_list.extend([
+            transforms.ToImage(),
+            transforms.ToDtype(torch.float32, scale=True)
         ])
+        temp_transform = transforms.Compose(temp_transform_list)
         temp_dataset = dataset_class(
             self.hparams.data_dir, 
             **({"train": True} if self.hparams.dataset_name != "gtsrb" else {"split": "train"}),
@@ -121,8 +135,12 @@ class ColorDataModule(pl.LightningDataModule):
         # --- Transforms ---
         transform_list = []
         if self.hparams.resize:
-            transform_list.append(transforms.Resize((self.hparams.resize, self.hparams.resize)))
-        transform_list.extend([transforms.ToTensor(), normalize_fn])
+            transform_list.append(transforms.Resize((self.hparams.resize, self.hparams.resize), antialias=True))
+        transform_list.extend([
+            transforms.ToImage(),
+            transforms.ToDtype(torch.float32, scale=True),
+            normalize_fn
+        ])
         base_transform = transforms.Compose(transform_list)
 
         # Always create augmentation transforms - let the dataset decide what to use
@@ -143,9 +161,12 @@ class ColorDataModule(pl.LightningDataModule):
 
         # --- Create datasets based on subset ---
         if self.hparams.subset == 'all':
-            self.train_dataset = MultiViewDataset(base_train, base_transform, aug_transform)
-            self.test_dataset = MultiViewDataset(base_test, base_transform, base_transform)
-            self.full_dataset = torch.utils.data.ConcatDataset([self.train_dataset, self.test_dataset])
+            # When using 'all', both train and test data are used for training, so both get BYOL augmentations
+            train_part = MultiViewDataset(base_train, base_transform, aug_transform)
+            test_part_training = MultiViewDataset(base_test, base_transform, aug_transform)  # For training
+            self.test_dataset = MultiViewDataset(base_test, base_transform, base_transform)  # Clean for evaluation
+            self.train_dataset = train_part  # Keep for consistency
+            self.full_dataset = torch.utils.data.ConcatDataset([train_part, test_part_training])
         elif self.hparams.subset == 'test':
             self.test_dataset = MultiViewDataset(base_test, base_transform, base_transform)
             self.train_dataset = MultiViewDataset(base_test, base_transform, aug_transform)  # Use test set for training
@@ -233,31 +254,40 @@ class GrayScaleDataModule(pl.LightningDataModule):
     def get_normalize_fn(data: torch.Tensor) -> transforms.Normalize:
         channel_means = data.mean([0, 2, 3])
         channel_stds = data.std([0, 2, 3])
-        return transforms.Normalize(channel_means, channel_stds)
+        return transforms.Normalize(mean=channel_means.tolist(), std=channel_stds.tolist())
 
     def setup(self, stage: Optional[str] = None) -> None:
         dataset_class = self.dataset_map[self.hparams.dataset_name]
 
         # First download the dataset
-        dataset_class(self.hparams.data_dir, train=False, transform=transforms.ToTensor(), download=True)
-        temp_dataset = dataset_class(self.hparams.data_dir, train=True, transform=transforms.ToTensor(), download=True)
+        temp_transform = transforms.Compose([transforms.ToImage(), transforms.ToDtype(torch.float32, scale=True)])
+        dataset_class(self.hparams.data_dir, train=False, transform=temp_transform, download=True)
+        temp_dataset = dataset_class(self.hparams.data_dir, train=True, transform=temp_transform, download=True)
         temp_loader = DataLoader(temp_dataset, batch_size=1000, num_workers=self.hparams.num_workers)
         normalize_fn = self.get_normalize_fn(next(iter(temp_loader))[0])
 
         # Create transforms
         transform_list = []
         if self.hparams.resize:
-            transform_list.append(transforms.Resize((self.hparams.resize, self.hparams.resize)))
-        transform_list.extend([transforms.ToTensor(), normalize_fn])
+            transform_list.append(transforms.Resize((self.hparams.resize, self.hparams.resize), antialias=True))
+        transform_list.extend([
+            transforms.ToImage(),
+            transforms.ToDtype(torch.float32, scale=True),
+            normalize_fn
+        ])
         base_transform = transforms.Compose(transform_list)
 
         # Always create augmentation transforms - let the dataset decide what to use
-        aug_transform = transforms.Compose([
-            *transform_list[:-2],  # All except ToTensor and normalize
+        aug_transform_list = []
+        if self.hparams.resize:
+            aug_transform_list.append(transforms.Resize((self.hparams.resize, self.hparams.resize), antialias=True))
+        aug_transform_list.extend([
             transforms.RandomAffine(degrees=16, translate=(0.1, 0.1), shear=8),
-            transforms.ToTensor(),
+            transforms.ToImage(),
+            transforms.ToDtype(torch.float32, scale=True),
             normalize_fn
         ])
+        aug_transform = transforms.Compose(aug_transform_list)
 
         # Load base datasets
         base_test = dataset_class(self.hparams.data_dir, train=False, transform=None)
