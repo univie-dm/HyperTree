@@ -1,3 +1,4 @@
+import argparse
 import torch
 import pytorch_lightning as pl
 import numpy as np
@@ -6,7 +7,8 @@ from sklearn.preprocessing import StandardScaler
 from torchvision import datasets
 from torchvision.transforms import v2 as transforms
 from torch.utils.data import DataLoader
-from typing import Literal, Optional, Union, Dict, Tuple
+from typing import Literal, Optional, Dict, Tuple
+
 
 
 class BYOLTransform:
@@ -87,6 +89,7 @@ class ColorDataModule(pl.LightningDataModule):
         selected_classes: Optional[list] = None
     ):
         super().__init__()
+        self.hparams: argparse.Namespace
         self.save_hyperparameters()
         self.dataset_map = {
             "cifar10": datasets.CIFAR10,
@@ -219,9 +222,22 @@ class ColorDataModule(pl.LightningDataModule):
             fine_labels = datasets.CIFAR10(self.hparams.data_dir, train=False).classes
             return {i: (fine_labels[i], None) for i in range(len(fine_labels))}
         elif self.hparams.dataset_name in ["cifar100", "cifar100_20"]:
-            # Implementation for CIFAR100 class names would go here
-            # Simplified for brevity
-            return None
+            # CIFAR-100 coarse labels (20 superclasses)
+            coarse_labels = [
+                "aquatic_mammals", "fish", "flowers", "food_containers", "fruit_and_vegetables",
+                "household_electrical_devices", "household_furniture", "insects", "large_carnivores",
+                "large_man-made_outdoor_things", "large_natural_outdoor_scenes", "large_omnivores_and_herbivores",
+                "medium_mammals", "non-insect_invertebrates", "people", "reptiles", "small_mammals",
+                "trees", "vehicles_1", "vehicles_2"
+            ]
+            
+            # For cifar100 (fine labels), map each fine label to its coarse label
+            if self.hparams.dataset_name == "cifar100":
+                fine_labels = datasets.CIFAR100(self.hparams.data_dir, train=False).classes
+                return {i: (fine_labels[i], coarse_labels[self._get_coarse_label(i)]) for i in range(100)}
+            else:  # cifar100_20
+                # For cifar100_20, the labels are already coarse (0-19)
+                return {i: (coarse_labels[i], None) for i in range(20)}
         elif self.hparams.dataset_name == "gtsrb":
             # Implementation for GTSRB class names would go here
             # Simplified for brevity
@@ -242,6 +258,7 @@ class GrayScaleDataModule(pl.LightningDataModule):
         selected_classes: Optional[list] = None
     ):
         super().__init__()
+        self.hparams: argparse.Namespace
         self.save_hyperparameters()
         self.dataset_map = {
             "mnist": datasets.MNIST,
@@ -282,7 +299,7 @@ class GrayScaleDataModule(pl.LightningDataModule):
         if self.hparams.resize:
             aug_transform_list.append(transforms.Resize((self.hparams.resize, self.hparams.resize), antialias=True))
         aug_transform_list.extend([
-            transforms.RandomAffine(degrees=16, translate=(0.1, 0.1), shear=8),
+            transforms.RandomAffine(degrees=(-16.0, 16.0), translate=(0.1, 0.1), shear=(-8.0, 8.0)),
             transforms.ToImage(),
             transforms.ToDtype(torch.float32, scale=True),
             normalize_fn
@@ -421,6 +438,7 @@ class TabularDataModule(pl.LightningDataModule):
         aug_noise_std: float = 0.1
     ):
         super().__init__()
+        self.hparams: argparse.Namespace
         self.save_hyperparameters()
         self.dataset_map = {
             "iris": load_iris

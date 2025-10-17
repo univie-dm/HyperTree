@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
-import wandb
 from src.models.abstract import AbstractModel
 from src.models.utils import get_dtype_from_precision, get_hyperbolic_encoding_layer_by_name, get_hyperbolic_decoding_layer_by_name
 from src.hyperbolic_math.src.manifolds import Euclidean, Hyperboloid
@@ -85,7 +84,8 @@ class HyperbolicResNet(AbstractModel):
         contrastive_enabled: bool = False,
         contrastive_weight: float = 0.5,
         contrastive_temperature: float = 0.1,
-        lr_scheduler_params: dict | None = None
+        lr_scheduler_params: dict | None = None,
+        byol : bool = False,
     ):
         super().__init__(
             model_type=model_type,
@@ -116,13 +116,21 @@ class HyperbolicResNet(AbstractModel):
         self.contrastive_enabled = contrastive_enabled
         self.contrastive_weight = contrastive_weight
         self.contrastive_temperature = contrastive_temperature
+        self.byol = byol
 
         self.hidden_dims = [1000, 512, 128, self.latent_dim]
 
         self.save_hyperparameters()
 
         # Decoder params
-        self.expansion = 1
+        # ResNet18 and ResNet34 use BasicBlock (expansion=1)
+        # ResNet50, ResNet101, ResNet152 use Bottleneck (expansion=4)
+        if self.model_type in ['resnet18', 'resnet34']:
+            self.expansion = 1
+        elif self.model_type in ['resnet50', 'resnet101', 'resnet152']:
+            self.expansion = 4
+        else:
+            self.expansion = 1
         self.inplanes = 512 * self.expansion
 
         # Encoder
@@ -147,7 +155,20 @@ class HyperbolicResNet(AbstractModel):
             nn.Linear(512, 128),
             nn.BatchNorm1d(128),
             self.activation_function,
-            nn.Linear(128, self.latent_dim),
+            nn.Linear(128, 64),
+            nn.BatchNorm1d(64),
+            self.activation_function,
+            get_hyperbolic_encoding_layer_by_name(
+                layer_name=hyperbolic_encoding,
+                manifold=self.manifold,
+                input_dim=64,
+                output_dim=self.latent_dim,
+                params_dtype=self.params_dtype,
+                clamping_factor=self.clamping_factor,
+                smoothing_factor=self.smoothing_factor,
+                learnable_scale=self.learnable_scale,
+                FHCNN_normalize=self.normalize
+            ),
         )
 
         self.encoder = nn.Sequential(self.encoder, self.projection_head)
@@ -281,12 +302,16 @@ class HyperbolicResNet(AbstractModel):
             z_aug_proj_1 = self.contrastive_projection(z_aug_1.view(z_aug_1.size(0), -1))
             z_aug_proj_2 = self.contrastive_projection(z_aug_2.view(z_aug_2.size(0), -1))
             
-            # Use Euclidean cosine similarity since projection head outputs are in Euclidean space
-            # BYOL-style: compare original with first augmentation
+            if self.byol:
+                proj1 = z_aug_proj_1
+                proj2 = z_aug_proj_2
+            else:
+                proj1 = z_proj
+                proj2 = z_aug_proj_1
             contrastive_loss = self.compute_contrastive_loss(
-                z_proj, z_aug_proj_1,
+                proj1, proj2,
                 temperature=self.contrastive_temperature,
-                use_euclidean=True  # Projection head outputs are Euclidean
+                use_euclidean=False
             )
             loss = loss + self.contrastive_weight * contrastive_loss
             
@@ -301,7 +326,10 @@ class HyperbolicResNet(AbstractModel):
         self.log("loss", loss, logger=False, prog_bar=True, on_epoch=True, on_step=False)
 
         if batch_idx == 0:
-            x_aug_for_logging = torch.concat([x_aug_1, x_aug_2], dim=0) if self.contrastive_enabled else torch.empty((0, *x.shape[1:]), dtype=x.dtype, device=x.device)
+            if self.byol:
+                x_aug_for_logging = torch.concat([x_aug_1, x_aug_2], dim=0)
+            else:
+                x_aug_for_logging = x_aug_1
             self._log_images_to_wandb(x, x_recon, x_aug_for_logging)
 
         return loss

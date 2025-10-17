@@ -19,6 +19,7 @@ pretraining:
     enabled: False
     weight: 1.0
     temperature: 0.5
+    byol: False
   lr_scheduler:
     type: # 'warmup_cosine', 'ReduceLROnPlateau'
     interval: 40  # Number of epochs for warmup phase
@@ -43,6 +44,7 @@ clustering:
     enabled: False
     weight: 0.1
     temperature: 0.5
+    byol: False
 
 ## HypHC parameters
 hyphc:

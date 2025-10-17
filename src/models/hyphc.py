@@ -41,7 +41,8 @@ class HyperbolicHCModel(AbstractModel):
         freeze_encoder: bool = False,
         contrastive_enabled: bool = False,
         contrastive_weight: float = 0.1,
-        contrastive_temperature: float = 0.5
+        contrastive_temperature: float = 0.5,
+        byol: bool = False,
     ):
         super().__init__(
             model_type=ae_model.model_type,
@@ -80,6 +81,7 @@ class HyperbolicHCModel(AbstractModel):
         self.contrastive_enabled = contrastive_enabled
         self.contrastive_weight = contrastive_weight
         self.contrastive_temperature = contrastive_temperature
+        self.byol = byol
 
         # Load encoding and decoding modules with their weights
         self.encoder = ae_model.encoder  # type: ignore
@@ -372,7 +374,7 @@ class HyperbolicHCModel(AbstractModel):
         x = self.hyperbolic_decoding_layer(manifold_z) # type: ignore
         # Cast back from the manifold precision to the model's precision
         x = x.to(dtype=get_dtype_from_precision(self.params_dtype))
-        if self.model_type in ['resnet18', 'resnet34', 'resnet50']:
+        if self.model_type in ['resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152']:
             x = x.view(-1, 512 * self.expansion, 4, 4)
         elif self.model_type == 'poincare_resnet_ae':
             x = x.view(-1, 64, 8, 8)
@@ -418,17 +420,19 @@ class HyperbolicHCModel(AbstractModel):
         
         if self.contrastive_enabled:
             # Encode both augmented views to get their hyperbolic embeddings
-            manifold_z_aug_1 = self.encode(x_aug_1)
-            manifold_z_aug_2 = self.encode(x_aug_2)
+            z_aug_proj_1 = self.encode(x_aug_1)
+            z_aug_proj_2 = self.encode(x_aug_2)
 
-            # Compute the hyperbolic contrastive loss using the parent method
-            # We set use_euclidean=False to use geodesic distance
-            # BYOL-style: compare original with first augmentation
+            if self.byol:
+                proj1 = z_aug_proj_1
+                proj2 = z_aug_proj_2
+            else:
+                proj1 = manifold_z
+                proj2 = z_aug_proj_1
             contrastive_loss = self.compute_contrastive_loss(
-                z_i=manifold_z_aug_1,
-                z_j=manifold_z_aug_2,
+                proj1, proj2,
                 temperature=self.contrastive_temperature,
-                use_euclidean=False  # This makes it a hyperbolic contrastive loss
+                use_euclidean=False
             )
 
             # Add the weighted contrastive loss to the total loss
@@ -462,7 +466,10 @@ class HyperbolicHCModel(AbstractModel):
         self.log('train_loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, logger=False)
         
         if batch_idx == 0:
-            x_aug_for_logging = torch.concat([x_aug_1, x_aug_2], dim=0) if self.contrastive_enabled else torch.empty((0, *x.shape[1:]), dtype=x.dtype, device=x.device)
+            if self.byol:
+                x_aug_for_logging = torch.concat([x_aug_1, x_aug_2], dim=0)
+            else:
+                x_aug_for_logging = x_aug_1
             self._log_images_to_wandb(x, x_recon, x_aug_for_logging)
         
         return total_loss

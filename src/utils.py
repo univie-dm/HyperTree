@@ -42,6 +42,7 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "selected_classes" : cfg.dataset.get('selected_classes', None),
         "dataset_subset" : cfg.dataset.get('subset', None),
         "use_contrastive_loss_pretrain": cfg.pretraining.contrastive_loss.enabled,
+        "use_byol_pretrain": cfg.pretraining.contrastive_loss.byol,
     }
     return md5(str(attr).encode()).hexdigest()
 
@@ -169,6 +170,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             contrastive_weight=cfg.pretraining.contrastive_loss.weight,
             contrastive_temperature=cfg.pretraining.contrastive_loss.temperature,
             lr_scheduler_params=cfg.pretraining.get('lr_scheduler', None),
+            byol=cfg.pretraining.contrastive_loss.byol,
         )
     else:
         raise ValueError("Invalid autoencoder type")
@@ -200,7 +202,8 @@ def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[Hyperb
         freeze_encoder=cfg.clustering.freeze_encoder,
         contrastive_enabled=cfg.clustering.contrastive_loss.enabled,
         contrastive_weight=cfg.clustering.contrastive_loss.weight,
-        contrastive_temperature=cfg.clustering.contrastive_loss.temperature
+        contrastive_temperature=cfg.clustering.contrastive_loss.temperature,
+        byol=cfg.clustering.contrastive_loss.byol,
     )
     return model
 
