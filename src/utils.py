@@ -6,59 +6,71 @@ from hashlib import md5
 from pytorch_lightning.loggers import WandbLogger, CSVLogger
 from typing import Tuple, Union
 
-from src.datasets.datamodule import ColorDataModule, GrayScaleDataModule, TabularDataModule
-from src.models import HyperbolicAE, HyperbolicHCModel, HyperbolicResNet, HyperbolicConvAE
+from src.datasets.datamodule import (
+    ColorDataModule,
+    GrayScaleDataModule,
+    TabularDataModule,
+)
+from src.models import (
+    HyperbolicAE,
+    HyperbolicHCModel,
+    HyperbolicResNet,
+    HyperbolicConvAE,
+)
 
 
 def get_model_path(cfg: omegaconf.DictConfig):
     attr = {
         # Experiment attributes
-        "seed" : cfg.experiment.seed,
-        "batch_size" : cfg.experiment.batch_size,
-        "optimizer" : cfg.experiment.optimizer,
+        "seed": cfg.experiment.seed,
+        "batch_size": cfg.experiment.batch_size,
+        "optimizer": cfg.experiment.optimizer,
         # Pretraining attributes
-        "pretrain_epochs" : cfg.pretraining.epochs,
-        "learning_rate" : cfg.pretraining.learning_rate,
-        "pretrain_trainable_curvature" : cfg.pretraining.trainable_curvature,
+        "pretrain_epochs": cfg.pretraining.epochs,
+        "learning_rate": cfg.pretraining.learning_rate,
+        "pretrain_trainable_curvature": cfg.pretraining.trainable_curvature,
         # Model attributes
-        "ae_type" : cfg.architecture.ae_type,
-        "hidden_dims" : cfg.architecture.hidden_dims,
-        "latent_dim" : cfg.architecture.latent_dim,
-        "hyperbolic_encoding" : cfg.architecture.hyperbolic_encoding,
-        "hyperbolic_decoding" : cfg.architecture.hyperbolic_decoding,
-        "precision" : cfg.architecture.precision,
-        "manifold_name" : cfg.architecture.manifold_name,
-        "manifold_precision" : cfg.architecture.manifold_precision,
-        "curvature_magnitude" : cfg.architecture.curvature_magnitude,
+        "ae_type": cfg.architecture.ae_type,
+        "hidden_dims": cfg.architecture.hidden_dims,
+        "latent_dim": cfg.architecture.latent_dim,
+        "hyperbolic_encoding": cfg.architecture.hyperbolic_encoding,
+        "hyperbolic_decoding": cfg.architecture.hyperbolic_decoding,
+        "precision": cfg.architecture.precision,
+        "manifold_name": cfg.architecture.manifold_name,
+        "manifold_precision": cfg.architecture.manifold_precision,
+        "curvature_magnitude": cfg.architecture.curvature_magnitude,
         "activation_function": cfg.architecture.activation_function,
-        "hyperbolic_clamping" : cfg.architecture.hyperbolic_clamping,
-        "hyperbolic_smoothing" : cfg.architecture.hyperbolic_smoothing,
+        "hyperbolic_clamping": cfg.architecture.hyperbolic_clamping,
+        "hyperbolic_smoothing": cfg.architecture.hyperbolic_smoothing,
         "learnable_scale": cfg.architecture.learnable_scale,
         "FHCNN_normalize": cfg.architecture.FHCNN_normalize,
-        "spectral_normalization" : cfg.architecture.get('spectral_normalization', False),
-        "lr_scheduler_pretrain": cfg.pretraining.get('lr_scheduler', None),
+        "spectral_normalization": cfg.architecture.get("spectral_normalization", False),
+        "lr_scheduler_pretrain": cfg.pretraining.get("lr_scheduler", None),
         # Dataset specific attributes
-        "dataset_name" : cfg.dataset.name,
-        "selected_classes" : cfg.dataset.get('selected_classes', None),
-        "dataset_subset" : cfg.dataset.get('subset', None),
+        "dataset_name": cfg.dataset.name,
+        "selected_classes": cfg.dataset.get("selected_classes", None),
+        "dataset_subset": cfg.dataset.get("subset", None),
         "use_contrastive_loss_pretrain": cfg.pretraining.contrastive_loss.enabled,
         "use_byol_pretrain": cfg.pretraining.contrastive_loss.byol,
     }
     return md5(str(attr).encode()).hexdigest()
 
-def get_datamodule(cfg: omegaconf.DictConfig, stage: str) -> Tuple[Union[TabularDataModule, GrayScaleDataModule, ColorDataModule], int, bool]:
+
+def get_datamodule(
+    cfg: omegaconf.DictConfig, stage: str
+) -> Tuple[Union[TabularDataModule, GrayScaleDataModule, ColorDataModule], int, bool]:
     # Determine dataset type and create appropriate datamodule
-    if hasattr(cfg.dataset, 'type') and cfg.dataset.type == 'tabular':
+    if hasattr(cfg.dataset, "type") and cfg.dataset.type == "tabular":
         datamodule = TabularDataModule(
             dataset_name=cfg.dataset.name,
             batch_size=cfg.experiment.batch_size,
             num_workers=cfg.experiment.num_workers,
             train_ratio=cfg.dataset.train_ratio,
-            aug_noise_std=cfg.dataset.aug_noise_std
+            aug_noise_std=cfg.dataset.aug_noise_std,
         )
         input_dim = cfg.dataset.input_dim
         is_image = False
-    elif hasattr(cfg.dataset, 'channels') and cfg.dataset.channels == 1:
+    elif hasattr(cfg.dataset, "channels") and cfg.dataset.channels == 1:
         datamodule = GrayScaleDataModule(
             dataset_name=cfg.dataset.name,
             data_dir=cfg.dataset.data_dir,
@@ -66,11 +78,11 @@ def get_datamodule(cfg: omegaconf.DictConfig, stage: str) -> Tuple[Union[Tabular
             resize=cfg.dataset.resize,
             subset=cfg.dataset.subset,
             num_workers=cfg.experiment.num_workers,
-            selected_classes=cfg.dataset.get('selected_classes', None),
+            selected_classes=cfg.dataset.get("selected_classes", None),
         )
         input_dim = cfg.dataset.resize * cfg.dataset.resize * cfg.dataset.channels
         is_image = True
-    elif hasattr(cfg.dataset, 'channels') and cfg.dataset.channels == 3:
+    elif hasattr(cfg.dataset, "channels") and cfg.dataset.channels == 3:
         datamodule = ColorDataModule(
             dataset_name=cfg.dataset.name,
             data_dir=cfg.dataset.data_dir,
@@ -78,7 +90,7 @@ def get_datamodule(cfg: omegaconf.DictConfig, stage: str) -> Tuple[Union[Tabular
             resize=cfg.dataset.resize,
             subset=cfg.dataset.subset,
             num_workers=cfg.experiment.num_workers,
-            selected_classes=cfg.dataset.get('selected_classes', None),
+            selected_classes=cfg.dataset.get("selected_classes", None),
         )
         input_dim = cfg.dataset.resize * cfg.dataset.resize * cfg.dataset.channels
         is_image = True
@@ -87,11 +99,17 @@ def get_datamodule(cfg: omegaconf.DictConfig, stage: str) -> Tuple[Union[Tabular
     datamodule.setup()
     return datamodule, input_dim, is_image
 
-def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[HyperbolicAE, HyperbolicResNet, HyperbolicConvAE]:
-    if os.path.exists(f"data/models/{get_model_path(cfg)}.pt") and not cfg.pretraining.overwrite:
+
+def get_pretrain_model(
+    cfg: omegaconf.DictConfig, input_dim: int
+) -> Union[HyperbolicAE, HyperbolicResNet, HyperbolicConvAE]:
+    if (
+        os.path.exists(f"data/models/{get_model_path(cfg)}.pt")
+        and not cfg.pretraining.overwrite
+    ):
         model = torch.load(f"data/models/{get_model_path(cfg)}.pt", weights_only=False)
         print("Loaded model from {}".format(f"data/models/{get_model_path(cfg)}.pt"))
-    elif cfg.architecture.ae_type == 'feedforward':
+    elif cfg.architecture.ae_type == "feedforward":
         model = HyperbolicAE(
             input_dim=input_dim,
             hidden_dims=cfg.architecture.hidden_dims,
@@ -107,7 +125,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             learning_rate=cfg.pretraining.learning_rate,
             log_interval=cfg.experiment.log_interval,
             distances_type=cfg.hyphc.distances_type,
-            stage='pretrain',
+            stage="pretrain",
             global_epoch=0,
             evaluation_metrics=cfg.evaluation,
             activation_function=cfg.architecture.activation_function,
@@ -117,9 +135,9 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             FHCNN_normalize=cfg.architecture.FHCNN_normalize,
             distances_version=cfg.hyphc.distances_version,
             spectral_normalization=cfg.architecture.spectral_normalization,
-            lr_scheduler_params=cfg.pretraining.get('lr_scheduler', None),
+            lr_scheduler_params=cfg.pretraining.get("lr_scheduler", None),
         )
-    elif cfg.architecture.ae_type == 'convolutional':
+    elif cfg.architecture.ae_type == "convolutional":
         model = HyperbolicConvAE(
             image_size=cfg.dataset.resize,
             input_channels=cfg.dataset.channels,
@@ -134,16 +152,22 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             learning_rate=cfg.pretraining.learning_rate,
             log_interval=cfg.experiment.log_interval,
             latent_dim=cfg.architecture.latent_dim,
-            stage='pretrain',
+            stage="pretrain",
             global_epoch=0,
             evaluation_metrics=cfg.evaluation,
             clamping_factor=cfg.architecture.hyperbolic_clamping,
             smoothing_factor=cfg.architecture.hyperbolic_smoothing,
             learnable_scale=cfg.architecture.learnable_scale,
             FHCNN_normalize=cfg.architecture.FHCNN_normalize,
-            lr_scheduler_params=cfg.pretraining.get('lr_scheduler', None),
+            lr_scheduler_params=cfg.pretraining.get("lr_scheduler", None),
         )
-    elif cfg.architecture.ae_type in ['resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152']:
+    elif cfg.architecture.ae_type in [
+        "resnet18",
+        "resnet34",
+        "resnet50",
+        "resnet101",
+        "resnet152",
+    ]:
         model = HyperbolicResNet(
             model_type=cfg.architecture.ae_type,
             hyperbolic_encoding=cfg.architecture.hyperbolic_encoding,
@@ -169,23 +193,29 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             contrastive_enabled=cfg.pretraining.contrastive_loss.enabled,
             contrastive_weight=cfg.pretraining.contrastive_loss.weight,
             contrastive_temperature=cfg.pretraining.contrastive_loss.temperature,
-            lr_scheduler_params=cfg.pretraining.get('lr_scheduler', None),
+            lr_scheduler_params=cfg.pretraining.get("lr_scheduler", None),
             byol=cfg.pretraining.contrastive_loss.byol,
         )
     else:
         raise ValueError("Invalid autoencoder type")
     return model
 
-def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[HyperbolicAE, HyperbolicResNet, HyperbolicConvAE]) -> HyperbolicHCModel:
+
+def get_clustering_model(
+    cfg: omegaconf.DictConfig,
+    pretrain_model: Union[HyperbolicAE, HyperbolicResNet, HyperbolicConvAE],
+) -> HyperbolicHCModel:
     model = HyperbolicHCModel(
         ae_model=pretrain_model,
         trainable_curvature=cfg.clustering.trainable_curvature,
         learning_rate=cfg.clustering.learning_rate,
         weight_decay=cfg.clustering.weight_decay,
         log_interval=cfg.experiment.log_interval,
-        stage='clustering',
+        stage="clustering",
         global_epoch=cfg.pretraining.epochs,
-        lr_scheduler_params=cfg.clustering.lr_scheduler if hasattr(cfg.clustering, 'lr_scheduler') else None,
+        lr_scheduler_params=cfg.clustering.lr_scheduler
+        if hasattr(cfg.clustering, "lr_scheduler")
+        else None,
         hyphc_start_weight=cfg.hyphc.min_loss_weight,
         hyphc_end_weight=cfg.hyphc.max_loss_weight,
         hyphc_weight_interval=cfg.hyphc.loss_weight_interval,
@@ -207,6 +237,7 @@ def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[Hyperb
     )
     return model
 
+
 def get_logger(cfg: omegaconf.DictConfig) -> Union[WandbLogger, CSVLogger]:
     if cfg.wandb.enabled:
         logger = WandbLogger(
@@ -214,9 +245,11 @@ def get_logger(cfg: omegaconf.DictConfig) -> Union[WandbLogger, CSVLogger]:
             entity=cfg.wandb.entity,
             save_dir=cfg.wandb.save_dir,
             dir=cfg.wandb.save_dir,
-            config=omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
+            config=omegaconf.OmegaConf.to_container(
+                cfg, resolve=True, throw_on_missing=True
+            ),
             tags=cfg.wandb.tags,
-            log_model=False
+            log_model=False,
         )
     else:
         logger = CSVLogger(save_dir=cfg.wandb.save_dir, name=cfg.wandb.project)

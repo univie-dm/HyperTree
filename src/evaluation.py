@@ -22,9 +22,14 @@ from src.hyperbolic_math.src.utils.helpers import get_delta
 from src.hyperbolic_math.src.utils.vis_utils import create_figure, pointsTo2dPoincare
 
 
-
-def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
-               manifold: Manifold, metrics: dict[str, bool] | None = None, str_labels:Optional[npt.ArrayLike]|None = None) -> dict:
+def evaluation(
+    X: torch.Tensor,
+    Y: torch.Tensor,
+    distance_matrix: torch.Tensor,
+    manifold: Manifold,
+    metrics: dict[str, bool] | None = None,
+    str_labels: Optional[npt.ArrayLike] | None = None,
+) -> dict:
     """
     Evaluate the performance of a model using specified metrics.
 
@@ -49,7 +54,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
     points_in_manifold = False
     if metrics is None:
         return results
-    
+
     if metrics.get("test_sample_size", 0) > 0 and metrics["test_sample_size"] < len(X):
         # Sample equal number of points from each class
         sample_indices = stratified_sample(Y, metrics["test_sample_size"])
@@ -58,7 +63,7 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
         distance_matrix = distance_matrix[sample_indices][:, sample_indices]
         if str_labels is not None:
             str_labels = np.asarray(str_labels)[sample_indices]
-    
+
     if not isinstance(manifold.c, torch.Tensor):
         manifold.c = torch.tensor(manifold.c, device=X.device, dtype=X.dtype)
 
@@ -67,13 +72,23 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
     embedding_std = np.std(X_np, axis=0).mean()
     embedding_mean_norm = np.linalg.norm(X_np, axis=1).mean()
     if embedding_std < 1e-6:
-        warning(f"Embeddings appear collapsed (std={embedding_std:.2e}, mean_norm={embedding_mean_norm:.2e}). Clustering metrics may be unreliable.")
-    
+        warning(
+            f"Embeddings appear collapsed (std={embedding_std:.2e}, mean_norm={embedding_mean_norm:.2e}). Clustering metrics may be unreliable."
+        )
+
     if not isinstance(manifold, Euclidean):
-        distance_matrix += 2 / manifold.c if isinstance(manifold.c, torch.Tensor) else 2 / torch.tensor(manifold.c)
+        distance_matrix += (
+            2 / manifold.c
+            if isinstance(manifold.c, torch.Tensor)
+            else 2 / torch.tensor(manifold.c)
+        )
         metrics["visualization"] = False
     if distance_matrix.min() < 0:
-        warning("Distance matrix contains negative values. Clipping to zero. Minimum: {}".format(distance_matrix.min()))
+        warning(
+            "Distance matrix contains negative values. Clipping to zero. Minimum: {}".format(
+                distance_matrix.min()
+            )
+        )
         distance_matrix = distance_matrix.clamp(min=0)
 
     if metrics["visualization"]:
@@ -87,25 +102,34 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
             "file_path": None,
             "file_format": "png",
         }
-        sample_size = metrics['visualization_sample_size']
+        sample_size = metrics["visualization_sample_size"]
         sample_size = min(sample_size, len(X))
 
         # Sample equal number of points from each class for visualization
         pca_sample_indices = stratified_sample(Y, sample_size)
         points_sampled = X[pca_sample_indices]
 
-        
-        poincare_64 = PoincareBall(c=manifold.c.detach().to(settings['plot_manifold_dtype']), dtype=settings['plot_manifold_dtype'])
-        if manifold.name == 'PoincareBall':
+        poincare_64 = PoincareBall(
+            c=manifold.c.detach().to(settings["plot_manifold_dtype"]),
+            dtype=settings["plot_manifold_dtype"],
+        )
+        if manifold.name == "PoincareBall":
             points_sampled = poincare_64.to_hyperboloid(points_sampled)
         points_sampled = points_sampled.to(torch.float64)
-        two_d_pts, _ = pointsTo2dPoincare(x=points_sampled, poincare=poincare_64, hyperplanes=None, settings=settings)
-        two_d_pts = two_d_pts.detach().clone().to(dtype=settings['plot_manifold_dtype'], device=manifold.c.device) # type: ignore
+        two_d_pts, _ = pointsTo2dPoincare(
+            x=points_sampled, poincare=poincare_64, hyperplanes=None, settings=settings
+        )
+        two_d_pts = (
+            two_d_pts.detach()
+            .clone()
+            .to(dtype=settings["plot_manifold_dtype"], device=manifold.c.device)
+        )  # type: ignore
         if not poincare_64.is_in_manifold(two_d_pts):
-            warning("Some points are out of the Poincare ball after dimensionality reduction. NO visualization generated")
+            warning(
+                "Some points are out of the Poincare ball after dimensionality reduction. NO visualization generated"
+            )
         else:
             points_in_manifold = True
-
 
     if metrics.get("delta_hyperbolicity", False):
         delta_hyp, diam_hyp, rel_delta_hyp = get_delta(X, manifold)
@@ -131,16 +155,16 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
     if metrics.get("agglomerative_clustering_single", False):
         # Compute agglomerative clustering metrics
         agglomerative_clustering_single = AgglomerativeClustering(
-            n_clusters=len(np.unique(Y)),
-            metric='precomputed',
-            linkage='single'
+            n_clusters=len(np.unique(Y)), metric="precomputed", linkage="single"
         )
-        pred_labels_single = agglomerative_clustering_single.fit_predict(distance_matrix.cpu().numpy())
+        pred_labels_single = agglomerative_clustering_single.fit_predict(
+            distance_matrix.cpu().numpy()
+        )
         nmi_single = normalized_mutual_info_score(Y, pred_labels_single)
         ari_single = adjusted_rand_score(Y, pred_labels_single)
         results["agglomerative_clustering_single_nmi"] = nmi_single
         results["agglomerative_clustering_single_ari"] = ari_single
-        if metrics['visualization'] and points_in_manifold:
+        if metrics["visualization"] and points_in_manifold:
             settings = {
                 "plot_manifold_dtype": torch.float64,
                 "dim_red_method": "HoroPCA",
@@ -153,62 +177,74 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
             }
             # Map predicted labels to string labels if available
             Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-            str_labels_subset = np.asarray(str_labels)[pca_sample_indices] if str_labels is not None else None 
+            str_labels_subset = (
+                np.asarray(str_labels)[pca_sample_indices]
+                if str_labels is not None
+                else None
+            )
             visualization_labels = map_predicted_labels_to_str_labels(
-                pred_labels_single[pca_sample_indices], 
-                Y_numpy[pca_sample_indices], 
-                str_labels_subset
+                pred_labels_single[pca_sample_indices],
+                Y_numpy[pca_sample_indices],
+                str_labels_subset,
             )
             fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
-            results["agglomerative_clustering_single_hyperbolic_embeddings"] = wandb.Image(fig)
+            results["agglomerative_clustering_single_hyperbolic_embeddings"] = (
+                wandb.Image(fig)
+            )
             plt.close(fig)
     if metrics.get("agglomerative_clustering_complete", False):
         # Compute agglomerative clustering metrics
         agglomerative_clustering_complete = AgglomerativeClustering(
-            n_clusters=len(np.unique(Y)),
-            metric='precomputed',
-            linkage='complete'
+            n_clusters=len(np.unique(Y)), metric="precomputed", linkage="complete"
         )
-        pred_labels_complete = agglomerative_clustering_complete.fit_predict(distance_matrix.cpu().numpy())
+        pred_labels_complete = agglomerative_clustering_complete.fit_predict(
+            distance_matrix.cpu().numpy()
+        )
         nmi_complete = normalized_mutual_info_score(Y, pred_labels_complete)
         ari_complete = adjusted_rand_score(Y, pred_labels_complete)
         results["agglomerative_clustering_complete_nmi"] = nmi_complete
         results["agglomerative_clustering_complete_ari"] = ari_complete
-        if metrics['visualization'] and points_in_manifold:
+        if metrics["visualization"] and points_in_manifold:
             settings = {
-                    "plot_manifold_dtype": torch.float64,
-                    "dim_red_method": "HoroPCA",
-                    "title": "Hyperbolic Embeddings Agglomerative Clustering Complete Linkage",
-                    "show_origin": True,
-                    "save_figure": False,
-                    "file_name": "hyperbolic_embeddings",
-                    "file_path": None,
-                    "file_format": "png",
+                "plot_manifold_dtype": torch.float64,
+                "dim_red_method": "HoroPCA",
+                "title": "Hyperbolic Embeddings Agglomerative Clustering Complete Linkage",
+                "show_origin": True,
+                "save_figure": False,
+                "file_name": "hyperbolic_embeddings",
+                "file_path": None,
+                "file_format": "png",
             }
             # Map predicted labels to string labels if available
             Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-            str_labels_subset = np.asarray(str_labels)[pca_sample_indices] if str_labels is not None else None
+            str_labels_subset = (
+                np.asarray(str_labels)[pca_sample_indices]
+                if str_labels is not None
+                else None
+            )
             visualization_labels = map_predicted_labels_to_str_labels(
-                pred_labels_complete[pca_sample_indices], 
-                Y_numpy[pca_sample_indices], 
-                str_labels_subset
+                pred_labels_complete[pca_sample_indices],
+                Y_numpy[pca_sample_indices],
+                str_labels_subset,
             )
             fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
-            results["agglomerative_clustering_complete_hyperbolic_embeddings"] = wandb.Image(fig)
+            results["agglomerative_clustering_complete_hyperbolic_embeddings"] = (
+                wandb.Image(fig)
+            )
             plt.close(fig)
     if metrics.get("agglomerative_clustering_average", False):
         # Compute agglomerative clustering metrics
         agglomerative_clustering_average = AgglomerativeClustering(
-            n_clusters=len(np.unique(Y)),
-            metric='precomputed',
-            linkage='average'
+            n_clusters=len(np.unique(Y)), metric="precomputed", linkage="average"
         )
-        pred_labels_average = agglomerative_clustering_average.fit_predict(distance_matrix.cpu().numpy())
+        pred_labels_average = agglomerative_clustering_average.fit_predict(
+            distance_matrix.cpu().numpy()
+        )
         nmi_average = normalized_mutual_info_score(Y, pred_labels_average)
         ari_average = adjusted_rand_score(Y, pred_labels_average)
         results["agglomerative_clustering_average_nmi"] = nmi_average
         results["agglomerative_clustering_average_ari"] = ari_average
-        if metrics['visualization'] and points_in_manifold:
+        if metrics["visualization"] and points_in_manifold:
             settings = {
                 "plot_manifold_dtype": torch.float64,
                 "dim_red_method": "HoroPCA",
@@ -221,18 +257,24 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
             }
             # Map predicted labels to string labels if available
             Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-            str_labels_subset = np.asarray(str_labels)[pca_sample_indices] if str_labels is not None else None
+            str_labels_subset = (
+                np.asarray(str_labels)[pca_sample_indices]
+                if str_labels is not None
+                else None
+            )
             visualization_labels = map_predicted_labels_to_str_labels(
-                pred_labels_average[pca_sample_indices], 
-                Y_numpy[pca_sample_indices], 
-                str_labels_subset
+                pred_labels_average[pca_sample_indices],
+                Y_numpy[pca_sample_indices],
+                str_labels_subset,
             )
             fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
-            results["agglomerative_clustering_average_hyperbolic_embeddings"] = wandb.Image(fig)
+            results["agglomerative_clustering_average_hyperbolic_embeddings"] = (
+                wandb.Image(fig)
+            )
             plt.close(fig)
     if metrics.get("agglomerative_clustering_ward", False):
         # Compute agglomerative clustering metrics
-        #TODO: Implement agglomerative clustering with ward linkage. Sklearn does not support precomputed distance matrix with ward linkage.
+        # TODO: Implement agglomerative clustering with ward linkage. Sklearn does not support precomputed distance matrix with ward linkage.
         pass
     if metrics.get("visualization", False) and points_in_manifold:
         # Create a figure with the points and labels
@@ -252,7 +294,14 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
             labels = str_labels_array[pca_sample_indices]
             # Convert labels to strings to handle cases where they are tuples/arrays (e.g., GTSRB)
             # Also handle None values by converting them to "Unknown"
-            labels = np.array([str(label) if isinstance(label, (tuple, list, np.ndarray)) else (label if label is not None else "Unknown") for label in labels])
+            labels = np.array(
+                [
+                    str(label)
+                    if isinstance(label, (tuple, list, np.ndarray))
+                    else (label if label is not None else "Unknown")
+                    for label in labels
+                ]
+            )
         else:
             labels = Y_numpy[pca_sample_indices]
         fig = create_figure(two_d_pts, poincare_64, labels=labels)
@@ -276,19 +325,19 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
         affinity_matrix = distance_matrix.cpu().numpy()
         spectral_clustering = SpectralClustering(
             n_clusters=len(np.unique(Y)),
-            affinity='precomputed_nearest_neighbors',
-            n_neighbors=metrics.get('spectral_nn', 10),
-            assign_labels='kmeans',
-            random_state=int(torch.get_rng_state()[0].item())
+            affinity="precomputed_nearest_neighbors",
+            n_neighbors=metrics.get("spectral_nn", 10),
+            assign_labels="kmeans",
+            random_state=int(torch.get_rng_state()[0].item()),
         )
 
-        #spectral_clustering = HyperbolicSpectralClustering(n_clusters=len(np.unique(Y)))
+        # spectral_clustering = HyperbolicSpectralClustering(n_clusters=len(np.unique(Y)))
         pred_labels_spectral = spectral_clustering.fit_predict(affinity_matrix)
         nmi_spectral = normalized_mutual_info_score(Y, pred_labels_spectral)
         ari_spectral = adjusted_rand_score(Y, pred_labels_spectral)
         results["spectral_clustering_nmi"] = nmi_spectral
         results["spectral_clustering_ari"] = ari_spectral
-        if metrics['visualization'] and points_in_manifold:
+        if metrics["visualization"] and points_in_manifold:
             settings = {
                 "plot_manifold_dtype": torch.float64,
                 "dim_red_method": "HoroPCA",
@@ -301,24 +350,32 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
             }
             # Map predicted labels to string labels if available
             Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-            str_labels_subset = np.asarray(str_labels)[pca_sample_indices] if str_labels is not None else None
+            str_labels_subset = (
+                np.asarray(str_labels)[pca_sample_indices]
+                if str_labels is not None
+                else None
+            )
             visualization_labels = map_predicted_labels_to_str_labels(
-                pred_labels_spectral[pca_sample_indices], 
-                Y_numpy[pca_sample_indices], 
-                str_labels_subset
+                pred_labels_spectral[pca_sample_indices],
+                Y_numpy[pca_sample_indices],
+                str_labels_subset,
             )
             fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
             results["spectral_clustering_hyperbolic_embeddings"] = wandb.Image(fig)
             plt.close(fig)
     if metrics.get("kmeans", False):
         # Compute k-means clustering metrics
-        kmeans = KMeans(n_clusters=len(np.unique(Y)), n_init='auto', random_state=int(torch.get_rng_state()[0].item()))
+        kmeans = KMeans(
+            n_clusters=len(np.unique(Y)),
+            n_init="auto",
+            random_state=int(torch.get_rng_state()[0].item()),
+        )
         pred_labels_kmeans = kmeans.fit_predict(X.cpu().numpy())
         nmi_kmeans = normalized_mutual_info_score(Y, pred_labels_kmeans)
         ari_kmeans = adjusted_rand_score(Y, pred_labels_kmeans)
         results["kmeans_nmi"] = nmi_kmeans
         results["kmeans_ari"] = ari_kmeans
-        if metrics['visualization'] and points_in_manifold:
+        if metrics["visualization"] and points_in_manifold:
             settings = {
                 "plot_manifold_dtype": torch.float64,
                 "dim_red_method": "HoroPCA",
@@ -331,11 +388,15 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
             }
             # Map predicted labels to string labels if available
             Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-            str_labels_subset = np.asarray(str_labels)[pca_sample_indices] if str_labels is not None else None
+            str_labels_subset = (
+                np.asarray(str_labels)[pca_sample_indices]
+                if str_labels is not None
+                else None
+            )
             visualization_labels = map_predicted_labels_to_str_labels(
-                pred_labels_kmeans[pca_sample_indices], 
-                Y_numpy[pca_sample_indices], 
-                str_labels_subset
+                pred_labels_kmeans[pca_sample_indices],
+                Y_numpy[pca_sample_indices],
+                str_labels_subset,
             )
             fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
             results["kmeans_hyperbolic_embeddings"] = wandb.Image(fig)
@@ -343,9 +404,13 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
 
     if metrics.get("dasgupta_cost", False):
         # Compute Dasgupta cost for average linkage
-        dasgupta_cost_average = dasgupta_cost(torch.reciprocal(distance_matrix+1), "average")
+        dasgupta_cost_average = dasgupta_cost(
+            torch.reciprocal(distance_matrix + 1), "average"
+        )
         results["dasgupta_cost"] = dasgupta_cost_average
     return results
+
+
 class Node:
     def __init__(self, id, left=None, right=None):
         self.id = id
@@ -357,16 +422,18 @@ class Node:
         # Memoize the result to avoid re-computation
         if self._leaves_count is not None:
             return self._leaves_count
-        
-        if self.left is None and self.right is None: # It's a leaf node
+
+        if self.left is None and self.right is None:  # It's a leaf node
             self._leaves_count = 1
         else:
-            self._leaves_count = self.left.get_leaves_count() + self.right.get_leaves_count() # type: ignore
+            self._leaves_count = (
+                self.left.get_leaves_count() + self.right.get_leaves_count()
+            )  # type: ignore
         return self._leaves_count
 
+
 def dasgupta_cost(
-    similarity_matrix: torch.Tensor,
-    linkage_method: str = 'average'
+    similarity_matrix: torch.Tensor, linkage_method: str = "average"
 ) -> float:
     """
     Computes the Dasgupta cost correctly for a hierarchy built from a similarity matrix.
@@ -387,17 +454,17 @@ def dasgupta_cost(
         new_node = Node(id=num_samples + i, left=nodes[node1_id], right=nodes[node2_id])
         nodes.append(new_node)
     root = nodes[-1]
-    
+
     # Create a map from leaf_id to its parent nodes for efficient LCA finding
     parent_map = {root: None}
     q = [root]
     while q:
         node = q.pop(0)
         if node.left:
-            parent_map[node.left] = node # type: ignore
+            parent_map[node.left] = node  # type: ignore
             q.append(node.left)
         if node.right:
-            parent_map[node.right] = node # type: ignore
+            parent_map[node.right] = node  # type: ignore
             q.append(node.right)
 
     # 3. Iterate over all unique pairs of leaves
@@ -420,7 +487,7 @@ def dasgupta_cost(
                     lca_node = curr
                     break
                 curr = parent_map.get(curr)
-            
+
             # 5. Get subtree size and calculate cost contribution
             if lca_node:
                 num_lca_leaves = lca_node.get_leaves_count()
@@ -429,10 +496,15 @@ def dasgupta_cost(
 
     return total_cost
 
-def map_predicted_labels_to_str_labels(predicted_labels: np.ndarray, true_labels: np.ndarray, str_labels: Optional[npt.ArrayLike] = None) -> np.ndarray:
+
+def map_predicted_labels_to_str_labels(
+    predicted_labels: np.ndarray,
+    true_labels: np.ndarray,
+    str_labels: Optional[npt.ArrayLike] = None,
+) -> np.ndarray:
     """
     Map predicted cluster labels to string labels using majority voting.
-    
+
     Parameters
     ----------
     predicted_labels : np.ndarray
@@ -441,7 +513,7 @@ def map_predicted_labels_to_str_labels(predicted_labels: np.ndarray, true_labels
         True labels (integers)
     str_labels : Optional[npt.ArrayLike]
         String labels corresponding to true_labels
-        
+
     Returns
     -------
     np.ndarray
@@ -449,47 +521,48 @@ def map_predicted_labels_to_str_labels(predicted_labels: np.ndarray, true_labels
     """
     if str_labels is None:
         return predicted_labels
-    
+
     # Ensure inputs are numpy arrays
     str_labels = np.asarray(str_labels)
     predicted_labels = np.asarray(predicted_labels)
     true_labels = np.asarray(true_labels)
-    
+
     unique_clusters = np.unique(predicted_labels)
     mapped_labels = np.copy(predicted_labels).astype(object)
-    
+
     for cluster_id in unique_clusters:
         # Get indices of points in this cluster
         cluster_mask = predicted_labels == cluster_id
         cluster_true_labels = true_labels[cluster_mask]
-        
+
         # Find the most common string label in this cluster via majority vote on true labels
         true_label_counts = Counter(cluster_true_labels)
         most_common_true_label = true_label_counts.most_common(1)[0][0]
-        
+
         # Find the corresponding string label
         true_label_mask = true_labels == most_common_true_label
         representative_str_label = str_labels[true_label_mask][0]
-        
+
         # Handle case where str_labels contains tuples (e.g., GTSRB with fine/coarse labels)
         # Note: For GTSRB, we now extract only coarse labels in abstract.py, so this should be strings
         if isinstance(representative_str_label, (tuple, list, np.ndarray)):
             # If still tuple/array, convert to string representation
             representative_str_label = str(representative_str_label)
-        
+
         # Assign this string label to all points in the cluster
         mapped_labels[cluster_mask] = representative_str_label
-    
+
     return mapped_labels
+
 
 def nearest_neighbors_accuracy(
     distance_matrix: Union[np.ndarray, torch.Tensor],
     labels: Union[np.ndarray, torch.Tensor],
-    k: int = 1
+    k: int = 1,
 ) -> float:
     """
     Computes the nearest neighbors accuracy based on the distance matrix and labels.
-    
+
     Parameters
     ----------
     distance_matrix : np.ndarray or torch.Tensor
@@ -506,7 +579,7 @@ def nearest_neighbors_accuracy(
     """
     if isinstance(labels, torch.Tensor):
         labels = labels.detach().cpu().numpy()
-    
+
     if isinstance(distance_matrix, torch.Tensor):
         distance_matrix = distance_matrix.detach().cpu().numpy()
 
@@ -516,7 +589,7 @@ def nearest_neighbors_accuracy(
 
     # Get indices of the k+1 nearest neighbors for each sample (including itself)
     # Then exclude the first one (which is the sample itself)
-    nearest_indices = np.argsort(distance_matrix, axis=1)[:, 1:k+1]
+    nearest_indices = np.argsort(distance_matrix, axis=1)[:, 1 : k + 1]
     average_accuracy = 0.0
     for i in range(distance_matrix.shape[0]):
         counter = 0
@@ -531,7 +604,7 @@ def nearest_neighbors_accuracy(
 def dendrogram_purity(
     distance_matrix: torch.Tensor,
     labels: np.ndarray | torch.Tensor,
-    linkage_method: str = 'average'
+    linkage_method: str = "average",
 ) -> float:
     """
     Computes the canonical Dendrogram Purity for a hierarchy built from a distance matrix.
@@ -592,7 +665,7 @@ def dendrogram_purity(
         # The new node's labels are the sum of its children's labels
         new_node_counts = counts1 + counts2
         cluster_label_counts[new_node_id] = new_node_counts
-        
+
         # The current new_node_id is the LCA for any pair of points (x, y)
         # where x is from the subtree of node1 and y is from the subtree of node2.
 
@@ -601,30 +674,31 @@ def dendrogram_purity(
 
         # Iterate through all ground-truth classes present in the merge
         all_involved_labels = set(counts1.keys()) | set(counts2.keys())
-        
+
         for label in all_involved_labels:
             # Number of points with this label from each child cluster
             n1_k = counts1.get(label, 0)
             n2_k = counts2.get(label, 0)
-            
+
             # The number of new same-class pairs whose LCA is this node
             num_new_pairs = n1_k * n2_k
-            
+
             if num_new_pairs > 0:
                 # Purity of the LCA node with respect to this specific class `label`
                 # pur(lvs(lca), C*_k) = |lvs(lca) ∩ C*_k| / |lvs(lca)|
                 count_of_label_in_lca = new_node_counts.get(label, 0)
                 purity_of_lca_for_label = count_of_label_in_lca / lca_node_size
-                
+
                 # Add the contribution of all these new pairs to the total sum
                 total_purity_sum += num_new_pairs * purity_of_lca_for_label
 
         # Free memory by deleting child node info that will no longer be used
         del cluster_label_counts[node1_id]
         del cluster_label_counts[node2_id]
-    
+
     # --- Step 4: Final Normalization ---
     return total_purity_sum / num_same_class_pairs
+
 
 class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
     """
@@ -632,8 +706,17 @@ class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
     geodesic distance matrix from a hyperbolic space, with optimizations
     for performance and robustness, similar to sklearn's implementation.
     """
-    def __init__(self, n_clusters=8, gamma=1.0, affinity='rbf', n_neighbors=10,
-                 assign_labels='kmeans', n_init=20, random_state=None):
+
+    def __init__(
+        self,
+        n_clusters=8,
+        gamma=1.0,
+        affinity="rbf",
+        n_neighbors=10,
+        assign_labels="kmeans",
+        n_init=20,
+        random_state=None,
+    ):
         """
         Initializes the HyperbolicSpectralClustering instance.
 
@@ -673,24 +756,30 @@ class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
             raise ValueError("Input D must be a square distance matrix.")
 
         # Step 1: Construct the affinity matrix
-        if self.affinity == 'rbf':
-            affinity_matrix = np.exp(-self.gamma * (D ** 2))
+        if self.affinity == "rbf":
+            affinity_matrix = np.exp(-self.gamma * (D**2))
             np.fill_diagonal(affinity_matrix, 0)
-        elif self.affinity == 'nearest_neighbors':
+        elif self.affinity == "nearest_neighbors":
             # Construct a sparse k-NN graph
-            connectivity = kneighbors_graph(D, n_neighbors=self.n_neighbors,
-                                            mode='distance', metric='precomputed',
-                                            include_self=False)
+            connectivity = kneighbors_graph(
+                D,
+                n_neighbors=self.n_neighbors,
+                mode="distance",
+                metric="precomputed",
+                include_self=False,
+            )
             # Make the graph symmetric
-            affinity_matrix = 0.5 * (connectivity + connectivity.T) # type: ignore
+            affinity_matrix = 0.5 * (connectivity + connectivity.T)  # type: ignore
             # Apply the RBF kernel to the sparse graph
-            affinity_matrix.data = np.exp(-self.gamma * (affinity_matrix.data ** 2))
+            affinity_matrix.data = np.exp(-self.gamma * (affinity_matrix.data**2))
         else:
             raise ValueError(f"Unknown affinity type: {self.affinity}")
 
         # Step 2: Compute the Graph Laplacian (normalized)
         # csgraph.laplacian is optimized for both sparse and dense matrices
-        laplacian, dd = csgraph.laplacian(affinity_matrix, normed=True, return_diag=True)
+        laplacian, dd = csgraph.laplacian(
+            affinity_matrix, normed=True, return_diag=True
+        )
 
         # Step 3: Compute the eigenvectors of the Laplacian
         # We use a robust and efficient eigensolver (eigsh with a shift-invert mode)
@@ -700,18 +789,17 @@ class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
         _, eigenvectors = eigsh(
             laplacian_shifted,
             k=self.n_clusters,
-            which='SM',  # Smallest Magnitude
-            tol=1e-6, # type: ignore
-            v0=np.ones(laplacian.shape[0]) # Initial vector for stability
+            which="SM",  # Smallest Magnitude
+            tol=1e-6,  # type: ignore
+            v0=np.ones(laplacian.shape[0]),  # Initial vector for stability
         )
-
 
         # Step 4: Normalize the eigenvectors to form the spectral embedding
         norm = np.linalg.norm(eigenvectors, axis=1, keepdims=True)
         spectral_embedding = eigenvectors / (norm + 1e-10)
 
         # Step 5: Cluster the points in the new spectral space
-        if self.assign_labels == 'kmeans':
+        if self.assign_labels == "kmeans":
             kmeans = KMeans(
                 n_clusters=self.n_clusters,
                 n_init=self.n_init,
@@ -724,17 +812,19 @@ class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
         return self.labels_
 
 
-def stratified_sample(labels: Union[np.ndarray, torch.Tensor], sample_size: int) -> np.ndarray:
+def stratified_sample(
+    labels: Union[np.ndarray, torch.Tensor], sample_size: int
+) -> np.ndarray:
     """
     Sample equal number of points from each class (stratified sampling).
-    
+
     Parameters
     ----------
     labels : np.ndarray or torch.Tensor
         Class labels for all points
     sample_size : int
         Total number of samples to draw
-        
+
     Returns
     -------
     np.ndarray
@@ -744,31 +834,33 @@ def stratified_sample(labels: Union[np.ndarray, torch.Tensor], sample_size: int)
         labels_np = labels.cpu().numpy()
     else:
         labels_np = np.asarray(labels)
-    
+
     unique_classes = np.unique(labels_np)
     n_classes = len(unique_classes)
-    
+
     # Calculate samples per class (try to distribute evenly)
     samples_per_class = sample_size // n_classes
     remaining_samples = sample_size % n_classes
-    
+
     sampled_indices = []
-    
+
     for i, cls in enumerate(unique_classes):
         # Get all indices for this class
         class_indices = np.where(labels_np == cls)[0]
-        
+
         # Determine how many samples to take from this class
         n_samples_this_class = samples_per_class
         if i < remaining_samples:
             n_samples_this_class += 1
-        
+
         # Make sure we don't try to sample more than available
         n_samples_this_class = min(n_samples_this_class, len(class_indices))
-        
+
         # Sample from this class
         if n_samples_this_class > 0:
-            sampled = np.random.choice(class_indices, n_samples_this_class, replace=False)
+            sampled = np.random.choice(
+                class_indices, n_samples_this_class, replace=False
+            )
             sampled_indices.extend(sampled)
-    
+
     return np.array(sampled_indices)

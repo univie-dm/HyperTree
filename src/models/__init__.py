@@ -4,8 +4,8 @@ from .resnet import HyperbolicResNet
 from .cnn import HyperbolicConvAE
 
 __all__ = [
-    'HyperbolicAE',
-    'HyperbolicHCModel',
-    'HyperbolicResNet',
-    'HyperbolicConvAE',
+    "HyperbolicAE",
+    "HyperbolicHCModel",
+    "HyperbolicResNet",
+    "HyperbolicConvAE",
 ]
