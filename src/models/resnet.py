@@ -147,6 +147,20 @@ class HyperbolicResNet(AbstractModel):
         else:
             raise ValueError(f"Invalid model type: {self.model_type}")
 
+        if isinstance(self.manifold, Euclidean) or hyperbolic_encoding is None:
+            projection_head_hyperbolic_layer = nn.Linear(64, self.latent_dim)
+        else:
+            projection_head_hyperbolic_layer = get_hyperbolic_encoding_layer_by_name(
+                layer_name=hyperbolic_encoding,
+                manifold=self.manifold,
+                input_dim=64,
+                output_dim=self.latent_dim,
+                params_dtype=self.params_dtype,
+                clamping_factor=self.clamping_factor,
+                smoothing_factor=self.smoothing_factor,
+                learnable_scale=self.learnable_scale,
+                FHCNN_normalize=self.normalize
+            )
         self.projection_head = nn.Sequential(
             nn.Flatten(),
             nn.Linear(1000, 512),
@@ -158,17 +172,7 @@ class HyperbolicResNet(AbstractModel):
             nn.Linear(128, 64),
             nn.BatchNorm1d(64),
             self.activation_function,
-            get_hyperbolic_encoding_layer_by_name(
-                layer_name=hyperbolic_encoding,
-                manifold=self.manifold,
-                input_dim=64,
-                output_dim=self.latent_dim,
-                params_dtype=self.params_dtype,
-                clamping_factor=self.clamping_factor,
-                smoothing_factor=self.smoothing_factor,
-                learnable_scale=self.learnable_scale,
-                FHCNN_normalize=self.normalize
-            ),
+            projection_head_hyperbolic_layer,
         )
 
         self.encoder = nn.Sequential(self.encoder, self.projection_head)
@@ -177,7 +181,7 @@ class HyperbolicResNet(AbstractModel):
         if isinstance(self.manifold, Euclidean) or hyperbolic_encoding is None:
             print("Using Euclidean manifold or hyperbolic_encoding is 'None', "
                   "hyperbolic encoding layers will default to nn.Linear.", flush=True)
-            self.hyperbolic_encoding_layer = nn.Identity()
+            self.hyperbolic_encoding_layer = nn.Linear(self.latent_dim, self.latent_dim)
         else:
             self.hyperbolic_encoding_layer = get_hyperbolic_encoding_layer_by_name(
                 layer_name=hyperbolic_encoding,
@@ -316,14 +320,14 @@ class HyperbolicResNet(AbstractModel):
             loss = loss + self.contrastive_weight * contrastive_loss
             
             # Log contrastive-specific metrics
-            self.metrics.setdefault("pretrain/contrastive_loss", []).append(contrastive_loss)
+            self.metrics.setdefault("pretrain/contrastive_loss", []).append(contrastive_loss.detach().item())
 
         # Logging
-        self.metrics.setdefault("pretrain/x_recon_loss", []).append(x_recon_loss)
-        self.metrics.setdefault("pretrain/total_loss", []).append(loss)
+        self.metrics.setdefault("pretrain/x_recon_loss", []).append(x_recon_loss.detach().item())
+        self.metrics.setdefault("pretrain/total_loss", []).append(loss.detach().item())
         self.metrics.setdefault("pretrain/c", []).append(self.manifold.c.detach().item() if self.manifold.c.numel() == 1 else self.manifold.c.detach().cpu()) #type: ignore
-        self.log('recon_loss', x_recon_loss, prog_bar=True, on_epoch=True, logger=False)
-        self.log("loss", loss, logger=False, prog_bar=True, on_epoch=True, on_step=False)
+        self.log('recon_loss', x_recon_loss, prog_bar=True, on_epoch=True, logger=False, sync_dist=True)
+        self.log("loss", loss, logger=False, prog_bar=True, on_epoch=True, on_step=False, sync_dist=True)
 
         if batch_idx == 0:
             if self.byol:

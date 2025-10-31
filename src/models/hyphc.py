@@ -356,9 +356,9 @@ class HyperbolicHCModel(AbstractModel):
         total_loss += 2 * sim_sum
         normalized_loss = (total_loss - scale_min) / (scale_max - scale_min)
 
-        self.metrics.setdefault("clustering/scale_min", []).append(scale_min)
-        self.metrics.setdefault("clustering/scale_max", []).append(scale_max)
-        self.metrics.setdefault("clustering/min_max_delta", []).append(scale_max - scale_min)
+        self.metrics.setdefault("clustering/scale_min", []).append(scale_min.detach().item())
+        self.metrics.setdefault("clustering/scale_max", []).append(scale_max.detach().item())
+        self.metrics.setdefault("clustering/min_max_delta", []).append((scale_max - scale_min).detach().item())
 
         return total_loss, triplet_loss, similarties_sum, normalized_loss
 
@@ -439,22 +439,22 @@ class HyperbolicHCModel(AbstractModel):
             total_loss = total_loss + self.contrastive_weight * contrastive_loss
             
             # Log the new loss for monitoring
-            self.metrics.setdefault("clustering/contrastive_loss", []).append(contrastive_loss)
+            self.metrics.setdefault("clustering/contrastive_loss", []).append(contrastive_loss.detach().item())
 
-        # Logging
-        self.metrics.setdefault("clustering/recon_loss", []).append(recon_loss)
-        self.metrics.setdefault("clustering/hyphc_loss", []).append(hyphc_loss)
-        self.metrics.setdefault("clustering/standard_hyphc_loss", []).append(standard_hyphc_loss)
-        self.metrics.setdefault("clustering/normalized_loss", []).append(normalized_loss)
-        self.metrics.setdefault("clustering/triplet_loss", []).append(triplet_loss)
-        self.metrics.setdefault("clustering/similarties_sum", []).append(similarties_sum)
-        self.metrics.setdefault("clustering/total_loss", []).append(total_loss)
+        # Logging - DETACH tensors to prevent memory leaks
+        self.metrics.setdefault("clustering/recon_loss", []).append(recon_loss.detach().item())
+        self.metrics.setdefault("clustering/hyphc_loss", []).append(hyphc_loss.detach().item())
+        self.metrics.setdefault("clustering/standard_hyphc_loss", []).append(standard_hyphc_loss.detach().item())
+        self.metrics.setdefault("clustering/normalized_loss", []).append(normalized_loss.detach().item())
+        self.metrics.setdefault("clustering/triplet_loss", []).append(triplet_loss.detach().item())
+        self.metrics.setdefault("clustering/similarties_sum", []).append(similarties_sum.detach().item())
+        self.metrics.setdefault("clustering/total_loss", []).append(total_loss.detach().item())
         if isinstance(self.manifold.c, torch.Tensor):
             self.metrics.setdefault('clustering/c', []).append(self.manifold.c.item())
-        self.metrics.setdefault('latent_space/mean', []).append(manifold_z.mean().item())
-        self.metrics.setdefault('latent_space/std', []).append(manifold_z.std().item())
-        self.metrics.setdefault('latent_space/max', []).append(manifold_z.max().item())
-        self.metrics.setdefault('latent_space/min', []).append(manifold_z.min().item())
+        self.metrics.setdefault('latent_space/mean', []).append(manifold_z.mean().detach().item())
+        self.metrics.setdefault('latent_space/std', []).append(manifold_z.std().detach().item())
+        self.metrics.setdefault('latent_space/max', []).append(manifold_z.max().detach().item())
+        self.metrics.setdefault('latent_space/min', []).append(manifold_z.min().detach().item())
 
         self.metrics['clustering/hyphc_loss_weight'] = hyphc_loss_weight
 
@@ -463,7 +463,7 @@ class HyperbolicHCModel(AbstractModel):
                 key = "grad_2.0_norm/total"
             self.metrics.setdefault(f"{key}", []).append(value)
 
-        self.log('train_loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, logger=False)
+        self.log('train_loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, logger=False, sync_dist=True)
         
         if batch_idx == 0:
             if self.byol:

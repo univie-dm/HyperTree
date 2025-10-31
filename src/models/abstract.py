@@ -247,6 +247,7 @@ class AbstractModel(pl.LightningModule):
                     raise ValueError(f"Invalid distances_type: {self.distances_type}")
 
                 str_labels_array = np.array(str_labels) if str_labels else None
+                
                 evaluation_results = evaluation(
                     X=all_embeddings,
                     Y=all_labels,
@@ -255,6 +256,14 @@ class AbstractModel(pl.LightningModule):
                     metrics=self.evaluation_metrics,
                     str_labels=str_labels_array
                 )
+                
+                del all_embeddings, all_labels, distance_matrix, embeddings, labels
+                if 'all_embeddings_normalized' in locals():
+                    del all_embeddings_normalized
+                if 'similarties' in locals():
+                    del similarties
+                torch.cuda.empty_cache()  # Force CUDA to release cached memory
+                
                 for key, value in evaluation_results.items():
                     self.metrics[f"test/{key}"] = value
                 plt.close()

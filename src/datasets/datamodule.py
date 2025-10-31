@@ -15,7 +15,17 @@ class BYOLTransform:
     """
     Applies two separate augmentation pipelines to an image, as required by BYOL.
     """
-    def __init__(self, normalize_fn: transforms.Normalize, resize: int = 32):
+    def __init__(self, dataset_name: str, normalize_fn: transforms.Normalize, resize: int = 32):
+
+        if dataset_name == "imagenet":
+            gaussian_blur = [transforms.RandomApply([
+                transforms.GaussianBlur(kernel_size=23, sigma=(0.1, 2.0))
+            ], p=0.1)]
+        else:
+            gaussian_blur = [transforms.RandomApply([
+                transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0))
+            ], p=0.1)]
+
         self.transform1 = transforms.Compose([
             transforms.RandomResizedCrop(size=(resize, resize), scale=(0.2, 1.0), antialias=True),
             transforms.RandomHorizontalFlip(p=0.5),
@@ -23,9 +33,7 @@ class BYOLTransform:
                 transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)
             ], p=0.8),
             transforms.RandomGrayscale(p=0.2),
-            transforms.RandomApply([
-                transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0))
-            ], p=0.1),
+            *gaussian_blur,
             transforms.RandomSolarize(threshold=0.5, p=0.2),
             transforms.ToImage(),
             transforms.ToDtype(torch.float32, scale=True),
@@ -113,25 +121,38 @@ class ColorDataModule(pl.LightningDataModule):
         if self.hparams.dataset_name == "gtsrb":
             base_train = dataset_class(self.hparams.data_dir, split='train', transform=None, download=True)
             base_test = dataset_class(self.hparams.data_dir, split='test', transform=None, download=True)
+        elif self.hparams.dataset_name == "imagenet":
+            base_train = dataset_class(self.hparams.data_dir, split='train', transform=None)
+            base_test = dataset_class(self.hparams.data_dir, split='val', transform=None)
         else:
             base_train = dataset_class(self.hparams.data_dir, train=True, transform=None, download=True)
             base_test = dataset_class(self.hparams.data_dir, train=False, transform=None, download=True)
 
         # --- Normalization ---
         temp_transform_list = []
+        # Resize images for datasets with variable image sizes so tensors are stackable in the DataLoader.
+        # GTSRB images are resized to 32x32 (keeps existing behavior). ImageNet is large and variable-sized
+        # so resize to self.hparams.resize if provided, otherwise default to 224.
         if self.hparams.dataset_name == "gtsrb":
             temp_transform_list.append(transforms.Resize((32, 32), antialias=True))
+        elif self.hparams.dataset_name == "imagenet":
+            resize_size = self.hparams.resize if self.hparams.resize else 224
+            temp_transform_list.append(transforms.Resize((resize_size, resize_size), antialias=True))
         temp_transform_list.extend([
             transforms.ToImage(),
             transforms.ToDtype(torch.float32, scale=True)
         ])
         temp_transform = transforms.Compose(temp_transform_list)
-        temp_dataset = dataset_class(
-            self.hparams.data_dir, 
-            **({"train": True} if self.hparams.dataset_name != "gtsrb" else {"split": "train"}),
-            transform=temp_transform, 
-            download=True
-        )
+        # Create a temporary dataset used only to compute per-channel mean/std for normalization.
+        # ImageNet's Dataset expects `split` and does not support `download` or `train` kwargs.
+        if self.hparams.dataset_name == "imagenet":
+            temp_dataset = dataset_class(self.hparams.data_dir, split='train', transform=temp_transform)
+        elif self.hparams.dataset_name == "gtsrb":
+            # GTSRB uses `split` and supports download
+            temp_dataset = dataset_class(self.hparams.data_dir, split='train', transform=temp_transform, download=True)
+        else:
+            # CIFAR and other torchvision datasets use `train=True` and support download
+            temp_dataset = dataset_class(self.hparams.data_dir, train=True, transform=temp_transform, download=True)
         temp_loader = DataLoader(temp_dataset, batch_size=1000, num_workers=self.hparams.num_workers)
         normalize_fn = self.get_normalize_fn(next(iter(temp_loader))[0])
 
@@ -147,7 +168,7 @@ class ColorDataModule(pl.LightningDataModule):
         base_transform = transforms.Compose(transform_list)
 
         # Always create augmentation transforms - let the dataset decide what to use
-        aug_transform = BYOLTransform(normalize_fn, resize=self.hparams.resize or 32)
+        aug_transform = BYOLTransform(dataset_name=self.hparams.dataset_name, normalize_fn=normalize_fn, resize=self.hparams.resize or 32)
 
         # --- Filtering and Subsetting ---
         if is_cifar100_20:
@@ -190,7 +211,8 @@ class ColorDataModule(pl.LightningDataModule):
             batch_size=self.hparams.batch_size, 
             shuffle=True, 
             num_workers=self.hparams.num_workers, 
-            pin_memory=True
+            pin_memory=True,
+            persistent_workers=True if self.hparams.num_workers > 0 else False
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -198,7 +220,8 @@ class ColorDataModule(pl.LightningDataModule):
             self.test_dataset, 
             batch_size=self.hparams.batch_size, 
             num_workers=self.hparams.num_workers, 
-            pin_memory=True
+            pin_memory=True,
+            persistent_workers=True if self.hparams.num_workers > 0 else False
         )
 
     @staticmethod
@@ -360,7 +383,8 @@ class GrayScaleDataModule(pl.LightningDataModule):
             batch_size=self.hparams.batch_size, 
             shuffle=True,
             num_workers=self.hparams.num_workers, 
-            pin_memory=True
+            pin_memory=True,
+            persistent_workers=True if self.hparams.num_workers > 0 else False
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -368,7 +392,8 @@ class GrayScaleDataModule(pl.LightningDataModule):
             self.test_dataset, 
             batch_size=self.hparams.batch_size,
             num_workers=self.hparams.num_workers, 
-            pin_memory=True
+            pin_memory=True,
+            persistent_workers=True if self.hparams.num_workers > 0 else False
         )
 
     def get_class_names(self) -> Optional[Dict[int, str]]:

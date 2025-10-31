@@ -16,9 +16,11 @@ from sklearn.neighbors import kneighbors_graph
 from scipy.sparse import csgraph, identity
 from collections import Counter
 
+from src.hyperbolic_math.src.manifolds.euclidean import Euclidean
 from src.hyperbolic_math.src.manifolds import PoincareBall, Manifold
 from src.hyperbolic_math.src.utils.helpers import get_delta
 from src.hyperbolic_math.src.utils.vis_utils import create_figure, pointsTo2dPoincare
+
 
 
 def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor, 
@@ -48,11 +50,28 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
     if metrics is None:
         return results
     
+    if metrics.get("test_sample_size", 0) > 0 and metrics["test_sample_size"] < len(X):
+        # Sample equal number of points from each class
+        sample_indices = stratified_sample(Y, metrics["test_sample_size"])
+        X = X[sample_indices]
+        Y = Y[sample_indices]
+        distance_matrix = distance_matrix[sample_indices][:, sample_indices]
+        if str_labels is not None:
+            str_labels = np.asarray(str_labels)[sample_indices]
+    
     if not isinstance(manifold.c, torch.Tensor):
         manifold.c = torch.tensor(manifold.c, device=X.device, dtype=X.dtype)
-    
 
-    distance_matrix += 2 / manifold.c if isinstance(manifold.c, torch.Tensor) else 2 / torch.tensor(manifold.c)
+    # Check for collapsed embeddings (all embeddings are very similar)
+    X_np = X.cpu().numpy()
+    embedding_std = np.std(X_np, axis=0).mean()
+    embedding_mean_norm = np.linalg.norm(X_np, axis=1).mean()
+    if embedding_std < 1e-6:
+        warning(f"Embeddings appear collapsed (std={embedding_std:.2e}, mean_norm={embedding_mean_norm:.2e}). Clustering metrics may be unreliable.")
+    
+    if not isinstance(manifold, Euclidean):
+        distance_matrix += 2 / manifold.c if isinstance(manifold.c, torch.Tensor) else 2 / torch.tensor(manifold.c)
+        metrics["visualization"] = False
     if distance_matrix.min() < 0:
         warning("Distance matrix contains negative values. Clipping to zero. Minimum: {}".format(distance_matrix.min()))
         distance_matrix = distance_matrix.clamp(min=0)
@@ -71,7 +90,8 @@ def evaluation(X: torch.Tensor, Y: torch.Tensor, distance_matrix: torch.Tensor,
         sample_size = metrics['visualization_sample_size']
         sample_size = min(sample_size, len(X))
 
-        pca_sample_indices = np.random.choice(len(X), sample_size, replace=False)
+        # Sample equal number of points from each class for visualization
+        pca_sample_indices = stratified_sample(Y, sample_size)
         points_sampled = X[pca_sample_indices]
 
         
@@ -702,3 +722,53 @@ class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
             raise ValueError(f"Unknown label assignment strategy: {self.assign_labels}")
 
         return self.labels_
+
+
+def stratified_sample(labels: Union[np.ndarray, torch.Tensor], sample_size: int) -> np.ndarray:
+    """
+    Sample equal number of points from each class (stratified sampling).
+    
+    Parameters
+    ----------
+    labels : np.ndarray or torch.Tensor
+        Class labels for all points
+    sample_size : int
+        Total number of samples to draw
+        
+    Returns
+    -------
+    np.ndarray
+        Indices of sampled points
+    """
+    if isinstance(labels, torch.Tensor):
+        labels_np = labels.cpu().numpy()
+    else:
+        labels_np = np.asarray(labels)
+    
+    unique_classes = np.unique(labels_np)
+    n_classes = len(unique_classes)
+    
+    # Calculate samples per class (try to distribute evenly)
+    samples_per_class = sample_size // n_classes
+    remaining_samples = sample_size % n_classes
+    
+    sampled_indices = []
+    
+    for i, cls in enumerate(unique_classes):
+        # Get all indices for this class
+        class_indices = np.where(labels_np == cls)[0]
+        
+        # Determine how many samples to take from this class
+        n_samples_this_class = samples_per_class
+        if i < remaining_samples:
+            n_samples_this_class += 1
+        
+        # Make sure we don't try to sample more than available
+        n_samples_this_class = min(n_samples_this_class, len(class_indices))
+        
+        # Sample from this class
+        if n_samples_this_class > 0:
+            sampled = np.random.choice(class_indices, n_samples_this_class, replace=False)
+            sampled_indices.extend(sampled)
+    
+    return np.array(sampled_indices)

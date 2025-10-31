@@ -248,7 +248,7 @@ class HyperbolicConvAE(AbstractModel):
                 if not (torch.isnan(torch.tensor(value)) or torch.isinf(torch.tensor(value))):
                     self.metrics.setdefault(f"{key}", []).append(value)
 
-        self.metrics.setdefault(f"{self.stage}/recon_loss", []).append(loss)
+        self.metrics.setdefault(f"{self.stage}/recon_loss", []).append(loss.detach().item())
         if hasattr(self.manifold, 'c') and hasattr(self.manifold.c, 'requires_grad') and self.manifold.c.requires_grad:
             try:
                 c_tensor = self.manifold.c

@@ -1,6 +1,10 @@
 name: 'imagenet'
 subset: 'all'
-data_dir: './mnt/nlp-data/home/users/share/imagenet'
+data_dir: '/mnt/nlp-data/home/users/share/imagenet'
 resize: 224  # Standard ImageNet size
 channels: 3
 selected_classes:
+
+# Enable checkpointing for ImageNet due to long training times
+pretraining:
+  enable_checkpointing: True
