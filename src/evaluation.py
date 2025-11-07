@@ -82,7 +82,6 @@ def evaluation(
             if isinstance(manifold.c, torch.Tensor)
             else 2 / torch.tensor(manifold.c)
         )
-        metrics["visualization"] = False
     if distance_matrix.min() < 0:
         warning(
             "Distance matrix contains negative values. Clipping to zero. Minimum: {}".format(

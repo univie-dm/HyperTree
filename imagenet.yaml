@@ -1,0 +1,76 @@
+# Sweep Configuration
+# Specifies only what differs from config.yaml base configuration
+
+# Name for this sweep (used in job names and log files)
+sweep_name: imagenet
+
+# Method: 'individual' or 'array'
+# - individual: Submit separate job for each combination
+# - array: Create one SLURM array job (better for many combinations)
+method: array
+max_concurrent: 8
+
+# Parameters to sweep or override
+# - List values create a sweep (one job per combination)
+# - Single values override the base config.yaml
+parameters:
+  # Sweep over these latent dimensions
+  architecture.latent_dim: [32]
+  
+  # Parameters from test_run.sh
+  dataset: imagenet
+  pretraining.epochs: 1000
+  pretraining.overwrite: False
+  pretraining.recon_weight: 0.0
+  clustering.epochs: 200
+  hyphc.max_loss_weight: 1.0
+  hyphc.min_loss_weight: 0.0
+  hyphc.loss_weight_interval: 50 # 0 equals to max_loss_weight all times
+  hyphc.normalized_loss: True
+  hyphc.dist_sum_loss: True
+  experiment.gradient_clip_value: 1.0
+  hyphc.triplet_subsampling_size: 150
+  experiment.optimizer: RiemannianAdam
+  experiment.num_workers: 30
+  pretraining.weight_decay: 1e-5
+  clustering.weight_decay: 1e-5
+  architecture.curvature_magnitude: 0.1 #[0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.5, 5.0, 7.5, 10.0]
+  hyphc.distances_type: geodesic
+  clustering.lr_scheduler.type: warmup_cosine
+  pretraining.trainable_curvature: False
+  clustering.lr_scheduler.interval: 20
+  clustering.learning_rate: 1e-3
+  experiment.batch_size: 300
+  pretraining.learning_rate: 3e-3
+  architecture.spectral_normalization: False
+  architecture.activation_function: swish
+  experiment.log_interval: 25
+  hyphc.distances_version: default
+  architecture.manifold_name: PoincareBall
+  architecture.hyperbolic_encoding: HyperbolicLinearPP
+  architecture.manifold_precision: float32
+  architecture.precision: float32
+  pretraining.contrastive_loss.temperature: 0.1
+  experiment.seed: 1
+  architecture.ae_type: [resnet50]
+  pretraining.contrastive_loss.enabled: True
+  pretraining.contrastive_loss.byol: True
+  evaluation.visualization: True
+  evaluation.spectral_clustering: True
+  evaluation.kmeans: True
+  wandb.tags: ['cifar100','poincare','float32','test5']
+  wandb.enabled: True
+  evaluation.dendrogram_purity_single: True
+  evaluation.dendrogram_purity_complete: True
+  evaluation.dendrogram_purity_average: True
+  evaluation.dendrogram_purity_ward: True
+  evaluation.agglomerative_clustering_single: True
+  evaluation.agglomerative_clustering_complete: True
+  evaluation.agglomerative_clustering_average: True
+  evaluation.agglomerative_clustering_ward: True
+  evaluation.nearest_neighbors_accuracy: True
+  evaluation.visualization_sample_size: 1000
+  evaluation.test_sample_size: 1000
+  clustering.freeze_encoder: True
+  clustering.contrastive_loss.enabled: True
+

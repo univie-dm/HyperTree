@@ -1,3 +1,4 @@
+from typing import Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -98,6 +99,7 @@ class HyperbolicResNet(AbstractModel):
         contrastive_temperature: float = 0.1,
         lr_scheduler_params: dict | None = None,
         byol: bool = False,
+        recon_weight: float = 1.0,
     ):
         super().__init__(
             model_type=model_type,
@@ -127,6 +129,7 @@ class HyperbolicResNet(AbstractModel):
         self.normalize = normalize
         self.contrastive_enabled = contrastive_enabled
         self.contrastive_weight = contrastive_weight
+        self.recon_weight = recon_weight
         self.contrastive_temperature = contrastive_temperature
         self.byol = byol
 
@@ -158,36 +161,34 @@ class HyperbolicResNet(AbstractModel):
             self.encoder = resnet152(weights=None)
         else:
             raise ValueError(f"Invalid model type: {self.model_type}")
-
-        if isinstance(self.manifold, Euclidean) or hyperbolic_encoding is None:
-            projection_head_hyperbolic_layer = nn.Linear(64, self.latent_dim)
-        else:
-            projection_head_hyperbolic_layer = get_hyperbolic_encoding_layer_by_name(
-                layer_name=hyperbolic_encoding,
-                manifold=self.manifold,
-                input_dim=64,
-                output_dim=self.latent_dim,
-                params_dtype=self.params_dtype,
-                clamping_factor=self.clamping_factor,
-                smoothing_factor=self.smoothing_factor,
-                learnable_scale=self.learnable_scale,
-                FHCNN_normalize=self.normalize,
-            )
-        self.projection_head = nn.Sequential(
+        
+       # Build projection head layers progressively
+        projection_layers = [
             nn.Flatten(),
             nn.Linear(1000, 512),
             nn.BatchNorm1d(512),
             self.activation_function,
-            nn.Linear(512, 128),
-            nn.BatchNorm1d(128),
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
             self.activation_function,
-            nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
-            self.activation_function,
-            projection_head_hyperbolic_layer,
-        )
+        ]
 
-        self.encoder = nn.Sequential(self.encoder, self.projection_head)
+        # Add intermediate layers to gradually reduce to latent_dim
+        current_dim = 256
+        intermediate_dims = [128, 64, 32, 16]
+
+        for intermediate_dim in intermediate_dims:
+            if self.latent_dim < current_dim and intermediate_dim > self.latent_dim:
+                projection_layers.extend([
+                    nn.Linear(current_dim, intermediate_dim),
+                    nn.BatchNorm1d(intermediate_dim),
+                    self.activation_function
+                ])
+                current_dim = intermediate_dim
+
+
+
+        self.encoder = nn.Sequential(self.encoder, *projection_layers)
 
         # Add hyperbolic encoding layer(s)
         if isinstance(self.manifold, Euclidean) or hyperbolic_encoding is None:
@@ -201,7 +202,7 @@ class HyperbolicResNet(AbstractModel):
             self.hyperbolic_encoding_layer = get_hyperbolic_encoding_layer_by_name(
                 layer_name=hyperbolic_encoding,
                 manifold=self.manifold,
-                input_dim=self.latent_dim,
+                input_dim=current_dim,
                 output_dim=self.latent_dim,
                 params_dtype=self.params_dtype,
                 clamping_factor=self.clamping_factor,
@@ -217,21 +218,6 @@ class HyperbolicResNet(AbstractModel):
                 "Adding contrastive projection head for SimCLR-style learning.",
                 flush=True,
             )
-            # Projection dimension - typically same as latent_dim or 2x latent_dim
-            proj_dim = max(128, self.latent_dim * 2)
-            self.contrastive_projection = nn.Sequential(
-                nn.Linear(
-                    self.latent_dim
-                    + (1 if isinstance(self.manifold, Hyperboloid) else 0),
-                    proj_dim,
-                ),
-                nn.BatchNorm1d(proj_dim),
-                self.activation_function,
-                nn.Linear(proj_dim, proj_dim),
-                nn.BatchNorm1d(proj_dim),
-            )
-        else:
-            self.contrastive_projection = nn.Identity()
 
         # Add hyperbolic decoding layer(s)
         if isinstance(self.manifold, Euclidean) or hyperbolic_decoding is None:
@@ -287,6 +273,14 @@ class HyperbolicResNet(AbstractModel):
                 nn.Tanh(),
             )
 
+        if self.recon_weight == 0.0:
+            print(
+                "recon_weight is set to 0.0, decoder will not be used during training.",
+                flush=True,
+            )
+            self.decoder = None
+            self.hyperbolic_decoding_layer = None
+
     def _make_decoder_layer(
         self, planes: int, blocks: int, scale: float = 1
     ) -> nn.Sequential:
@@ -314,45 +308,41 @@ class HyperbolicResNet(AbstractModel):
         x = x.view(-1, 512 * self.expansion, 4, 4)
         x_recon = self.decoder(x)
         return x_recon
+    
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        manifold_z = self.encode(x)
+        if self.recon_weight == 0.0:
+            x_recon = torch.ones_like(x)
+        else: 
+            x_recon = self.decode(manifold_z)
+        return x_recon, manifold_z
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug_1, x_aug_2, x, _ = batch
-        x_recon, z = self(x)
+        if self.recon_weight == 0.0:
+            # When recon_weight is 0.0, skip decoding for efficiency
+            x_recon = torch.ones_like(x)
+        else:
+            x_recon, z = self(x)
 
         # Reconstruction loss
         x_recon_loss = F.mse_loss(x_recon, x)
         loss = x_recon_loss
-
         # Contrastive loss (if enabled)
         if self.contrastive_enabled:
-            # Encode augmented images
-            z_aug_1 = self.encode(x_aug_1)
-            z_aug_2 = self.encode(x_aug_2)
+            z_aug_1 = self.encode(x_aug_1 if self.byol else x)
+            z_aug_2 = self.encode(x_aug_2 if self.byol else z_aug_1)
 
-            # Apply contrastive projection head (SimCLR-style)
-            # These projections are only used for contrastive loss, not reconstruction
-            z_proj = self.contrastive_projection(z.view(z.size(0), -1))
-            z_aug_proj_1 = self.contrastive_projection(
-                z_aug_1.view(z_aug_1.size(0), -1)
-            )
-            z_aug_proj_2 = self.contrastive_projection(
-                z_aug_2.view(z_aug_2.size(0), -1)
-            )
+            if not torch.isfinite(z_aug_1).all() or not torch.isfinite(z_aug_2).all():
+                raise ValueError("Non-finite values encountered in contrastive embeddings.")
 
-            if self.byol:
-                proj1 = z_aug_proj_1
-                proj2 = z_aug_proj_2
-            else:
-                proj1 = z_proj
-                proj2 = z_aug_proj_1
             contrastive_loss = self.compute_contrastive_loss(
-                proj1,
-                proj2,
+                z_aug_1,
+                z_aug_2,
                 temperature=self.contrastive_temperature,
                 use_euclidean=False,
             )
-            loss = loss + self.contrastive_weight * contrastive_loss
-
+            loss = self.recon_weight * loss + self.contrastive_weight * contrastive_loss
             # Log contrastive-specific metrics
             self.metrics.setdefault("pretrain/contrastive_loss", []).append(
                 contrastive_loss.detach().item()
@@ -368,14 +358,6 @@ class HyperbolicResNet(AbstractModel):
             if self.manifold.c.numel() == 1
             else self.manifold.c.detach().cpu()
         )  # type: ignore
-        self.log(
-            "recon_loss",
-            x_recon_loss,
-            prog_bar=True,
-            on_epoch=True,
-            logger=False,
-            sync_dist=True,
-        )
         self.log(
             "loss",
             loss,

@@ -14,6 +14,7 @@ pretraining:
   trainable_curvature: False
   overwrite: False
   weight_decay: 0.0
+  recon_weight: 0.0
   enable_checkpointing: False  # Enable for long training runs (e.g., ImageNet)
   # Contrastive learning parameters
   contrastive_loss:
@@ -47,6 +48,7 @@ clustering:
     weight: 0.1
     temperature: 0.5
     byol: False
+  recon_weight: 0.0
 
 ## HypHC parameters
 hyphc:

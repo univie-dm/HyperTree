@@ -43,6 +43,7 @@ class HyperbolicHCModel(AbstractModel):
         contrastive_weight: float = 0.1,
         contrastive_temperature: float = 0.5,
         byol: bool = False,
+        recon_weight: float = 1.0,
     ):
         super().__init__(
             model_type=ae_model.model_type,
@@ -84,6 +85,7 @@ class HyperbolicHCModel(AbstractModel):
         self.contrastive_weight = contrastive_weight
         self.contrastive_temperature = contrastive_temperature
         self.byol = byol
+        self.recon_weight = recon_weight
 
         # Load encoding and decoding modules with their weights
         self.encoder = ae_model.encoder  # type: ignore
@@ -529,7 +531,7 @@ class HyperbolicHCModel(AbstractModel):
             hyphc_loss_weight = self.hyphc_end_weight
 
         # Compute total loss
-        total_loss = recon_loss + hyphc_loss * hyphc_loss_weight
+        total_loss = recon_loss * self.recon_weight + hyphc_loss * hyphc_loss_weight
 
         if self.contrastive_enabled:
             # Encode both augmented views to get their hyperbolic embeddings
