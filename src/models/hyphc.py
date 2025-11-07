@@ -498,6 +498,14 @@ class HyperbolicHCModel(AbstractModel):
             if all(s is not None for s in shape):
                 x_recon = x_recon.view(-1, *shape)
         return x_recon
+    
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        manifold_z = self.encode(x)
+        if self.recon_weight == 0.0:
+            # Skip decoding if reconstruction loss is not used
+            return torch.zeros_like(x), manifold_z
+        x_recon = self.decode(manifold_z)
+        return x_recon, manifold_z
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug_1, x_aug_2, x, _ = batch
