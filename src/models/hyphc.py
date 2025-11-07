@@ -109,8 +109,8 @@ class HyperbolicHCModel(AbstractModel):
             )  # type: ignore
             self.decoder.load_state_dict(ae_model.decoder.state_dict())  # type: ignore
         else:
-            self.encoder = None
-            self.hyperbolic_encoding_layer = None
+            self.decoder = None
+            self.hyperbolic_decoding_layer = None
 
         if freeze_encoder:
             for param in self.encoder.parameters():  # type: ignore
