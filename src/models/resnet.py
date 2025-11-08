@@ -133,7 +133,7 @@ class HyperbolicResNet(AbstractModel):
         self.contrastive_temperature = contrastive_temperature
         self.byol = byol
 
-        self.hidden_dims = [1000, 512, 128, self.latent_dim]
+        self.hidden_dims = []
 
         self.save_hyperparameters()
 
@@ -172,6 +172,7 @@ class HyperbolicResNet(AbstractModel):
             nn.BatchNorm1d(256),
             self.activation_function,
         ]
+        self.hidden_dims = [512, 256]
 
         # Add intermediate layers to gradually reduce to latent_dim
         current_dim = 256
@@ -185,6 +186,7 @@ class HyperbolicResNet(AbstractModel):
                     self.activation_function
                 ])
                 current_dim = intermediate_dim
+                self.hidden_dims.append(intermediate_dim)
 
 
 
@@ -298,15 +300,18 @@ class HyperbolicResNet(AbstractModel):
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         hidden = self.encoder(x)
+        hidden = hidden / (
+            self.hidden_dims[-1] ** 0.5
+        )  # Scale by sqrt of last hidden dimension
         manifold_z = self.hyperbolic_encoding_layer(hidden)
         return manifold_z
 
     def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
-        x = self.hyperbolic_decoding_layer(manifold_z)
+        x = self.hyperbolic_decoding_layer(manifold_z)  # type: ignore
         # Cast back from the manifold precision to the model's precision
         x = x.to(dtype=get_dtype_from_precision(self.params_dtype))
         x = x.view(-1, 512 * self.expansion, 4, 4)
-        x_recon = self.decoder(x)
+        x_recon = self.decoder(x) # type: ignore
         return x_recon
     
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -319,15 +324,16 @@ class HyperbolicResNet(AbstractModel):
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug_1, x_aug_2, x, _ = batch
+        loss = 0.0
         if self.recon_weight == 0.0:
             # When recon_weight is 0.0, skip decoding for efficiency
             x_recon = torch.ones_like(x)
         else:
             x_recon, z = self(x)
 
-        # Reconstruction loss
-        x_recon_loss = F.mse_loss(x_recon, x)
-        loss = x_recon_loss
+            # Reconstruction loss
+            x_recon_loss = F.mse_loss(x_recon, x)
+            loss = x_recon_loss
         # Contrastive loss (if enabled)
         if self.contrastive_enabled:
             z_aug_1 = self.encode(x_aug_1 if self.byol else x)
@@ -349,14 +355,15 @@ class HyperbolicResNet(AbstractModel):
             )
 
         # Logging
-        self.metrics.setdefault("pretrain/x_recon_loss", []).append(
-            x_recon_loss.detach().item()
-        )
-        self.metrics.setdefault("pretrain/total_loss", []).append(loss.detach().item())
+        if self.recon_weight > 0.0:
+            self.metrics.setdefault("pretrain/x_recon_loss", []).append(
+                x_recon_loss.detach().item()
+            )
+        self.metrics.setdefault("pretrain/total_loss", []).append(loss.detach().item()) # type: ignore
         self.metrics.setdefault("pretrain/c", []).append(
-            self.manifold.c.detach().item()
-            if self.manifold.c.numel() == 1
-            else self.manifold.c.detach().cpu()
+            self.manifold.c.detach().item() # type: ignore
+            if self.manifold.c.numel() == 1 # type: ignore
+            else self.manifold.c.detach().cpu() # type: ignore
         )  # type: ignore
         self.log(
             "loss",
@@ -374,5 +381,8 @@ class HyperbolicResNet(AbstractModel):
             else:
                 x_aug_for_logging = x_aug_1
             self._log_images_to_wandb(x, x_recon, x_aug_for_logging)
+        
+        if not isinstance(loss, torch.Tensor):
+            loss = torch.tensor(loss, device=x.device)
 
         return loss

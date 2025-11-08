@@ -40,7 +40,7 @@ class HyperbolicHCModel(AbstractModel):
         distances_version: str = "mobius_direct",
         freeze_encoder: bool = False,
         contrastive_enabled: bool = False,
-        contrastive_weight: float = 0.1,
+        contrastive_weight: float = 1.0,
         contrastive_temperature: float = 0.5,
         byol: bool = False,
         recon_weight: float = 1.0,
@@ -513,16 +513,18 @@ class HyperbolicHCModel(AbstractModel):
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug_1, x_aug_2, x, _ = batch
-        x_recon, manifold_z = self(x)
-        # x_aug_recon, manifold_z_aug = self(x_aug)
+        if self.recon_weight > 0.0:
+            x_recon, manifold_z = self(x)
 
-        # Reconstruction loss
-        if x_recon.shape != x.shape:
-            x_recon = x_recon.view_as(x)
-        x_recon_loss = F.mse_loss(x_recon, x)
-        # x_aug_recon_loss = F.mse_loss(x_aug_recon, x_aug)
-        # recon_loss = (x_recon_loss + x_aug_recon_loss) / 2
-        recon_loss = x_recon_loss
+            if x_recon.shape != x.shape:
+                x_recon = x_recon.view_as(x)
+            x_recon_loss = F.mse_loss(x_recon, x)
+
+            recon_loss = x_recon_loss
+        else:
+            recon_loss = 0.0
+            x_recon = torch.zeros_like(x)
+            manifold_z = self.encode(x)
 
         # HypHC loss
         standard_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = (
@@ -572,9 +574,10 @@ class HyperbolicHCModel(AbstractModel):
             )
 
         # Logging - DETACH tensors to prevent memory leaks
-        self.metrics.setdefault("clustering/recon_loss", []).append(
-            recon_loss.detach().item()
-        )
+        if self.recon_weight > 0.0:
+            self.metrics.setdefault("clustering/recon_loss", []).append(
+                recon_loss.detach().item() # type: ignore
+            )
         self.metrics.setdefault("clustering/hyphc_loss", []).append(
             hyphc_loss.detach().item()
         )

@@ -16,7 +16,7 @@ import wandb
 import warnings
 import pytorch_lightning as pl
 
-from icecream import install
+from icecream import install # type: ignore
 
 install()
 
@@ -45,17 +45,6 @@ def main(cfg: DictConfig) -> None:
         )
         logger = get_logger(cfg)
 
-        # Determine checkpoint directory for pretraining
-        checkpoint_dir = None
-        if cfg.pretraining.get("enable_checkpointing", False):
-            checkpoint_dir = (
-                f"./data/checkpoints/pretrain_{cfg.dataset.name}_{get_model_path(cfg)}"
-            )
-            os.makedirs(checkpoint_dir, exist_ok=True)
-            print(
-                f"Checkpointing enabled. Checkpoints will be saved to: {checkpoint_dir}",
-                flush=True,
-            )
 
         trainer = pl.Trainer(
             logger=logger,
@@ -63,8 +52,8 @@ def main(cfg: DictConfig) -> None:
             devices="auto",
             accelerator="auto",
             deterministic=True,
-            enable_checkpointing=cfg.pretraining.get("enable_checkpointing", False),
-            default_root_dir=checkpoint_dir,
+            enable_checkpointing=False,
+            default_root_dir=None,
             gradient_clip_algorithm="norm"
             if cfg.experiment.gradient_clip_value is not None
             else None,
