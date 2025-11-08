@@ -502,7 +502,7 @@ class HyperbolicHCModel(AbstractModel):
             if all(s is not None for s in shape):
                 x_recon = x_recon.view(-1, *shape)
         return x_recon
-    
+
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         manifold_z = self.encode(x)
         if self.recon_weight == 0.0:
@@ -576,7 +576,7 @@ class HyperbolicHCModel(AbstractModel):
         # Logging - DETACH tensors to prevent memory leaks
         if self.recon_weight > 0.0:
             self.metrics.setdefault("clustering/recon_loss", []).append(
-                recon_loss.detach().item() # type: ignore
+                recon_loss.detach().item()  # type: ignore
             )
         self.metrics.setdefault("clustering/hyphc_loss", []).append(
             hyphc_loss.detach().item()

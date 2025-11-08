@@ -207,8 +207,10 @@ def get_clustering_model(
     pretrain_model: Union[HyperbolicAE, HyperbolicResNet, HyperbolicConvAE],
 ) -> HyperbolicHCModel:
     if cfg.pretraining.recon_weight == 0.0 and cfg.clustering.recon_weight > 0.0:
-        print("Warning: Pretraining was done without reconstruction loss, "
-              "but clustering is using a non-zero reconstruction weight. Will be set to 0.0 during clustering.")
+        print(
+            "Warning: Pretraining was done without reconstruction loss, "
+            "but clustering is using a non-zero reconstruction weight. Will be set to 0.0 during clustering."
+        )
         cfg.clustering.recon_weight = 0.0
     model = HyperbolicHCModel(
         ae_model=pretrain_model,
@@ -240,7 +242,6 @@ def get_clustering_model(
         contrastive_temperature=cfg.clustering.contrastive_loss.temperature,
         byol=cfg.clustering.contrastive_loss.byol,
         recon_weight=cfg.clustering.recon_weight,
-        
     )
     return model
 
