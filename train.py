@@ -16,7 +16,7 @@ import wandb
 import warnings
 import pytorch_lightning as pl
 
-from icecream import install # type: ignore
+from icecream import install  # type: ignore
 
 install()
 
@@ -44,7 +44,6 @@ def main(cfg: DictConfig) -> None:
             "ignore", ".*is smaller than the logging interval Trainer.*"
         )
         logger = get_logger(cfg)
-
 
         trainer = pl.Trainer(
             logger=logger,
