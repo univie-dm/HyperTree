@@ -161,8 +161,8 @@ class HyperbolicResNet(AbstractModel):
             self.encoder = resnet152(weights=None)
         else:
             raise ValueError(f"Invalid model type: {self.model_type}")
-        
-       # Build projection head layers progressively
+
+        # Build projection head layers progressively
         projection_layers = [
             nn.Flatten(),
             nn.Linear(1000, 512),
@@ -180,15 +180,15 @@ class HyperbolicResNet(AbstractModel):
 
         for intermediate_dim in intermediate_dims:
             if self.latent_dim < current_dim and intermediate_dim > self.latent_dim:
-                projection_layers.extend([
-                    nn.Linear(current_dim, intermediate_dim),
-                    nn.BatchNorm1d(intermediate_dim),
-                    self.activation_function
-                ])
+                projection_layers.extend(
+                    [
+                        nn.Linear(current_dim, intermediate_dim),
+                        nn.BatchNorm1d(intermediate_dim),
+                        self.activation_function,
+                    ]
+                )
                 current_dim = intermediate_dim
                 self.hidden_dims.append(intermediate_dim)
-
-
 
         self.encoder = nn.Sequential(self.encoder, *projection_layers)
 
@@ -311,14 +311,14 @@ class HyperbolicResNet(AbstractModel):
         # Cast back from the manifold precision to the model's precision
         x = x.to(dtype=get_dtype_from_precision(self.params_dtype))
         x = x.view(-1, 512 * self.expansion, 4, 4)
-        x_recon = self.decoder(x) # type: ignore
+        x_recon = self.decoder(x)  # type: ignore
         return x_recon
-    
+
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         manifold_z = self.encode(x)
         if self.recon_weight == 0.0:
             x_recon = torch.ones_like(x)
-        else: 
+        else:
             x_recon = self.decode(manifold_z)
         return x_recon, manifold_z
 
@@ -340,7 +340,9 @@ class HyperbolicResNet(AbstractModel):
             z_aug_2 = self.encode(x_aug_2 if self.byol else z_aug_1)
 
             if not torch.isfinite(z_aug_1).all() or not torch.isfinite(z_aug_2).all():
-                raise ValueError("Non-finite values encountered in contrastive embeddings.")
+                raise ValueError(
+                    "Non-finite values encountered in contrastive embeddings."
+                )
 
             contrastive_loss = self.compute_contrastive_loss(
                 z_aug_1,
@@ -359,11 +361,11 @@ class HyperbolicResNet(AbstractModel):
             self.metrics.setdefault("pretrain/x_recon_loss", []).append(
                 x_recon_loss.detach().item()
             )
-        self.metrics.setdefault("pretrain/total_loss", []).append(loss.detach().item()) # type: ignore
+        self.metrics.setdefault("pretrain/total_loss", []).append(loss.detach().item())  # type: ignore
         self.metrics.setdefault("pretrain/c", []).append(
-            self.manifold.c.detach().item() # type: ignore
-            if self.manifold.c.numel() == 1 # type: ignore
-            else self.manifold.c.detach().cpu() # type: ignore
+            self.manifold.c.detach().item()  # type: ignore
+            if self.manifold.c.numel() == 1  # type: ignore
+            else self.manifold.c.detach().cpu()  # type: ignore
         )  # type: ignore
         self.log(
             "loss",
@@ -381,7 +383,7 @@ class HyperbolicResNet(AbstractModel):
             else:
                 x_aug_for_logging = x_aug_1
             self._log_images_to_wandb(x, x_recon, x_aug_for_logging)
-        
+
         if not isinstance(loss, torch.Tensor):
             loss = torch.tensor(loss, device=x.device)
 
