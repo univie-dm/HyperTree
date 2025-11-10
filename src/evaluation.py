@@ -29,22 +29,28 @@ def evaluation(
     manifold: Manifold,
     metrics: dict[str, bool] | None = None,
     str_labels: Optional[npt.ArrayLike] | None = None,
+    Y_coarse: Optional[Union[np.ndarray, torch.Tensor]] = None,
 ) -> dict:
     """
     Evaluate the performance of a model using specified metrics.
 
     Parameters
     ----------
-    X : list
-        List of predicted values
-    Y : list
-        List of true values
+    X : torch.Tensor
+        Embeddings of the data points
+    Y : torch.Tensor
+        Fine-grained labels (or single-level labels for flat datasets)
     distance_matrix : torch.Tensor
         Precomputed distance matrix
     manifold : Manifold
         The manifold on which the embeddings are defined
-    metrics : list
-        List of metric functions to evaluate
+    metrics : dict[str, bool] | None
+        Dictionary of metric names and whether to compute them
+    str_labels : Optional[npt.ArrayLike] | None
+        String labels for visualization
+    Y_coarse : Optional[Union[np.ndarray, torch.Tensor]]
+        Coarse-grained labels for hierarchical datasets (e.g., CIFAR-100, GTSRB)
+        If provided, hierarchical dendrogram purity will be computed
 
     Returns
     -------
@@ -63,6 +69,13 @@ def evaluation(
         distance_matrix = distance_matrix[sample_indices][:, sample_indices]
         if str_labels is not None:
             str_labels = np.asarray(str_labels)[sample_indices]
+        if Y_coarse is not None:
+            Y_coarse_np = (
+                Y_coarse.cpu().numpy()
+                if isinstance(Y_coarse, torch.Tensor)
+                else np.asarray(Y_coarse)
+            )
+            Y_coarse = Y_coarse_np[sample_indices]
 
     if not isinstance(manifold.c, torch.Tensor):
         manifold.c = torch.tensor(manifold.c, device=X.device, dtype=X.dtype)
@@ -137,20 +150,52 @@ def evaluation(
         results["relative_delta_hyperbolicity"] = rel_delta_hyp.item()
     if metrics.get("dendrogram_purity_single", False):
         # Compute dendrogram purity for single linkage
-        dp_score_single = dendrogram_purity(distance_matrix, Y, "single")
-        results["dendrogram_purity_single"] = dp_score_single
+        if Y_coarse is not None:
+            # Use hierarchical DP for datasets with coarse labels
+            dp_score_single = hierarchical_dendrogram_purity(
+                distance_matrix, Y, Y_coarse, "single"
+            )
+            results["hierarchical_dendrogram_purity_single"] = dp_score_single
+        else:
+            # Use flat DP for simple datasets
+            dp_score_single = dendrogram_purity(distance_matrix, Y, "single")
+            results["dendrogram_purity_single"] = dp_score_single
     if metrics.get("dendrogram_purity_complete", False):
         # Compute dendrogram purity for complete linkage
-        dp_score_complete = dendrogram_purity(distance_matrix, Y, "complete")
-        results["dendrogram_purity_complete"] = dp_score_complete
+        if Y_coarse is not None:
+            # Use hierarchical DP for datasets with coarse labels
+            dp_score_complete = hierarchical_dendrogram_purity(
+                distance_matrix, Y, Y_coarse, "complete"
+            )
+            results["hierarchical_dendrogram_purity_complete"] = dp_score_complete
+        else:
+            # Use flat DP for simple datasets
+            dp_score_complete = dendrogram_purity(distance_matrix, Y, "complete")
+            results["dendrogram_purity_complete"] = dp_score_complete
     if metrics.get("dendrogram_purity_average", False):
         # Compute dendrogram purity for average linkage
-        dp_score_average = dendrogram_purity(distance_matrix, Y, "average")
-        results["dendrogram_purity_average"] = dp_score_average
+        if Y_coarse is not None:
+            # Use hierarchical DP for datasets with coarse labels
+            dp_score_average = hierarchical_dendrogram_purity(
+                distance_matrix, Y, Y_coarse, "average"
+            )
+            results["hierarchical_dendrogram_purity_average"] = dp_score_average
+        else:
+            # Use flat DP for simple datasets
+            dp_score_average = dendrogram_purity(distance_matrix, Y, "average")
+            results["dendrogram_purity_average"] = dp_score_average
     if metrics.get("dendrogram_purity_ward", False):
         # Compute dendrogram purity for ward linkage
-        dp_score_ward = dendrogram_purity(distance_matrix, Y, "ward")
-        results["dendrogram_purity_ward"] = dp_score_ward
+        if Y_coarse is not None:
+            # Use hierarchical DP for datasets with coarse labels
+            dp_score_ward = hierarchical_dendrogram_purity(
+                distance_matrix, Y, Y_coarse, "ward"
+            )
+            results["hierarchical_dendrogram_purity_ward"] = dp_score_ward
+        else:
+            # Use flat DP for simple datasets
+            dp_score_ward = dendrogram_purity(distance_matrix, Y, "ward")
+            results["dendrogram_purity_ward"] = dp_score_ward
     if metrics.get("agglomerative_clustering_single", False):
         # Compute agglomerative clustering metrics
         agglomerative_clustering_single = AgglomerativeClustering(
@@ -694,6 +739,146 @@ def dendrogram_purity(
         # Free memory by deleting child node info that will no longer be used
         del cluster_label_counts[node1_id]
         del cluster_label_counts[node2_id]
+
+    # --- Step 4: Final Normalization ---
+    return total_purity_sum / num_same_class_pairs
+
+
+def hierarchical_dendrogram_purity(
+    distance_matrix: torch.Tensor,
+    labels_fine: np.ndarray | torch.Tensor,
+    labels_coarse: np.ndarray | torch.Tensor,
+    linkage_method: str = "average",
+) -> float:
+    """
+    Computes the Hierarchical Dendrogram Purity for a hierarchy built from a distance matrix.
+
+    This function evaluates the dendrogram against multiple levels of ground-truth labels,
+    calculating the purity for both fine-grained and coarse-grained classes.
+
+    This is the correct metric for datasets with hierarchical structure like:
+    - CIFAR-100 (100 fine classes nested in 20 coarse classes)
+    - GTSRB (43 fine traffic signs nested in coarse categories)
+
+    The formula computes:
+    DP_hierarchical(T) = (1 / |P*|) * Σ_{all clusters C*} Σ_{xi, xj ∈ C*, i≠j} pur(lca(xi, xj), C*)
+
+    where P* includes pairs from both fine AND coarse ground-truth clusters.
+
+    Args:
+        distance_matrix (torch.Tensor): A square N x N matrix of pairwise distances.
+        labels_fine (np.ndarray | torch.Tensor): A 1D array of size N with fine-grained class labels.
+        labels_coarse (np.ndarray | torch.Tensor): A 1D array of size N with coarse-grained class labels.
+        linkage_method (str): The linkage algorithm to use (e.g., 'average', 'single', 'complete').
+
+    Returns:
+        float: The Hierarchical Dendrogram Purity score, between 0 and 1.
+
+    Example:
+        For CIFAR-100:
+        - labels_fine: 100 fine classes (e.g., 'maple_tree', 'oak_tree', 'palm_tree', ...)
+        - labels_coarse: 20 coarse classes (e.g., 'trees', 'flowers', 'people', ...)
+
+        This will evaluate against all 120 ground-truth clusters (100 fine + 20 coarse).
+    """
+    num_samples = len(labels_fine)
+    if num_samples < 2:
+        return 1.0
+
+    # Ensure numpy arrays
+    distance_matrix_np = distance_matrix.cpu().numpy()
+    labels_fine_np = np.asarray(labels_fine)
+    labels_coarse_np = np.asarray(labels_coarse)
+
+    if distance_matrix_np.shape != (num_samples, num_samples):
+        raise ValueError("Distance matrix must be square and match number of labels.")
+
+    if len(labels_fine_np) != len(labels_coarse_np):
+        raise ValueError("Fine and coarse labels must have the same length.")
+
+    # --- Step 1: Calculate the Normalization Factor |P*| ---
+    # For hierarchical DP, we count pairs from BOTH fine and coarse levels
+
+    # Count pairs from fine-grained classes
+    _, fine_class_counts = np.unique(labels_fine_np, return_counts=True)
+    num_fine_pairs = sum(count * (count - 1) // 2 for count in fine_class_counts)
+
+    # Count pairs from coarse-grained classes
+    _, coarse_class_counts = np.unique(labels_coarse_np, return_counts=True)
+    num_coarse_pairs = sum(count * (count - 1) // 2 for count in coarse_class_counts)
+
+    # Total pairs is the sum from both levels
+    num_same_class_pairs = num_fine_pairs + num_coarse_pairs
+
+    if num_same_class_pairs == 0:
+        return 1.0
+
+    # --- Step 2: Build the Dendrogram (Linkage Matrix) ---
+    condensed_distances = squareform(distance_matrix_np, checks=False)
+    Z = linkage(condensed_distances, method=linkage_method)
+
+    # --- Step 3: Calculate Purity Sum for Both Fine and Coarse Levels ---
+
+    # We'll compute the purity sum separately for fine and coarse labels
+    # and then add them together
+
+    def compute_purity_sum_for_labels(labels_np):
+        """Helper function to compute purity sum for a single label set."""
+        total_purity_sum = 0.0
+
+        # Map to track label distribution for each cluster node
+        cluster_label_counts = {
+            i: Counter({labels_np[i]: 1}) for i in range(num_samples)
+        }
+
+        # Iterate over each merge operation in the linkage matrix
+        for i, merge in enumerate(Z):
+            node1_id, node2_id = int(merge[0]), int(merge[1])
+            new_node_id = num_samples + i
+
+            counts1 = cluster_label_counts[node1_id]
+            counts2 = cluster_label_counts[node2_id]
+
+            # The new node's labels are the sum of its children's labels
+            new_node_counts = counts1 + counts2
+            cluster_label_counts[new_node_id] = new_node_counts
+
+            # Total points in the newly formed cluster
+            lca_node_size = sum(new_node_counts.values())
+
+            # Iterate through all ground-truth classes present in the merge
+            all_involved_labels = set(counts1.keys()) | set(counts2.keys())
+
+            for label in all_involved_labels:
+                # Number of points with this label from each child cluster
+                n1_k = counts1.get(label, 0)
+                n2_k = counts2.get(label, 0)
+
+                # The number of new same-class pairs whose LCA is this node
+                num_new_pairs = n1_k * n2_k
+
+                if num_new_pairs > 0:
+                    # Purity of the LCA node with respect to this specific class
+                    count_of_label_in_lca = new_node_counts.get(label, 0)
+                    purity_of_lca_for_label = count_of_label_in_lca / lca_node_size
+
+                    # Add the contribution of all these new pairs to the total sum
+                    total_purity_sum += num_new_pairs * purity_of_lca_for_label
+
+            # Free memory by deleting child node info that will no longer be used
+            del cluster_label_counts[node1_id]
+            del cluster_label_counts[node2_id]
+
+        return total_purity_sum
+
+    # Compute purity sum for fine-grained labels
+    fine_purity_sum = compute_purity_sum_for_labels(labels_fine_np)
+
+    # Compute purity sum for coarse-grained labels
+    coarse_purity_sum = compute_purity_sum_for_labels(labels_coarse_np)
+
+    # Total purity sum is the sum from both levels
+    total_purity_sum = fine_purity_sum + coarse_purity_sum
 
     # --- Step 4: Final Normalization ---
     return total_purity_sum / num_same_class_pairs

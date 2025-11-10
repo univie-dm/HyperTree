@@ -232,6 +232,7 @@ class AbstractModel(pl.LightningModule):
                 embeddings = []
                 labels = []
                 str_labels = []
+                coarse_labels = []  # For hierarchical datasets like CIFAR-100, GTSRB
                 labels_map = self.trainer.datamodule.get_class_names()  # type: ignore
 
                 for batch_idx, (_, _, x, y) in enumerate(test_loader):
@@ -240,20 +241,31 @@ class AbstractModel(pl.LightningModule):
                     labels.append(y)
                     if labels_map is not None:
                         batch_str_labels = []
+                        batch_coarse_labels = []
                         for label in y:
                             label_value = labels_map[int(label)]
-                            # For GTSRB, extract only the coarse/super label (second element of tuple)
-                            # For CIFAR10/CIFAR100_20, the second element is None, so use the first element
+                            # Handle tuple format: (fine_label, coarse_label)
                             if isinstance(label_value, tuple) and len(label_value) >= 2:
-                                # Use coarse label if available, otherwise use fine label
-                                batch_str_labels.append(
-                                    label_value[1]
-                                    if label_value[1] is not None
-                                    else label_value[0]
+                                fine_label, coarse_label = (
+                                    label_value[0],
+                                    label_value[1],
                                 )
+                                # For visualization, use coarse label if available
+                                batch_str_labels.append(
+                                    coarse_label
+                                    if coarse_label is not None
+                                    else fine_label
+                                )
+                                # Store coarse labels for hierarchical DP
+                                if coarse_label is not None:
+                                    # Map string coarse label back to numeric ID
+                                    # We'll need to create a mapping
+                                    batch_coarse_labels.append(coarse_label)
                             else:
                                 batch_str_labels.append(label_value)
                         str_labels.append(batch_str_labels)
+                        if batch_coarse_labels:
+                            coarse_labels.append(batch_coarse_labels)
 
                 if labels_map is not None:
                     # Flatten the list of lists into a single list
@@ -268,6 +280,29 @@ class AbstractModel(pl.LightningModule):
                         str_labels = None
                 else:
                     str_labels = None
+
+                # Process coarse labels for hierarchical datasets
+                coarse_labels_array = None
+                if coarse_labels:
+                    # Flatten coarse labels
+                    coarse_labels_flat = [
+                        label
+                        for batch_labels in coarse_labels
+                        for label in batch_labels
+                    ]
+                    if len(coarse_labels_flat) == len(torch.cat(labels, dim=0)):
+                        # Create numeric mapping for coarse labels
+                        unique_coarse = sorted(set(coarse_labels_flat))
+                        coarse_to_id = {
+                            label: i for i, label in enumerate(unique_coarse)
+                        }
+                        coarse_labels_array = np.array(
+                            [coarse_to_id[label] for label in coarse_labels_flat]
+                        )
+                    else:
+                        print(
+                            f"Warning: coarse_labels length ({len(coarse_labels_flat)}) doesn't match labels length ({len(torch.cat(labels, dim=0))}). Using None."
+                        )
 
                 all_embeddings = torch.cat(embeddings, dim=0)
                 all_labels = torch.cat(labels, dim=0)
@@ -297,6 +332,7 @@ class AbstractModel(pl.LightningModule):
                     manifold=self.manifold,
                     metrics=self.evaluation_metrics,
                     str_labels=str_labels_array,
+                    Y_coarse=coarse_labels_array,
                 )
 
                 del all_embeddings, all_labels, distance_matrix, embeddings, labels
@@ -418,11 +454,21 @@ class AbstractModel(pl.LightningModule):
                     x_0_img = x_0_img.squeeze(2)
                     x_recon_0_img = x_recon_0_img.squeeze(2)
             else:
+                x_0_img = ((x_0 + x_0.min().abs()) / x_0.max()) * 255.0
+                x_recon_0 = (
+                    (x_recon_0 + x_recon_0.min().abs()) / x_recon_0.max()
+                ) * 255.0
                 x_0_img = x_0.cpu().numpy().astype("uint8")
                 x_recon_0_img = x_recon_0.cpu().numpy().astype("uint8")
                 if x_aug_1_0 is not None:
+                    x_aug_1_0 = (
+                        (x_aug_1_0 + x_aug_1_0.min().abs()) / x_aug_1_0.max()
+                    ) * 255.0
                     x_aug_1_0_img = x_aug_1_0.cpu().numpy().astype("uint8")
                 if x_aug_2_0 is not None:
+                    x_aug_2_0 = (
+                        (x_aug_2_0 + x_aug_2_0.min().abs()) / x_aug_2_0.max()
+                    ) * 255.0
                     x_aug_2_0_img = x_aug_2_0.cpu().numpy().astype("uint8")
 
             # Create combined image: [original | aug1 | aug2 | reconstruction]

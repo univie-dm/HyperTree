@@ -45,7 +45,7 @@ clustering:
   freeze_encoder: False
   contrastive_loss:
     enabled: False
-    weight: 0.1
+    weight: 1.0
     temperature: 0.5
     byol: False
   recon_weight: 0.0
