@@ -424,6 +424,7 @@ class AbstractModel(pl.LightningModule):
                 3,
             ]:  # Check if channels-first
                 x_0_img = x_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
+                x_recon_0 = (x_recon_0+ x_recon_0.min().abs()) / x_recon_0.max() * 255.0
                 x_recon_0_img = (
                     x_recon_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
                 )
@@ -495,6 +496,7 @@ class AbstractModel(pl.LightningModule):
                 1,
                 3,
             ]:  # Check if channels-first
+                x_combined = (x_combined+ x_combined.min().abs()) / x_combined.max() * 255.0
                 x_combined_img = (
                     x_combined.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
                 )
