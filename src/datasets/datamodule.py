@@ -650,32 +650,54 @@ class GrayScaleDataModule(pl.LightningDataModule):
             persistent_workers=True if self.hparams.num_workers > 0 else False,
         )
 
-    def get_class_names(self) -> Optional[Dict[int, str]]:
+    def get_class_names(self) -> Optional[Dict[int, Tuple[str, Optional[str]]]]:
+        """Return class names for the dataset.
+        
+        Returns a dictionary mapping label IDs to tuples of (fine_label, coarse_label).
+        For flat datasets, coarse_label is None.
+        """
         if self.hparams.dataset_name == "mnist":
+            # MNIST has flat labels (no hierarchy)
             return {
-                0: "0-Zero",
-                1: "1-One",
-                2: "2-Two",
-                3: "3-Three",
-                4: "4-Four",
-                5: "5-Five",
-                6: "6-Six",
-                7: "7-Seven",
-                8: "8-Eight",
-                9: "9-Nine",
+                0: ("0-Zero", None),
+                1: ("1-One", None),
+                2: ("2-Two", None),
+                3: ("3-Three", None),
+                4: ("4-Four", None),
+                5: ("5-Five", None),
+                6: ("6-Six", None),
+                7: ("7-Seven", None),
+                8: ("8-Eight", None),
+                9: ("9-Nine", None),
             }
         elif self.hparams.dataset_name == "fmnist":
+            # Fashion-MNIST has hierarchical labels
+            # Coarse categories: Tops, Bottoms, Footwear, Accessories
             return {
-                0: "0-T-shirt/top",
-                1: "1-Trouser",
-                2: "2-Pullover",
-                3: "3-Dress",
-                4: "4-Coat",
-                5: "5-Sandal",
-                6: "6-Shirt",
-                7: "7-Sneaker",
-                8: "8-Bag",
-                9: "9-Ankle boot",
+                0: ("T-shirt/top", "Tops"),
+                1: ("Trouser", "Bottoms"),
+                2: ("Pullover", "Tops"),
+                3: ("Dress", "Bottoms"),
+                4: ("Coat", "Tops"),
+                5: ("Sandal", "Footwear"),
+                6: ("Shirt", "Tops"),
+                7: ("Sneaker", "Footwear"),
+                8: ("Bag", "Accessories"),
+                9: ("Ankle boot", "Footwear"),
+            }
+        elif self.hparams.dataset_name == "kmnist":
+            # KMNIST has flat labels (Japanese characters, no natural hierarchy)
+            return {
+                0: ("o", None),
+                1: ("ki", None),
+                2: ("su", None),
+                3: ("tsu", None),
+                4: ("na", None),
+                5: ("ha", None),
+                6: ("ma", None),
+                7: ("ya", None),
+                8: ("re", None),
+                9: ("wo", None),
             }
         else:
             return None

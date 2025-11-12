@@ -91,9 +91,9 @@ architecture:
 evaluation:
   delta_hyperbolicity: False
   dendrogram_purity_single: False
-  dendrogram_purity_complete: False
+  dendrogram_purity_complete: True
   dendrogram_purity_average: False
-  dendrogram_purity_ward: False
+  dendrogram_purity_ward: True
   agglomerative_clustering_single: False
   agglomerative_clustering_complete: False
   agglomerative_clustering_average: False
