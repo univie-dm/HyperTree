@@ -386,13 +386,6 @@ class HyperbolicResNet(AbstractModel):
             sync_dist=True,
         )
 
-        if batch_idx == 0:
-            if self.byol:
-                x_aug_for_logging = torch.concat([x_aug_1, x_aug_2], dim=0)
-            else:
-                x_aug_for_logging = x_aug_1
-            # self._log_images_to_wandb(x, x_recon, x_aug_for_logging)
-
         if not isinstance(loss, torch.Tensor):
             loss = torch.tensor(loss, device=x.device)
 
