@@ -246,8 +246,8 @@ class AbstractModel(pl.LightningModule):
                 labels_map = self.trainer.datamodule.get_class_names()  # type: ignore
 
                 for batch_idx, (_, _, x, y) in enumerate(test_loader):
-                    _, z = self(x.to(self.device))
-                    embeddings.append(z)
+                    z = self(x.to(self.device))
+                    embeddings.append(z[-1])
                     labels.append(y)
                     if labels_map is not None:
                         batch_str_labels = []
@@ -429,7 +429,9 @@ class AbstractModel(pl.LightningModule):
                 3,
             ]:  # Check if channels-first
                 x_0_img = x_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
-                x_recon_0 = (x_recon_0+ x_recon_0.min().abs()) / x_recon_0.max() * 255.0
+                x_recon_0 = (
+                    (x_recon_0 + x_recon_0.min().abs()) / x_recon_0.max() * 255.0
+                )
                 x_recon_0_img = (
                     x_recon_0.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
                 )
@@ -501,7 +503,9 @@ class AbstractModel(pl.LightningModule):
                 1,
                 3,
             ]:  # Check if channels-first
-                x_combined = (x_combined+ x_combined.min().abs()) / x_combined.max() * 255.0
+                x_combined = (
+                    (x_combined + x_combined.min().abs()) / x_combined.max() * 255.0
+                )
                 x_combined_img = (
                     x_combined.permute(1, 2, 0).cpu().detach().numpy().astype("uint8")
                 )
@@ -626,7 +630,8 @@ class AbstractModel(pl.LightningModule):
             lcas[indices[1, :batch_size], indices[0, :batch_size]] = lca_depth
             indices = indices[:, batch_size:]
         return lcas
-    
+
+
 class FeatureScaling(torch.nn.Module):
     def __init__(
         self,

@@ -652,7 +652,7 @@ class GrayScaleDataModule(pl.LightningDataModule):
 
     def get_class_names(self) -> Optional[Dict[int, Tuple[str, Optional[str]]]]:
         """Return class names for the dataset.
-        
+
         Returns a dictionary mapping label IDs to tuples of (fine_label, coarse_label).
         For flat datasets, coarse_label is None.
         """

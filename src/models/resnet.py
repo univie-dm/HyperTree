@@ -125,7 +125,6 @@ class HyperbolicResNet(AbstractModel):
             clamping_factor=clamping_factor,
             smoothing_factor=smoothing_factor,
             FHCNN_normalize=FHCNN_normalize,
-            
         )
         self.output_size = output_size
         self.clamping_factor = clamping_factor
@@ -166,7 +165,6 @@ class HyperbolicResNet(AbstractModel):
             self.encoder = resnet152(weights=None)
         else:
             raise ValueError(f"Invalid model type: {self.model_type}")
-                
 
         # Build projection head layers progressively
         projection_layers = [

@@ -10,7 +10,10 @@ from lightning.pytorch.utilities import grad_norm
 from src.hyperbolic_math.src.optim.riemannian_adam import RiemannianAdam
 from src.models.abstract import AbstractModel
 from src.models.resnet import HyperbolicResNet
-from src.models.utils import get_dtype_from_precision, get_hyperbolic_encoding_layer_by_name
+from src.models.utils import (
+    get_dtype_from_precision,
+    get_hyperbolic_encoding_layer_by_name,
+)
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.hyperbolic_math.src.manifolds import Hyperboloid, PoincareBall
 
@@ -127,27 +130,22 @@ class HyperbolicHCModel(AbstractModel):
             raise ValueError(
                 "hyphc_start_weight must be less than or equal to hyphc_end_weight."
             )
-        
+
         self.cluster_head = get_hyperbolic_encoding_layer_by_name(
             layer_name=str(self.hyperbolic_encoding),
             manifold=self.manifold,
-            input_dim=self.latent_dim,
-            output_dim=self.latent_dim*2,
+            input_dim=self.hidden_dims[-1],
+            output_dim=self.latent_dim * 2,
             params_dtype=self.params_dtype,
             clamping_factor=self.clamping_factor,
             smoothing_factor=self.smoothing_factor,
             learnable_scale=self.learnable_scale,
             FHCNN_normalize=self.FHCNN_normalize,
         )
-        
 
     def configure_optimizers(self) -> Any:
-
         optimizer = RiemannianAdam(
-            [
-                {"params": self.hyperbolic_encoding_layer.parameters(), "lr": self.learning_rate},
-                {"params": self.encoder.parameters(), "lr": self.learning_rate*0.01}
-            ],
+            self.parameters(),
             lr=self.learning_rate,
             weight_decay=self.weight_decay,
         )
@@ -416,7 +414,9 @@ class HyperbolicHCModel(AbstractModel):
                 x_recon = x_recon.view(-1, *shape)
         return x_recon
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         manifold_z, cluster_z = self.encode(x)
         if self.recon_weight == 0.0:
             # Skip decoding if reconstruction loss is not used
