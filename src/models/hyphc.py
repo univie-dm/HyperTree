@@ -116,6 +116,9 @@ class HyperbolicHCModel(AbstractModel):
             self.decoder = None
             self.hyperbolic_decoding_layer = None
 
+        self.feature_scaling = ae_model.feature_scaling  # type: ignore
+        self.rms = ae_model.rms  # type: ignore
+
         if freeze_encoder:
             for param in self.encoder.parameters():  # type: ignore
                 param.requires_grad = False
@@ -383,9 +386,12 @@ class HyperbolicHCModel(AbstractModel):
         if self.model_type == "feedforward":
             x = x.view(x.size(0), -1)
         hidden = self.encoder(x)  # type: ignore
-        hidden = hidden / (
-            self.hidden_dims[-1] ** 0.5
-        )  # Scale by input dimension # type: ignore
+        hidden = self.rms(hidden)
+        hidden = torch.nn.functional.tanh(hidden)
+        hidden, scaler = self.feature_scaling(hidden)
+        self.metrics.setdefault("clustering/feature_scale", []).append(
+            scaler.detach().item()
+        )
         manifold_z = self.hyperbolic_encoding_layer(hidden)  # type: ignore
         cluster_z = self.cluster_head(hidden)
         return manifold_z, cluster_z
