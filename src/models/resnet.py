@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
-from src.models.abstract import AbstractModel
+from src.models.abstract import AbstractModel, FeatureScaling
 from src.models.utils import (
     get_dtype_from_precision,
     get_hyperbolic_encoding_layer_by_name,
@@ -100,6 +100,7 @@ class HyperbolicResNet(AbstractModel):
         lr_scheduler_params: dict | None = None,
         byol: bool = False,
         recon_weight: float = 1.0,
+        FHCNN_normalize: bool = False,
     ):
         super().__init__(
             model_type=model_type,
@@ -121,6 +122,10 @@ class HyperbolicResNet(AbstractModel):
             distances_type=distances_type,
             distances_version=distances_version,
             lr_scheduler_params=lr_scheduler_params,
+            clamping_factor=clamping_factor,
+            smoothing_factor=smoothing_factor,
+            FHCNN_normalize=FHCNN_normalize,
+            
         )
         self.output_size = output_size
         self.clamping_factor = clamping_factor
@@ -161,6 +166,7 @@ class HyperbolicResNet(AbstractModel):
             self.encoder = resnet152(weights=None)
         else:
             raise ValueError(f"Invalid model type: {self.model_type}")
+                
 
         # Build projection head layers progressively
         projection_layers = [
@@ -190,7 +196,9 @@ class HyperbolicResNet(AbstractModel):
                 current_dim = intermediate_dim
                 self.hidden_dims.append(intermediate_dim)
 
-        self.encoder = nn.Sequential(self.encoder, *projection_layers)
+        self.encoder = nn.Sequential(self.encoder, *projection_layers[:-2])
+        self.rms = nn.RMSNorm(self.hidden_dims[-1], elementwise_affine=False)
+        self.feature_scaling = FeatureScaling(self.hidden_dims[-1], self.manifold.c)
 
         # Add hyperbolic encoding layer(s)
         if isinstance(self.manifold, Euclidean) or hyperbolic_encoding is None:
@@ -300,9 +308,12 @@ class HyperbolicResNet(AbstractModel):
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         hidden = self.encoder(x)
-        hidden = hidden / (
-            self.hidden_dims[-1] ** 0.5
-        )  # Scale by sqrt of last hidden dimension
+        hidden = self.rms(hidden)
+        hidden = torch.nn.functional.tanh(hidden)
+        hidden, scaler = self.feature_scaling(hidden)
+        self.metrics.setdefault("pretrain/feature_scale", []).append(
+            scaler.detach().item()
+        )
         manifold_z = self.hyperbolic_encoding_layer(hidden)
         return manifold_z
 

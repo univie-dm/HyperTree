@@ -7,9 +7,10 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from typing import Any, Tuple
 from lightning.pytorch.utilities import grad_norm
 
+from src.hyperbolic_math.src.optim.riemannian_adam import RiemannianAdam
 from src.models.abstract import AbstractModel
 from src.models.resnet import HyperbolicResNet
-from src.models.utils import get_dtype_from_precision
+from src.models.utils import get_dtype_from_precision, get_hyperbolic_encoding_layer_by_name
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.hyperbolic_math.src.manifolds import Hyperboloid, PoincareBall
 
@@ -126,15 +127,30 @@ class HyperbolicHCModel(AbstractModel):
             raise ValueError(
                 "hyphc_start_weight must be less than or equal to hyphc_end_weight."
             )
+        
+        self.cluster_head = get_hyperbolic_encoding_layer_by_name(
+            layer_name=str(self.hyperbolic_encoding),
+            manifold=self.manifold,
+            input_dim=self.latent_dim,
+            output_dim=self.latent_dim*2,
+            params_dtype=self.params_dtype,
+            clamping_factor=self.clamping_factor,
+            smoothing_factor=self.smoothing_factor,
+            learnable_scale=self.learnable_scale,
+            FHCNN_normalize=self.FHCNN_normalize,
+        )
+        
 
     def configure_optimizers(self) -> Any:
-        parent_result = super().configure_optimizers()
 
-        # Extract optimizer from parent result (could be dict or optimizer object)
-        if isinstance(parent_result, dict):
-            optimizer = parent_result["optimizer"]
-        else:
-            optimizer = parent_result
+        optimizer = RiemannianAdam(
+            [
+                {"params": self.hyperbolic_encoding_layer.parameters(), "lr": self.learning_rate},
+                {"params": self.encoder.parameters(), "lr": self.learning_rate*0.01}
+            ],
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay,
+        )
 
         if self.lr_scheduler_params is not None:
             if self.lr_scheduler_params["type"] == "warmup_cosine":
@@ -213,110 +229,6 @@ class HyperbolicHCModel(AbstractModel):
                 f"Invalid sampling strategy: {self.hyphc_sampling_strategy}"
             )
         return sampled_indices, np_sampled_triplet_indices
-
-    def compute_lca_depth(
-        self, points: torch.Tensor, batch_size: int = 1_000
-    ) -> torch.Tensor:
-        """Generalized, corrected, and numerically stabilized implementation of
-        Chami et al.'s (2020) LCA depth computation using inverse geometry."""
-
-        if not isinstance(self.manifold.c, torch.Tensor):
-            self.manifold.c = torch.tensor(
-                self.manifold.c, dtype=points.dtype, device=points.device
-            )
-        device = points.device
-        lcas = torch.zeros((points.shape[0], points.shape[0]), dtype=points.dtype).to(
-            device
-        )
-        indices = torch.triu_indices(points.shape[0], points.shape[0], 1).to(device)
-        while indices.shape[1] > 0:
-            x = points[indices[0, :batch_size], :]
-            y = points[indices[1, :batch_size], :]
-            xy = (x * y).sum(dim=-1, keepdim=True)
-
-            if isinstance(self.manifold, Hyperboloid):
-                # Compute the orthogonal geodesic projection(s) onto the Minkowski subspace
-                sqrt_c = self.manifold.c.sqrt()
-                x0 = x.narrow(-1, 0, 1)
-                y0 = y.narrow(-1, 0, 1)
-                xy_mink = self.manifold._minkowski_inner(x, y)
-                denom = 1 - (self.manifold.c * xy_mink).pow(2).clamp(min=1e-15)
-                alpha = (sqrt_c * (x0 + self.manifold.c * xy_mink * y0)) / denom
-                beta = (sqrt_c * (y0 + self.manifold.c * xy_mink * x0)) / denom
-                z = alpha * x + beta * y
-                # Rescale the vector to lie on the Hyperboloid
-                z_mink = self.manifold._minkowski_inner(z, z)
-                lca = z / (-self.manifold.c * z_mink).clamp(min=1e-15).sqrt()
-            elif isinstance(self.manifold, PoincareBall):
-                # Compute the center of geodesic circle Gamma through x and y
-                x2 = x.pow(2).sum(dim=-1, keepdim=True)
-                y2 = y.pow(2).sum(dim=-1, keepdim=True)
-
-                denom = (2 * self.manifold.c * (x2 * y2 - xy**2)).clamp(min=1e-15)
-                alpha = (
-                    (1 + self.manifold.c * x2) * y2 - (1 + self.manifold.c * y2) * xy
-                ) / denom
-                beta = (
-                    (1 + self.manifold.c * y2) * x2 - (1 + self.manifold.c * x2) * xy
-                ) / denom
-                z = alpha * x + beta * y
-
-                # Compute the lca and its distance to the origin w.r.t. the full geodesic
-                z2 = z.pow(2).sum(dim=-1, keepdim=True)
-                z_norm = z.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-15)
-
-                # Direct computation of the lca
-                # second_term = (z2 - 1/self.manifold.c).clamp(min=1e-15).sqrt()
-                # lca = (1 - second_term / z_norm) * z
-
-                # Computation via conjugation to avoid numerical issues
-                sqrt_term = (z2 - 1 / self.manifold.c).clamp(min=1e-15).sqrt()
-                denom = self.manifold.c * z_norm * (z_norm + sqrt_term).clamp(min=1e-15)
-                lca = z / denom
-            else:
-                raise ValueError(f"Unsupported manifold: {self.manifold}")
-
-            lca_depth = self.manifold.dist_0(lca, version=self.distances_version)
-
-            # Compute the cosine of the angles at the origin in the triangles {x, origin, c}, {y, origin, c}  {x, origin, y}
-            xlca = (x * lca).sum(dim=-1, keepdim=True)
-            ylca = (y * lca).sum(dim=-1, keepdim=True)
-            lca_norm = lca.norm(
-                p=2, dim=-1, keepdim=True
-            )  # .clamp(min=1e-10) # see if this clamping is necessary
-
-            x_norm = x.norm(
-                p=2, dim=-1, keepdim=True
-            )  # .clamp(min=1e-15) # see if this clamping is necessary
-            y_norm = y.norm(
-                p=2, dim=-1, keepdim=True
-            )  # .clamp(min=1e-15) # see if this clamping is necessary
-            cos_x0c = (xlca / (x_norm * lca_norm).clamp(min=1e-15)).clamp(
-                min=-1.0, max=1.0
-            )
-            cos_y0c = (ylca / (y_norm * lca_norm).clamp(min=1e-15)).clamp(
-                min=-1.0, max=1.0
-            )
-            cos_x0y = (xy / (x_norm * y_norm).clamp(min=1e-15)).clamp(min=-1.0, max=1.0)
-
-            # Get the lca depth w.r.t. the geodesic segment between x and y
-            condition = torch.logical_or(
-                torch.logical_or(cos_x0y > cos_x0c, cos_x0y > cos_y0c), cos_x0y == 1
-            )  # True iff the lca lies outside
-            lca_depth = torch.where(
-                condition,
-                torch.min(self.manifold.dist_0(x), self.manifold.dist_0(y)),
-                lca_depth,
-            )
-            lca_depth = torch.where(
-                cos_x0y == -1, torch.zeros_like(lca_depth), lca_depth
-            )  # Handle antipodal points
-
-            lca_depth = lca_depth.reshape(-1)
-            lcas[indices[0, :batch_size], indices[1, :batch_size]] = lca_depth
-            lcas[indices[1, :batch_size], indices[0, :batch_size]] = lca_depth
-            indices = indices[:, batch_size:]
-        return lcas
 
     def compute_lca_depth_chami(
         self, points: torch.Tensor, batch_size: int = 1_000
@@ -469,7 +381,7 @@ class HyperbolicHCModel(AbstractModel):
 
         return total_loss, triplet_loss, similarties_sum, normalized_loss
 
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
+    def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.model_type == "feedforward":
             x = x.view(x.size(0), -1)
         hidden = self.encoder(x)  # type: ignore
@@ -477,7 +389,8 @@ class HyperbolicHCModel(AbstractModel):
             self.hidden_dims[-1] ** 0.5
         )  # Scale by input dimension # type: ignore
         manifold_z = self.hyperbolic_encoding_layer(hidden)  # type: ignore
-        return manifold_z
+        cluster_z = self.cluster_head(hidden)
+        return manifold_z, cluster_z
 
     def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
         x = self.hyperbolic_decoding_layer(manifold_z)  # type: ignore
@@ -503,19 +416,18 @@ class HyperbolicHCModel(AbstractModel):
                 x_recon = x_recon.view(-1, *shape)
         return x_recon
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        manifold_z = self.encode(x)
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        manifold_z, cluster_z = self.encode(x)
         if self.recon_weight == 0.0:
             # Skip decoding if reconstruction loss is not used
-            return torch.zeros_like(x), manifold_z
+            return torch.zeros_like(x), manifold_z, cluster_z
         x_recon = self.decode(manifold_z)
-        return x_recon, manifold_z
+        return x_recon, manifold_z, cluster_z
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug_1, x_aug_2, x, _ = batch
         if self.recon_weight > 0.0:
-            x_recon, manifold_z = self(x)
-
+            x_recon, manifold_z, cluster_z = self(x)
             if x_recon.shape != x.shape:
                 x_recon = x_recon.view_as(x)
             x_recon_loss = F.mse_loss(x_recon, x)
@@ -524,11 +436,11 @@ class HyperbolicHCModel(AbstractModel):
         else:
             recon_loss = 0.0
             x_recon = torch.zeros_like(x)
-            manifold_z = self.encode(x)
+            manifold_z, cluster_z = self.encode(x)
 
         # HypHC loss
         standard_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = (
-            self.compute_hyphc_loss(manifold_z)
+            self.compute_hyphc_loss(cluster_z)
         )
 
         if self.normalized_hyphc_loss:

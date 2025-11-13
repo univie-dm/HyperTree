@@ -53,7 +53,7 @@ def main(cfg: DictConfig) -> None:
             deterministic=True,
             enable_checkpointing=False,
             default_root_dir=None,
-            gradient_clip_algorithm="norm"
+            gradient_clip_algorithm="value"
             if cfg.experiment.gradient_clip_value is not None
             else None,
             gradient_clip_val=cfg.experiment.gradient_clip_value

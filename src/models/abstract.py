@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -37,6 +38,10 @@ class AbstractModel(pl.LightningModule):
         activation_function: str = "relu",
         distances_version: str = "mobius_direct",
         lr_scheduler_params: dict | None = None,
+        clamping_factor: float = 1.0,
+        smoothing_factor: float = 50.0,
+        learnable_scale: bool = False,
+        FHCNN_normalize: bool = False,
     ):
         super().__init__()
         self.model_type = model_type
@@ -45,6 +50,11 @@ class AbstractModel(pl.LightningModule):
         self.latent_dim = latent_dim
         self.manifold_name = manifold_name
         self.distances_version = distances_version
+        self.clamping_factor = clamping_factor
+        self.smoothing_factor = smoothing_factor
+        self.learnable_scale = learnable_scale
+        self.FHCNN_normalize = FHCNN_normalize
+
         if isinstance(curvature_magnitude, torch.Tensor):
             # Ensure we have our own copy
             c_tensor = curvature_magnitude.clone().detach()
@@ -178,7 +188,7 @@ class AbstractModel(pl.LightningModule):
     def configure_optimizers(self) -> Any:
         if self.optimizer_name == "RiemannianAdam":
             optimizer = RiemannianAdam(
-                self.parameters(),
+                filter(lambda p: p.requires_grad, self.parameters()),
                 lr=self.learning_rate,
                 eps=5e-4,
                 expmap_update=True,
@@ -186,7 +196,7 @@ class AbstractModel(pl.LightningModule):
             )
         elif self.optimizer_name == "RiemannianSGD":
             optimizer = RiemannianSGD(
-                self.parameters(),
+                filter(lambda p: p.requires_grad, self.parameters()),
                 lr=self.learning_rate,
                 momentum=0.9,
                 expmap_update=True,
@@ -336,11 +346,6 @@ class AbstractModel(pl.LightningModule):
                 )
 
                 del all_embeddings, all_labels, distance_matrix, embeddings, labels
-                if "all_embeddings_normalized" in locals():
-                    del all_embeddings_normalized
-                if "similarties" in locals():
-                    del similarties
-                torch.cuda.empty_cache()  # Force CUDA to release cached memory
 
                 for key, value in evaluation_results.items():
                     self.metrics[f"test/{key}"] = value
@@ -517,3 +522,127 @@ class AbstractModel(pl.LightningModule):
         except Exception as e:
             print(f"Error logging images to wandb: {e}", flush=True)
             pass
+
+    def compute_lca_depth(
+        self, points: torch.Tensor, batch_size: int = 1_000
+    ) -> torch.Tensor:
+        """Generalized, corrected, and numerically stabilized implementation of
+        Chami et al.'s (2020) LCA depth computation using inverse geometry."""
+
+        if not isinstance(self.manifold.c, torch.Tensor):
+            self.manifold.c = torch.tensor(
+                self.manifold.c, dtype=points.dtype, device=points.device
+            )
+        device = points.device
+        lcas = torch.zeros((points.shape[0], points.shape[0]), dtype=points.dtype).to(
+            device
+        )
+        indices = torch.triu_indices(points.shape[0], points.shape[0], 1).to(device)
+        while indices.shape[1] > 0:
+            x = points[indices[0, :batch_size], :]
+            y = points[indices[1, :batch_size], :]
+            xy = (x * y).sum(dim=-1, keepdim=True)
+
+            if isinstance(self.manifold, Hyperboloid):
+                # Compute the orthogonal geodesic projection(s) onto the Minkowski subspace
+                sqrt_c = self.manifold.c.sqrt()
+                x0 = x.narrow(-1, 0, 1)
+                y0 = y.narrow(-1, 0, 1)
+                xy_mink = self.manifold._minkowski_inner(x, y)
+                denom = 1 - (self.manifold.c * xy_mink).pow(2).clamp(min=1e-15)
+                alpha = (sqrt_c * (x0 + self.manifold.c * xy_mink * y0)) / denom
+                beta = (sqrt_c * (y0 + self.manifold.c * xy_mink * x0)) / denom
+                z = alpha * x + beta * y
+                # Rescale the vector to lie on the Hyperboloid
+                z_mink = self.manifold._minkowski_inner(z, z)
+                lca = z / (-self.manifold.c * z_mink).clamp(min=1e-15).sqrt()
+            elif isinstance(self.manifold, PoincareBall):
+                # Compute the center of geodesic circle Gamma through x and y
+                x2 = x.pow(2).sum(dim=-1, keepdim=True)
+                y2 = y.pow(2).sum(dim=-1, keepdim=True)
+
+                denom = (2 * self.manifold.c * (x2 * y2 - xy**2)).clamp(min=1e-15)
+                alpha = (
+                    (1 + self.manifold.c * x2) * y2 - (1 + self.manifold.c * y2) * xy
+                ) / denom
+                beta = (
+                    (1 + self.manifold.c * y2) * x2 - (1 + self.manifold.c * x2) * xy
+                ) / denom
+                z = alpha * x + beta * y
+
+                # Compute the lca and its distance to the origin w.r.t. the full geodesic
+                z2 = z.pow(2).sum(dim=-1, keepdim=True)
+                z_norm = z.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-15)
+
+                # Direct computation of the lca
+                # second_term = (z2 - 1/self.manifold.c).clamp(min=1e-15).sqrt()
+                # lca = (1 - second_term / z_norm) * z
+
+                # Computation via conjugation to avoid numerical issues
+                sqrt_term = (z2 - 1 / self.manifold.c).clamp(min=1e-15).sqrt()
+                denom = self.manifold.c * z_norm * (z_norm + sqrt_term).clamp(min=1e-15)
+                lca = z / denom
+            else:
+                raise ValueError(f"Unsupported manifold: {self.manifold}")
+
+            lca_depth = self.manifold.dist_0(lca, version=self.distances_version)
+
+            # Compute the cosine of the angles at the origin in the triangles {x, origin, c}, {y, origin, c}  {x, origin, y}
+            xlca = (x * lca).sum(dim=-1, keepdim=True)
+            ylca = (y * lca).sum(dim=-1, keepdim=True)
+            lca_norm = lca.norm(
+                p=2, dim=-1, keepdim=True
+            )  # .clamp(min=1e-10) # see if this clamping is necessary
+
+            x_norm = x.norm(
+                p=2, dim=-1, keepdim=True
+            )  # .clamp(min=1e-15) # see if this clamping is necessary
+            y_norm = y.norm(
+                p=2, dim=-1, keepdim=True
+            )  # .clamp(min=1e-15) # see if this clamping is necessary
+            cos_x0c = (xlca / (x_norm * lca_norm).clamp(min=1e-15)).clamp(
+                min=-1.0, max=1.0
+            )
+            cos_y0c = (ylca / (y_norm * lca_norm).clamp(min=1e-15)).clamp(
+                min=-1.0, max=1.0
+            )
+            cos_x0y = (xy / (x_norm * y_norm).clamp(min=1e-15)).clamp(min=-1.0, max=1.0)
+
+            # Get the lca depth w.r.t. the geodesic segment between x and y
+            condition = torch.logical_or(
+                torch.logical_or(cos_x0y > cos_x0c, cos_x0y > cos_y0c), cos_x0y == 1
+            )  # True iff the lca lies outside
+            lca_depth = torch.where(
+                condition,
+                torch.min(self.manifold.dist_0(x), self.manifold.dist_0(y)),
+                lca_depth,
+            )
+            lca_depth = torch.where(
+                cos_x0y == -1, torch.zeros_like(lca_depth), lca_depth
+            )  # Handle antipodal points
+
+            lca_depth = lca_depth.reshape(-1)
+            lcas[indices[0, :batch_size], indices[1, :batch_size]] = lca_depth
+            lcas[indices[1, :batch_size], indices[0, :batch_size]] = lca_depth
+            indices = indices[:, batch_size:]
+        return lcas
+    
+class FeatureScaling(torch.nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        curvature: float = 1.0,
+        max_norm: float = 0.95,
+    ):
+        super().__init__()
+        self.dim = dim
+
+        max_scale = math.atanh(max_norm) / math.sqrt(curvature)
+        self.max_scale = max_scale
+        self.scale = torch.nn.Parameter(torch.Tensor([1.0]))
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        x = x / np.sqrt(x.shape[-1])
+        normalized_scale = torch.nn.functional.sigmoid(self.scale) * self.max_scale
+        x = normalized_scale * x
+        return x, normalized_scale

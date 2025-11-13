@@ -5,7 +5,7 @@ experiment:
   batch_size: 512
   log_interval: 10
   optimizer: 'RiemannianAdam' # 'RiemannianAdam', 'RiemannianSGD'
-  gradient_clip_value: 1.0 # None, Float
+  gradient_clip_value: 100.0 # None, Float
 
 ## Pretraining parameters
 pretraining:
@@ -101,7 +101,7 @@ evaluation:
   nearest_neighbors_accuracy: False
   spectral_clustering: True
   visualization: True
-  kmeans: True
+  kmeans: False
   dasgupta_cost: False
   visualization_sample_size: 5000
   test_sample_size: 0 # if 0 all datapoints are used
