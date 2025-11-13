@@ -467,8 +467,8 @@ class HyperbolicHCModel(AbstractModel):
 
         if self.contrastive_enabled:
             # Encode both augmented views to get their hyperbolic embeddings
-            z_aug_proj_1 = self.encode(x_aug_1)
-            z_aug_proj_2 = self.encode(x_aug_2)
+            z_aug_proj_1, _ = self.encode(x_aug_1)
+            z_aug_proj_2, _ = self.encode(x_aug_2)
 
             if self.byol:
                 proj1 = z_aug_proj_1
