@@ -196,6 +196,8 @@ def get_pretrain_model(
             lr_scheduler_params=cfg.pretraining.get("lr_scheduler", None),
             byol=cfg.pretraining.contrastive_loss.byol,
             recon_weight=cfg.pretraining.recon_weight,
+            projection_layer_dims=cfg.architecture.projection_head,
+            feature_scaling=cfg.architecture.feature_scaling,
         )
     else:
         raise ValueError("Invalid autoencoder type")
@@ -242,6 +244,7 @@ def get_clustering_model(
         contrastive_temperature=cfg.clustering.contrastive_loss.temperature,
         byol=cfg.clustering.contrastive_loss.byol,
         recon_weight=cfg.clustering.recon_weight,
+        cluster_dim=cfg.architecture.cluster_dim,
     )
     return model
 
