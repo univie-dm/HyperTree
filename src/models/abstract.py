@@ -357,7 +357,12 @@ class AbstractModel(pl.LightningModule):
     def on_train_start(self) -> None:
         self.test_phase()
         self.metrics[f"{self.stage}/epoch"] = self.current_epoch
-        self.metrics[f"{self.stage}/lr"] = self.optimizers().param_groups[0]["lr"]  # type: ignore
+        # Read learning rate from the optimizer's param groups (consistent with other hooks)
+        try:
+            self.metrics[f"{self.stage}/lr"] = self.optimizers().param_groups[0]["lr"]  # type: ignore
+        except Exception:
+            # Fallback to stored learning_rate if optimizer not yet available
+            self.metrics[f"{self.stage}/lr"] = getattr(self, "learning_rate", None)
         for key, value in self.metrics.items():
             if isinstance(value, list):
                 self.metrics[key] = sum(value) / len(value)
