@@ -8,7 +8,7 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from typing import Any, Tuple
 from lightning.pytorch.utilities import grad_norm
 
-from hyperbolic_math.src.manifolds.euclidean import Euclidean
+from src.hyperbolic_math.src.manifolds.euclidean import Euclidean
 from src.hyperbolic_math.src.optim.riemannian_adam import RiemannianAdam
 from src.models.abstract import AbstractModel
 from src.models.resnet import HyperbolicResNet
