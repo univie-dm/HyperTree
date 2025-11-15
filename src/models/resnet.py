@@ -71,6 +71,7 @@ class DecoderBlock(nn.Module):
 class HyperbolicResNet(AbstractModel):
     def __init__(
         self,
+        projection_layer_dims: list[int],
         model_type: str = "resnet18",
         hyperbolic_encoding: str = "EuclideanLinear_Exp",
         params_dtype: str = "float32",
@@ -101,6 +102,7 @@ class HyperbolicResNet(AbstractModel):
         byol: bool = False,
         recon_weight: float = 1.0,
         FHCNN_normalize: bool = False,
+        feature_scaling: bool = True,
     ):
         super().__init__(
             model_type=model_type,
@@ -125,6 +127,7 @@ class HyperbolicResNet(AbstractModel):
             clamping_factor=clamping_factor,
             smoothing_factor=smoothing_factor,
             FHCNN_normalize=FHCNN_normalize,
+            feature_scaling=feature_scaling,
         )
         self.output_size = output_size
         self.clamping_factor = clamping_factor
@@ -136,8 +139,7 @@ class HyperbolicResNet(AbstractModel):
         self.recon_weight = recon_weight
         self.contrastive_temperature = contrastive_temperature
         self.byol = byol
-
-        self.hidden_dims = []
+        self.projection_layer_dims = projection_layer_dims
 
         self.save_hyperparameters()
 
@@ -167,36 +169,21 @@ class HyperbolicResNet(AbstractModel):
             raise ValueError(f"Invalid model type: {self.model_type}")
 
         # Build projection head layers progressively
-        projection_layers = [
-            nn.Flatten(),
-            nn.Linear(1000, 512),
-            nn.BatchNorm1d(512),
-            self.activation_function,
-            nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
-            self.activation_function,
-        ]
-        self.hidden_dims = [512, 256]
-
-        # Add intermediate layers to gradually reduce to latent_dim
-        current_dim = 256
-        intermediate_dims = [128, 64, 32, 16]
-
-        for intermediate_dim in intermediate_dims:
-            if self.latent_dim < current_dim and intermediate_dim > self.latent_dim:
-                projection_layers.extend(
-                    [
-                        nn.Linear(current_dim, intermediate_dim),
-                        nn.BatchNorm1d(intermediate_dim),
-                        self.activation_function,
-                    ]
-                )
-                current_dim = intermediate_dim
-                self.hidden_dims.append(intermediate_dim)
+        projection_layers: list[nn.Module] = [nn.Flatten()]
+        current_dim = 1000
+        for dim in self.projection_layer_dims:
+            projection_layers.extend(
+                [
+                    nn.Linear(current_dim, dim),
+                    nn.BatchNorm1d(dim),
+                    self.activation_function,
+                ]
+            )
+            current_dim = dim
 
         self.encoder = nn.Sequential(self.encoder, *projection_layers[:-2])
-        self.rms = nn.RMSNorm(self.hidden_dims[-1], elementwise_affine=False)
-        self.feature_scaling = FeatureScaling(self.hidden_dims[-1], self.manifold.c)
+        self.rms = nn.RMSNorm(current_dim, elementwise_affine=False)
+        self.feature_scaling_layer = FeatureScaling(current_dim, self.manifold.c)
 
         # Add hyperbolic encoding layer(s)
         if isinstance(self.manifold, Euclidean) or hyperbolic_encoding is None:
@@ -308,10 +295,11 @@ class HyperbolicResNet(AbstractModel):
         hidden = self.encoder(x)
         hidden = self.rms(hidden)
         hidden = torch.nn.functional.tanh(hidden)
-        hidden, scaler = self.feature_scaling(hidden)
-        self.metrics.setdefault("pretrain/feature_scale", []).append(
-            scaler.detach().item()
-        )
+        if self.feature_scaling:
+            hidden, scaler = self.feature_scaling_layer(hidden)
+            self.metrics.setdefault("pretrain/feature_scale", []).append(
+                scaler.detach().item()
+            )
         manifold_z = self.hyperbolic_encoding_layer(hidden)
         return manifold_z
 

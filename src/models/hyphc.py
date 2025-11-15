@@ -1,5 +1,6 @@
 import math
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
@@ -7,6 +8,7 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from typing import Any, Tuple
 from lightning.pytorch.utilities import grad_norm
 
+from hyperbolic_math.src.manifolds.euclidean import Euclidean
 from src.hyperbolic_math.src.optim.riemannian_adam import RiemannianAdam
 from src.models.abstract import AbstractModel
 from src.models.resnet import HyperbolicResNet
@@ -48,6 +50,7 @@ class HyperbolicHCModel(AbstractModel):
         contrastive_temperature: float = 0.5,
         byol: bool = False,
         recon_weight: float = 1.0,
+        cluster_dim: int | None = None,
     ):
         super().__init__(
             model_type=ae_model.model_type,
@@ -90,13 +93,16 @@ class HyperbolicHCModel(AbstractModel):
         self.contrastive_temperature = contrastive_temperature
         self.byol = byol
         self.recon_weight = recon_weight
+        if cluster_dim is None:
+            self.cluster_dim = self.latent_dim
+        else:
+            self.cluster_dim = cluster_dim
 
         # Load encoding and decoding modules with their weights
         self.encoder = ae_model.encoder  # type: ignore
         self.hyperbolic_encoding_layer = ae_model.hyperbolic_encoding_layer  # type: ignore
         self.hyperbolic_decoding_layer = ae_model.hyperbolic_decoding_layer  # type: ignore
         self.decoder = ae_model.decoder  # type: ignore
-        self.hidden_dims = ae_model.hidden_dims  # type: ignore
         if isinstance(ae_model, HyperbolicResNet):
             self.expansion = ae_model.expansion
         else:
@@ -116,7 +122,7 @@ class HyperbolicHCModel(AbstractModel):
             self.decoder = None
             self.hyperbolic_decoding_layer = None
 
-        self.feature_scaling = ae_model.feature_scaling  # type: ignore
+        self.feature_scaling_layer = ae_model.feature_scaling_layer  # type: ignore
         self.rms = ae_model.rms  # type: ignore
 
         if freeze_encoder:
@@ -134,17 +140,23 @@ class HyperbolicHCModel(AbstractModel):
                 "hyphc_start_weight must be less than or equal to hyphc_end_weight."
             )
 
-        self.cluster_head = get_hyperbolic_encoding_layer_by_name(
-            layer_name=str(self.hyperbolic_encoding),
-            manifold=self.manifold,
-            input_dim=self.hidden_dims[-1],
-            output_dim=self.latent_dim * 2,
-            params_dtype=self.params_dtype,
-            clamping_factor=self.clamping_factor,
-            smoothing_factor=self.smoothing_factor,
-            learnable_scale=self.learnable_scale,
-            FHCNN_normalize=self.FHCNN_normalize,
-        )
+        if isinstance(self.manifold, Euclidean):
+            self.cluster_head = nn.Linear(
+                self.encoder[-1].out_features,  # type: ignore
+                self.cluster_dim,
+            )
+        else:
+            self.cluster_head = get_hyperbolic_encoding_layer_by_name(
+                layer_name=str(self.hyperbolic_encoding),
+                manifold=self.manifold,
+                input_dim=self.encoder[-1].out_features,  # type: ignore
+                output_dim=self.cluster_dim,
+                params_dtype=self.params_dtype,
+                clamping_factor=self.clamping_factor,
+                smoothing_factor=self.smoothing_factor,
+                learnable_scale=self.learnable_scale,
+                FHCNN_normalize=self.FHCNN_normalize,
+            )
 
     def configure_optimizers(self) -> Any:
         optimizer = RiemannianAdam(
@@ -169,10 +181,8 @@ class HyperbolicHCModel(AbstractModel):
                         "frequency": 1,
                     },
                 }
-            else:
-                return parent_result
         else:
-            return parent_result
+            return optimizer
 
     def _calculate_probabilistic_coverage_samples(self, n: int) -> int:
         """
@@ -388,10 +398,12 @@ class HyperbolicHCModel(AbstractModel):
         hidden = self.encoder(x)  # type: ignore
         hidden = self.rms(hidden)
         hidden = torch.nn.functional.tanh(hidden)
-        hidden, scaler = self.feature_scaling(hidden)
-        self.metrics.setdefault("clustering/feature_scale", []).append(
-            scaler.detach().item()
-        )
+        if self.feature_scaling:
+            hidden, scaler = self.feature_scaling_layer(hidden)
+            self.metrics.setdefault("clustering/feature_scale", []).append(
+                scaler.detach().item()
+            )
+
         manifold_z = self.hyperbolic_encoding_layer(hidden)  # type: ignore
         cluster_z = self.cluster_head(hidden)
         return manifold_z, cluster_z

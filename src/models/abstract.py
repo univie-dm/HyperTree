@@ -42,6 +42,7 @@ class AbstractModel(pl.LightningModule):
         smoothing_factor: float = 50.0,
         learnable_scale: bool = False,
         FHCNN_normalize: bool = False,
+        feature_scaling: bool = True,
     ):
         super().__init__()
         self.model_type = model_type
@@ -54,6 +55,7 @@ class AbstractModel(pl.LightningModule):
         self.smoothing_factor = smoothing_factor
         self.learnable_scale = learnable_scale
         self.FHCNN_normalize = FHCNN_normalize
+        self.feature_scaling = feature_scaling
 
         if isinstance(curvature_magnitude, torch.Tensor):
             # Ensure we have our own copy
