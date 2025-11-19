@@ -17,7 +17,6 @@ from src.models.utils import (
     get_hyperbolic_encoding_layer_by_name,
 )
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
-from src.hyperbolic_math.src.manifolds import Hyperboloid, PoincareBall
 
 
 class HyperbolicHCModel(AbstractModel):
@@ -122,7 +121,8 @@ class HyperbolicHCModel(AbstractModel):
             self.decoder = None
             self.hyperbolic_decoding_layer = None
 
-        self.feature_scaling_layer = ae_model.feature_scaling_layer  # type: ignore
+        if hasattr(ae_model, "feature_scaling_layer"):
+            self.feature_scaling_layer = ae_model.feature_scaling_layer  # type: ignore
         self.rms = ae_model.rms  # type: ignore
 
         if freeze_encoder:
@@ -166,6 +166,8 @@ class HyperbolicHCModel(AbstractModel):
         )
 
         if self.lr_scheduler_params is not None:
+            if self.lr_scheduler_params["type"] is None:
+                return optimizer
             if self.lr_scheduler_params["type"] == "warmup_cosine":
                 scheduler = CosineAnnealingWarmRestarts(
                     optimizer,
@@ -398,7 +400,7 @@ class HyperbolicHCModel(AbstractModel):
         hidden = self.encoder(x)  # type: ignore
         hidden = self.rms(hidden)
         hidden = torch.nn.functional.tanh(hidden)
-        if self.feature_scaling:
+        if self.feature_scaling and not isinstance(self.manifold, Euclidean):
             hidden, scaler = self.feature_scaling_layer(hidden)
             self.metrics.setdefault("clustering/feature_scale", []).append(
                 scaler.detach().item()

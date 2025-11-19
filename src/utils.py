@@ -52,6 +52,7 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "dataset_subset": cfg.dataset.get("subset", None),
         "use_contrastive_loss_pretrain": cfg.pretraining.contrastive_loss.enabled,
         "use_byol_pretrain": cfg.pretraining.contrastive_loss.byol,
+        "feature_scaling": cfg.architecture.feature_scaling,
     }
     return md5(str(attr).encode()).hexdigest()
 

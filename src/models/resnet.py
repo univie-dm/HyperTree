@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
+from src.datasets.datamodule import ColorDataModule
 from src.models.abstract import AbstractModel, FeatureScaling
 from src.models.utils import (
     get_dtype_from_precision,
@@ -183,7 +184,8 @@ class HyperbolicResNet(AbstractModel):
 
         self.encoder = nn.Sequential(self.encoder, *projection_layers[:-2])
         self.rms = nn.RMSNorm(current_dim, elementwise_affine=False)
-        self.feature_scaling_layer = FeatureScaling(current_dim, self.manifold.c)
+        if self.feature_scaling and not isinstance(self.manifold, Euclidean):
+            self.feature_scaling_layer = FeatureScaling(current_dim, self.manifold.c)
 
         # Add hyperbolic encoding layer(s)
         if isinstance(self.manifold, Euclidean) or hyperbolic_encoding is None:
@@ -192,7 +194,7 @@ class HyperbolicResNet(AbstractModel):
                 "hyperbolic encoding layers will default to nn.Linear.",
                 flush=True,
             )
-            self.hyperbolic_encoding_layer = nn.Linear(self.latent_dim, self.latent_dim)
+            self.hyperbolic_encoding_layer = nn.Linear(current_dim, self.latent_dim)
         else:
             self.hyperbolic_encoding_layer = get_hyperbolic_encoding_layer_by_name(
                 layer_name=hyperbolic_encoding,
@@ -294,8 +296,7 @@ class HyperbolicResNet(AbstractModel):
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         hidden = self.encoder(x)
         hidden = self.rms(hidden)
-        hidden = torch.nn.functional.tanh(hidden)
-        if self.feature_scaling:
+        if self.feature_scaling and not isinstance(self.manifold, Euclidean):
             hidden, scaler = self.feature_scaling_layer(hidden)
             self.metrics.setdefault("pretrain/feature_scale", []).append(
                 scaler.detach().item()
