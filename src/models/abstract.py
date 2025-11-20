@@ -554,7 +554,32 @@ class AbstractModel(pl.LightningModule):
             y = points[indices[1, :batch_size], :]
             xy = (x * y).sum(dim=-1, keepdim=True)
 
-            if isinstance(self.manifold, Hyperboloid):
+            if isinstance(self.manifold, Euclidean):
+                # In Euclidean space, we define the "LCA" relative to the origin 
+                # as the point on the segment xy that is closest to the origin.
+                # This preserves the notion that "parents" are closer to the origin.
+                
+                # Vector from x to y
+                u = y - x
+                # Vector from x to origin (0) is -x. 
+                # We want projection of -x onto u to find t such that z = x + t*u
+                
+                u_sq = (u * u).sum(dim=-1, keepdim=True).clamp(min=1e-15)
+                xu = (x * u).sum(dim=-1, keepdim=True)
+                
+                # t = ((-x) . u) / |u|^2 = -(x . u) / |u|^2
+                t = -xu / u_sq
+                
+                # Clamp t to segment [0, 1]
+                t = t.clamp(min=0.0, max=1.0)
+                
+                # The LCA point z
+                lca = x + t * u
+                
+                # LCA depth is simply the Euclidean norm
+                lca_depth = lca.norm(p=2, dim=-1)
+
+            elif isinstance(self.manifold, Hyperboloid):
                 # Compute the orthogonal geodesic projection(s) onto the Minkowski subspace
                 sqrt_c = self.manifold.c.sqrt()
                 x0 = x.narrow(-1, 0, 1)
@@ -598,39 +623,41 @@ class AbstractModel(pl.LightningModule):
 
             lca_depth = self.manifold.dist_0(lca, version=self.distances_version)
 
-            # Compute the cosine of the angles at the origin in the triangles {x, origin, c}, {y, origin, c}  {x, origin, y}
-            xlca = (x * lca).sum(dim=-1, keepdim=True)
-            ylca = (y * lca).sum(dim=-1, keepdim=True)
-            lca_norm = lca.norm(
-                p=2, dim=-1, keepdim=True
-            )  # .clamp(min=1e-10) # see if this clamping is necessary
+            if not isinstance(self.manifold, Euclidean):
 
-            x_norm = x.norm(
-                p=2, dim=-1, keepdim=True
-            )  # .clamp(min=1e-15) # see if this clamping is necessary
-            y_norm = y.norm(
-                p=2, dim=-1, keepdim=True
-            )  # .clamp(min=1e-15) # see if this clamping is necessary
-            cos_x0c = (xlca / (x_norm * lca_norm).clamp(min=1e-15)).clamp(
-                min=-1.0, max=1.0
-            )
-            cos_y0c = (ylca / (y_norm * lca_norm).clamp(min=1e-15)).clamp(
-                min=-1.0, max=1.0
-            )
-            cos_x0y = (xy / (x_norm * y_norm).clamp(min=1e-15)).clamp(min=-1.0, max=1.0)
+                # Compute the cosine of the angles at the origin in the triangles {x, origin, c}, {y, origin, c}  {x, origin, y}
+                xlca = (x * lca).sum(dim=-1, keepdim=True)
+                ylca = (y * lca).sum(dim=-1, keepdim=True)
+                lca_norm = lca.norm(
+                    p=2, dim=-1, keepdim=True
+                )  # .clamp(min=1e-10) # see if this clamping is necessary
 
-            # Get the lca depth w.r.t. the geodesic segment between x and y
-            condition = torch.logical_or(
-                torch.logical_or(cos_x0y > cos_x0c, cos_x0y > cos_y0c), cos_x0y == 1
-            )  # True iff the lca lies outside
-            lca_depth = torch.where(
-                condition,
-                torch.min(self.manifold.dist_0(x), self.manifold.dist_0(y)),
-                lca_depth,
-            )
-            lca_depth = torch.where(
-                cos_x0y == -1, torch.zeros_like(lca_depth), lca_depth
-            )  # Handle antipodal points
+                x_norm = x.norm(
+                    p=2, dim=-1, keepdim=True
+                )  # .clamp(min=1e-15) # see if this clamping is necessary
+                y_norm = y.norm(
+                    p=2, dim=-1, keepdim=True
+                )  # .clamp(min=1e-15) # see if this clamping is necessary
+                cos_x0c = (xlca / (x_norm * lca_norm).clamp(min=1e-15)).clamp(
+                    min=-1.0, max=1.0
+                )
+                cos_y0c = (ylca / (y_norm * lca_norm).clamp(min=1e-15)).clamp(
+                    min=-1.0, max=1.0
+                )
+                cos_x0y = (xy / (x_norm * y_norm).clamp(min=1e-15)).clamp(min=-1.0, max=1.0)
+
+                # Get the lca depth w.r.t. the geodesic segment between x and y
+                condition = torch.logical_or(
+                    torch.logical_or(cos_x0y > cos_x0c, cos_x0y > cos_y0c), cos_x0y == 1
+                )  # True iff the lca lies outside
+                lca_depth = torch.where(
+                    condition,
+                    torch.min(self.manifold.dist_0(x), self.manifold.dist_0(y)),
+                    lca_depth,
+                )
+                lca_depth = torch.where(
+                    cos_x0y == -1, torch.zeros_like(lca_depth), lca_depth
+                )  # Handle antipodal points
 
             lca_depth = lca_depth.reshape(-1)
             lcas[indices[0, :batch_size], indices[1, :batch_size]] = lca_depth
