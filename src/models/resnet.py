@@ -4,14 +4,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
-from src.datasets.datamodule import ColorDataModule
 from src.models.abstract import AbstractModel, FeatureScaling
 from src.models.utils import (
     get_dtype_from_precision,
     get_hyperbolic_encoding_layer_by_name,
     get_hyperbolic_decoding_layer_by_name,
 )
-from src.hyperbolic_math.src.manifolds import Euclidean, Hyperboloid
+from src.hyperbolic_math.src.manifolds import Euclidean
 
 
 def resize_conv3x3(in_planes: int, out_planes: int, scale: float = 1):
