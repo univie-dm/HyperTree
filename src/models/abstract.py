@@ -4,6 +4,7 @@ import torch
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 import wandb
+from sklearn.decomposition import PCA
 
 from typing import Tuple, Any
 from pytorch_lightning.loggers import WandbLogger

@@ -168,8 +168,20 @@ class HyperbolicResNet(AbstractModel):
         else:
             raise ValueError(f"Invalid model type: {self.model_type}")
 
+        # Modify encoder for CIFAR-10/100 (32x32 images)
+        if self.output_size == 32:
+            print("Modifying ResNet encoder for CIFAR-10/100 (32x32 images).", flush=True)
+            self.encoder.conv1 = nn.Conv2d(
+                3, 64, kernel_size=3, stride=1, padding=1, bias=False
+            )
+            self.encoder.maxpool = nn.Identity()
+        
+        in_features = self.encoder.fc.in_features
+        
+        self.encoder.fc = nn.Identity()
+
         # Build projection head layers progressively
-        projection_layers: list[nn.Module] = [nn.Flatten()]
+        projection_layers: list[nn.Module] = [nn.Linear(in_features, 1000)]
         current_dim = 1000
         for dim in self.projection_layer_dims:
             projection_layers.extend(

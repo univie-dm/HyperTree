@@ -77,6 +77,8 @@ def main(cfg: DictConfig) -> None:
             )
 
         print("Finished pretraining", flush=True)
+        if cfg.experiment.seed >= 0:
+            seed_everything(cfg.experiment.seed)
         print("Starting clustering", flush=True)
         datamodule, input_dim, _ = get_datamodule(cfg, stage="clustering")
 

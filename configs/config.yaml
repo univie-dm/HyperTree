@@ -103,8 +103,8 @@ evaluation:
   agglomerative_clustering_ward: False
   nearest_neighbors_accuracy: False
   spectral_clustering: True
-  visualization: False
-  kmeans: False
+  visualization: True
+  kmeans: True
   dasgupta_cost: False
   visualization_sample_size: 5000
   test_sample_size: 0 # if 0 all datapoints are used
@@ -130,3 +130,4 @@ hydra:
 defaults:
   - _self_
   - dataset: ${oc.select:dataset,mnist}
+  - override hydra/job_logging: disabled
