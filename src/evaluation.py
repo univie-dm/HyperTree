@@ -297,21 +297,35 @@ def evaluation(
             results["dendrogram_purity_ward"] = dp_score_ward
     if metrics.get("agglomerative_clustering_single", False):
         # Compute agglomerative clustering metrics
+        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
         agglomerative_clustering_single = AgglomerativeClustering(
-            n_clusters=len(np.unique(Y)), metric="precomputed", linkage="single"
+            n_clusters=len(np.unique(Y_numpy)), metric="precomputed", linkage="single"
         )
         pred_labels_single = agglomerative_clustering_single.fit_predict(
             distance_matrix.cpu().numpy()
         )
-        nmi_single = normalized_mutual_info_score(Y, pred_labels_single)
-        ari_single = adjusted_rand_score(Y, pred_labels_single)
+        nmi_single = normalized_mutual_info_score(Y_numpy, pred_labels_single)
+        ari_single = adjusted_rand_score(Y_numpy, pred_labels_single)
         results["agglomerative_clustering_single_nmi"] = nmi_single
         results["agglomerative_clustering_single_ari"] = ari_single
         
-        # Generate confusion matrix
-        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+        # Generate confusion matrix (use coarse labels if available for visualization)
+        Y_for_cm = Y_coarse if Y_coarse is not None else Y_numpy
+        Y_for_cm_np = Y_for_cm.cpu().numpy() if isinstance(Y_for_cm, torch.Tensor) else np.asarray(Y_for_cm)
+        # Map predicted labels to coarse labels for confusion matrix
+        if Y_coarse is not None:
+            Y_coarse_np = Y_coarse.cpu().numpy() if isinstance(Y_coarse, torch.Tensor) else np.asarray(Y_coarse)
+            # For each predicted cluster, assign it to the most common coarse label
+            pred_labels_for_cm = np.copy(pred_labels_single)
+            for cluster_id in np.unique(pred_labels_single):
+                cluster_mask = pred_labels_single == cluster_id
+                cluster_coarse_labels = Y_coarse_np[cluster_mask]
+                most_common = Counter(cluster_coarse_labels).most_common(1)[0][0]
+                pred_labels_for_cm[cluster_mask] = most_common
+        else:
+            pred_labels_for_cm = pred_labels_single
         cm_fig = create_confusion_matrix_plot(
-            Y_numpy, pred_labels_single,
+            Y_for_cm_np, pred_labels_for_cm,
             title="Agglomerative Clustering (Single Linkage) - Confusion Matrix",
             str_labels=str_labels
         )
@@ -374,21 +388,34 @@ def evaluation(
                 plt.close(fig)
     if metrics.get("agglomerative_clustering_complete", False):
         # Compute agglomerative clustering metrics
+        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
         agglomerative_clustering_complete = AgglomerativeClustering(
-            n_clusters=len(np.unique(Y)), metric="precomputed", linkage="complete"
+            n_clusters=len(np.unique(Y_numpy)), metric="precomputed", linkage="complete"
         )
         pred_labels_complete = agglomerative_clustering_complete.fit_predict(
             distance_matrix.cpu().numpy()
         )
-        nmi_complete = normalized_mutual_info_score(Y, pred_labels_complete)
-        ari_complete = adjusted_rand_score(Y, pred_labels_complete)
+        nmi_complete = normalized_mutual_info_score(Y_numpy, pred_labels_complete)
+        ari_complete = adjusted_rand_score(Y_numpy, pred_labels_complete)
         results["agglomerative_clustering_complete_nmi"] = nmi_complete
         results["agglomerative_clustering_complete_ari"] = ari_complete
         
-        # Generate confusion matrix
-        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+        # Generate confusion matrix (use coarse labels if available for visualization)
+        Y_for_cm = Y_coarse if Y_coarse is not None else Y_numpy
+        Y_for_cm_np = Y_for_cm.cpu().numpy() if isinstance(Y_for_cm, torch.Tensor) else np.asarray(Y_for_cm)
+        # Map predicted labels to coarse labels for confusion matrix
+        if Y_coarse is not None:
+            Y_coarse_np = Y_coarse.cpu().numpy() if isinstance(Y_coarse, torch.Tensor) else np.asarray(Y_coarse)
+            pred_labels_for_cm = np.copy(pred_labels_complete)
+            for cluster_id in np.unique(pred_labels_complete):
+                cluster_mask = pred_labels_complete == cluster_id
+                cluster_coarse_labels = Y_coarse_np[cluster_mask]
+                most_common = Counter(cluster_coarse_labels).most_common(1)[0][0]
+                pred_labels_for_cm[cluster_mask] = most_common
+        else:
+            pred_labels_for_cm = pred_labels_complete
         cm_fig = create_confusion_matrix_plot(
-            Y_numpy, pred_labels_complete,
+            Y_for_cm_np, pred_labels_for_cm,
             title="Agglomerative Clustering (Complete Linkage) - Confusion Matrix",
             str_labels=str_labels
         )
@@ -463,21 +490,34 @@ def evaluation(
                 plt.close(fig)
     if metrics.get("agglomerative_clustering_average", False):
         # Compute agglomerative clustering metrics
+        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
         agglomerative_clustering_average = AgglomerativeClustering(
-            n_clusters=len(np.unique(Y)), metric="precomputed", linkage="average"
+            n_clusters=len(np.unique(Y_numpy)), metric="precomputed", linkage="average"
         )
         pred_labels_average = agglomerative_clustering_average.fit_predict(
             distance_matrix.cpu().numpy()
         )
-        nmi_average = normalized_mutual_info_score(Y, pred_labels_average)
-        ari_average = adjusted_rand_score(Y, pred_labels_average)
+        nmi_average = normalized_mutual_info_score(Y_numpy, pred_labels_average)
+        ari_average = adjusted_rand_score(Y_numpy, pred_labels_average)
         results["agglomerative_clustering_average_nmi"] = nmi_average
         results["agglomerative_clustering_average_ari"] = ari_average
         
-        # Generate confusion matrix
-        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+        # Generate confusion matrix (use coarse labels if available for visualization)
+        Y_for_cm = Y_coarse if Y_coarse is not None else Y_numpy
+        Y_for_cm_np = Y_for_cm.cpu().numpy() if isinstance(Y_for_cm, torch.Tensor) else np.asarray(Y_for_cm)
+        # Map predicted labels to coarse labels for confusion matrix
+        if Y_coarse is not None:
+            Y_coarse_np = Y_coarse.cpu().numpy() if isinstance(Y_coarse, torch.Tensor) else np.asarray(Y_coarse)
+            pred_labels_for_cm = np.copy(pred_labels_average)
+            for cluster_id in np.unique(pred_labels_average):
+                cluster_mask = pred_labels_average == cluster_id
+                cluster_coarse_labels = Y_coarse_np[cluster_mask]
+                most_common = Counter(cluster_coarse_labels).most_common(1)[0][0]
+                pred_labels_for_cm[cluster_mask] = most_common
+        else:
+            pred_labels_for_cm = pred_labels_average
         cm_fig = create_confusion_matrix_plot(
-            Y_numpy, pred_labels_average,
+            Y_for_cm_np, pred_labels_for_cm,
             title="Agglomerative Clustering (Average Linkage) - Confusion Matrix",
             str_labels=str_labels
         )
@@ -626,26 +666,39 @@ def evaluation(
         results["1000_nearest_neighbors_accuracy"] = nn_accuracy
 
     if metrics.get("spectral_clustering", False):
+        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
         affinity_matrix = distance_matrix.cpu().numpy()
         spectral_clustering = SpectralClustering(
-            n_clusters=len(np.unique(Y)),
+            n_clusters=len(np.unique(Y_numpy)),
             affinity="precomputed_nearest_neighbors",
             n_neighbors=metrics.get("spectral_nn", 10),
             assign_labels="kmeans",
             random_state=int(torch.get_rng_state()[0].item()),
         )
 
-        # spectral_clustering = HyperbolicSpectralClustering(n_clusters=len(np.unique(Y)))
+        # spectral_clustering = HyperbolicSpectralClustering(n_clusters=len(np.unique(Y_numpy)))
         pred_labels_spectral = spectral_clustering.fit_predict(affinity_matrix)
-        nmi_spectral = normalized_mutual_info_score(Y, pred_labels_spectral)
-        ari_spectral = adjusted_rand_score(Y, pred_labels_spectral)
+        nmi_spectral = normalized_mutual_info_score(Y_numpy, pred_labels_spectral)
+        ari_spectral = adjusted_rand_score(Y_numpy, pred_labels_spectral)
         results["spectral_clustering_nmi"] = nmi_spectral
         results["spectral_clustering_ari"] = ari_spectral
         
-        # Generate confusion matrix
-        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+        # Generate confusion matrix (use coarse labels if available for visualization)
+        Y_for_cm = Y_coarse if Y_coarse is not None else Y_numpy
+        Y_for_cm_np = Y_for_cm.cpu().numpy() if isinstance(Y_for_cm, torch.Tensor) else np.asarray(Y_for_cm)
+        # Map predicted labels to coarse labels for confusion matrix
+        if Y_coarse is not None:
+            Y_coarse_np = Y_coarse.cpu().numpy() if isinstance(Y_coarse, torch.Tensor) else np.asarray(Y_coarse)
+            pred_labels_for_cm = np.copy(pred_labels_spectral)
+            for cluster_id in np.unique(pred_labels_spectral):
+                cluster_mask = pred_labels_spectral == cluster_id
+                cluster_coarse_labels = Y_coarse_np[cluster_mask]
+                most_common = Counter(cluster_coarse_labels).most_common(1)[0][0]
+                pred_labels_for_cm[cluster_mask] = most_common
+        else:
+            pred_labels_for_cm = pred_labels_spectral
         cm_fig = create_confusion_matrix_plot(
-            Y_numpy, pred_labels_spectral,
+            Y_for_cm_np, pred_labels_for_cm,
             title="Spectral Clustering - Confusion Matrix",
             str_labels=str_labels
         )
@@ -706,21 +759,34 @@ def evaluation(
                 plt.close(fig)
     if metrics.get("kmeans", False):
         # Compute k-means clustering metrics
+        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
         kmeans = KMeans(
-            n_clusters=len(np.unique(Y)),
+            n_clusters=len(np.unique(Y_numpy)),
             n_init="auto",
             random_state=int(torch.get_rng_state()[0].item()),
         )
         pred_labels_kmeans = kmeans.fit_predict(X.cpu().numpy())
-        nmi_kmeans = normalized_mutual_info_score(Y, pred_labels_kmeans)
-        ari_kmeans = adjusted_rand_score(Y, pred_labels_kmeans)
+        nmi_kmeans = normalized_mutual_info_score(Y_numpy, pred_labels_kmeans)
+        ari_kmeans = adjusted_rand_score(Y_numpy, pred_labels_kmeans)
         results["kmeans_nmi"] = nmi_kmeans
         results["kmeans_ari"] = ari_kmeans
         
-        # Generate confusion matrix
-        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+        # Generate confusion matrix (use coarse labels if available for visualization)
+        Y_for_cm = Y_coarse if Y_coarse is not None else Y_numpy
+        Y_for_cm_np = Y_for_cm.cpu().numpy() if isinstance(Y_for_cm, torch.Tensor) else np.asarray(Y_for_cm)
+        # Map predicted labels to coarse labels for confusion matrix
+        if Y_coarse is not None:
+            Y_coarse_np = Y_coarse.cpu().numpy() if isinstance(Y_coarse, torch.Tensor) else np.asarray(Y_coarse)
+            pred_labels_for_cm = np.copy(pred_labels_kmeans)
+            for cluster_id in np.unique(pred_labels_kmeans):
+                cluster_mask = pred_labels_kmeans == cluster_id
+                cluster_coarse_labels = Y_coarse_np[cluster_mask]
+                most_common = Counter(cluster_coarse_labels).most_common(1)[0][0]
+                pred_labels_for_cm[cluster_mask] = most_common
+        else:
+            pred_labels_for_cm = pred_labels_kmeans
         cm_fig = create_confusion_matrix_plot(
-            Y_numpy, pred_labels_kmeans,
+            Y_for_cm_np, pred_labels_for_cm,
             title="K-Means Clustering - Confusion Matrix",
             str_labels=str_labels
         )

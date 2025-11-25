@@ -345,8 +345,12 @@ class HyperbolicResNet(AbstractModel):
             loss = x_recon_loss
         # Contrastive loss (if enabled)
         if self.contrastive_enabled:
-            z_aug_1 = self.encode(x_aug_1 if self.byol else x)
-            z_aug_2 = self.encode(x_aug_2 if self.byol else z_aug_1)
+            if self.byol:
+                z_aug_1 = self.encode(x_aug_1)
+                z_aug_2 = self.encode(x_aug_2)
+            else:
+                z_aug_1 = self.encode(x)
+                z_aug_2 = self.encode(x_aug_1)
 
             if not torch.isfinite(z_aug_1).all() or not torch.isfinite(z_aug_2).all():
                 raise ValueError(
