@@ -8,7 +8,8 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from typing import Any, Tuple
 from lightning.pytorch.utilities import grad_norm
 
-from src.hyperbolic_math.src.manifolds.euclidean import Euclidean
+from src.hyperbolic_math.src.utils.horo_pca import frechet_center_data
+from src.hyperbolic_math.src.manifolds import Euclidean, PoincareBall
 from src.hyperbolic_math.src.optim.riemannian_adam import RiemannianAdam
 from src.models.abstract import AbstractModel
 from src.models.resnet import HyperbolicResNet
@@ -289,6 +290,41 @@ class HyperbolicHCModel(AbstractModel):
             indices = indices[:, batch_size:]
         return lcas
 
+    def compute_contrastive_lca(self, x: torch.Tensor, x_aug1: torch.Tensor, x_aug2: torch.Tensor) -> torch.Tensor:
+        # Fréchet center x_aug1 & x_aug2 points around x
+        x_aug1 = frechet_center_data(x_aug1, x, self.manifold)
+        x_aug2 = frechet_center_data(x_aug2, x, self.manifold)
+
+        if isinstance(self.manifold, PoincareBall):
+            x_aug_inner = (x_aug1 * x_aug2).sum(dim=-1, keepdim=True)
+
+            # Compute the center of geodesic circle Gamma through x_aug1 and x_aug2
+            x_aug1_2 = x_aug1.pow(2).sum(dim=-1, keepdim=True)
+            x_aug2_2 = x_aug2.pow(2).sum(dim=-1, keepdim=True)
+
+            denom = (2 * self.manifold.c * (x_aug1_2 * x_aug2_2 - x_aug_inner**2)).clamp(min=1e-15)
+            alpha = (
+                (1 + self.manifold.c * x_aug1_2) * x_aug2_2 - (1 + self.manifold.c * x_aug2_2) * x_aug_inner
+            ) / denom
+            beta = (
+                (1 + self.manifold.c * x_aug2_2) * x_aug1_2 - (1 + self.manifold.c * x_aug1_2) * x_aug_inner
+            ) / denom
+            z = alpha * x_aug1 + beta * x_aug2
+
+            # Compute the lca and its distance to the origin w.r.t. the full geodesic
+            z2 = z.pow(2).sum(dim=-1, keepdim=True)
+            z_norm = z.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-15)
+
+            # Computation via conjugation to avoid numerical issues
+            sqrt_term = (z2 - 1 / self.manifold.c).clamp(min=1e-15).sqrt()
+            denom = self.manifold.c * z_norm * (z_norm + sqrt_term).clamp(min=1e-15)
+            lca = z / denom
+
+            dists = self.manifold.dist_0(lca)
+        else:
+            raise NotImplementedError("Only PoincareBall manifold is implemented.")
+        return dists.mean()
+
     def compute_hyphc_loss(
         self, embeddings: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -459,9 +495,16 @@ class HyperbolicHCModel(AbstractModel):
             manifold_z, cluster_z = self.encode(x)
 
         # HypHC loss
-        standard_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = (
-            self.compute_hyphc_loss(cluster_z)
-        )
+        if self.lca_version == "contrastive_lca":
+            dists = self.compute_contrastive_lca(x, x_aug_1, x_aug_2)
+            standard_hyphc_loss = dists
+            triplet_loss = torch.zeros_like(dists)
+            similarties_sum = torch.zeros_like(dists)
+            normalized_loss = dists
+        else:
+            standard_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = (
+                self.compute_hyphc_loss(cluster_z)
+            )
 
         if self.normalized_hyphc_loss:
             hyphc_loss = normalized_loss
