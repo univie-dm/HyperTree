@@ -59,7 +59,7 @@ hyphc:
   sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'chami', 'probabilistic_coverage'
   triplet_subsampling_size: 200
   triplet_subsampling_delta: 0.1 # The probability of missing a pair
-  lca_version: 'ours' # 'ours', 'chami'
+  lca_version: 'ours' # 'ours', 'chami', 'contrastive_lca'
   normalized_loss: True
   distances_type: 'geodesic' # 'geodesic', 'cosine_similarity'
   dist_sum_loss: True
@@ -92,15 +92,15 @@ architecture:
 
 ## Evaluation Metrics to be used and logged
 evaluation:
-  delta_hyperbolicity: False
+  delta_hyperbolicity: True
   dendrogram_purity_single: False
   dendrogram_purity_complete: False
   dendrogram_purity_average: False
   dendrogram_purity_ward: True
   agglomerative_clustering_single: False
-  agglomerative_clustering_complete: False
-  agglomerative_clustering_average: False
-  agglomerative_clustering_ward: False
+  agglomerative_clustering_complete: True
+  agglomerative_clustering_average: True
+  agglomerative_clustering_ward: True
   nearest_neighbors_accuracy: False
   spectral_clustering: True
   visualization: True

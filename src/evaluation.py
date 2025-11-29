@@ -243,7 +243,7 @@ def evaluation(
                 points_in_manifold = True
 
     if metrics.get("delta_hyperbolicity", False):
-        delta_hyp, diam_hyp, rel_delta_hyp = get_delta(X, manifold)
+        delta_hyp, diam_hyp, rel_delta_hyp = get_delta(X, manifold, len(X), version="average", batch_size=100)
         results["delta_hyperbolicity"] = delta_hyp.item()
         results["diameter_hyperbolicity"] = diam_hyp.item()
         results["relative_delta_hyperbolicity"] = rel_delta_hyp.item()

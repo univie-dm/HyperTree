@@ -496,7 +496,9 @@ class HyperbolicHCModel(AbstractModel):
 
         # HypHC loss
         if self.lca_version == "contrastive_lca":
-            dists = self.compute_contrastive_lca(x, x_aug_1, x_aug_2)
+            _, cluster_z_aug_1 = self.encode(x_aug_1)
+            _, cluster_z_aug_2 = self.encode(x_aug_2)
+            dists = self.compute_contrastive_lca(cluster_z, cluster_z_aug_1, cluster_z_aug_2)
             standard_hyphc_loss = dists
             triplet_loss = torch.zeros_like(dists)
             similarties_sum = torch.zeros_like(dists)
