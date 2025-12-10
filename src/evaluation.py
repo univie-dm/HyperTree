@@ -124,12 +124,13 @@ def evaluation(
             unique_pred = np.unique(y_pred)
             # Map true labels to string labels
             true_label_names = [str(str_labels[np.where(y_true == label)[0][0]]) for label in unique_true]
+            predicted_label_names = [str(str_labels[np.where(y_true == label)[0][0]]) for label in unique_pred]
             tick_marks_true = np.arange(len(unique_true))
             tick_marks_pred = np.arange(len(unique_pred))
             ax.set_yticks(tick_marks_true)
             ax.set_yticklabels(true_label_names, fontsize=8)
             ax.set_xticks(tick_marks_pred)
-            ax.set_xticklabels([f"C{i}" for i in unique_pred], fontsize=8)
+            ax.set_xticklabels(predicted_label_names, fontsize=8)
         else:
             ax.set_yticks(np.arange(cm.shape[0]))
             ax.set_yticklabels(np.unique(y_true), fontsize=8)

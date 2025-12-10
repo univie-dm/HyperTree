@@ -103,6 +103,7 @@ class HyperbolicResNet(AbstractModel):
         recon_weight: float = 1.0,
         FHCNN_normalize: bool = False,
         feature_scaling: bool = True,
+        euclidean_latentspace: bool = False,
     ):
         super().__init__(
             model_type=model_type,
@@ -140,6 +141,7 @@ class HyperbolicResNet(AbstractModel):
         self.contrastive_temperature = contrastive_temperature
         self.byol = byol
         self.projection_layer_dims = projection_layer_dims
+        self.euclidean_latentspace = euclidean_latentspace
 
         self.save_hyperparameters()
 
@@ -192,6 +194,10 @@ class HyperbolicResNet(AbstractModel):
                 ]
             )
             current_dim = dim
+
+        if self.euclidean_latentspace:
+            self.manifold = Euclidean()
+            self.manifold_name = "Euclidean"
 
         self.encoder = nn.Sequential(self.encoder, *projection_layers[:-2])
         self.rms = nn.RMSNorm(current_dim, elementwise_affine=False)
@@ -346,24 +352,30 @@ class HyperbolicResNet(AbstractModel):
         # Contrastive loss (if enabled)
         if self.contrastive_enabled:
             if self.byol:
-                z_aug_1 = self.encode(x_aug_1)
+                z_x = self.encode(x_aug_1)
                 z_aug_2 = self.encode(x_aug_2)
             else:
-                z_aug_1 = self.encode(x)
+                z_x = self.encode(x)
                 z_aug_2 = self.encode(x_aug_1)
+                #z_aug_2 = self.augment_hyperbolic_features(self.encode(x))
 
-            if not torch.isfinite(z_aug_1).all() or not torch.isfinite(z_aug_2).all():
+            if not torch.isfinite(z_x).all() or not torch.isfinite(z_aug_2).all():
                 raise ValueError(
                     "Non-finite values encountered in contrastive embeddings."
                 )
 
             contrastive_loss = self.compute_contrastive_loss(
-                z_aug_1,
+                z_x,
                 z_aug_2,
                 temperature=self.contrastive_temperature,
                 use_euclidean=False,
             )
             loss = self.recon_weight * loss + self.contrastive_weight * contrastive_loss
+            dist_to_center = self.manifold.dist_0(z_x).mean()
+            loss = loss + dist_to_center * 0.01  # Regularization term
+            self.metrics.setdefault("pretrain/dist_to_center", []).append(
+                dist_to_center.detach().item()
+            )
             # Log contrastive-specific metrics
             self.metrics.setdefault("pretrain/contrastive_loss", []).append(
                 contrastive_loss.detach().item()
@@ -388,6 +400,21 @@ class HyperbolicResNet(AbstractModel):
             on_epoch=True,
             on_step=False,
             sync_dist=True,
+        )
+        self.metrics.setdefault("latent_space/mean", []).append(
+            z_x.mean().detach().item()
+        )
+        self.metrics.setdefault("latent_space/std", []).append(
+            z_x.std().detach().item()
+        )
+        self.metrics.setdefault("latent_space/max", []).append(
+            z_x.max().detach().item()
+        )
+        self.metrics.setdefault("latent_space/min", []).append(
+            z_x.min().detach().item()
+        )
+        self.metrics.setdefault("latent_space/norm_mean", []).append(
+            z_x.norm(p=2, dim=-1).mean().detach().item()
         )
 
         if not isinstance(loss, torch.Tensor):

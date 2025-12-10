@@ -1,3 +1,4 @@
+from matplotlib.pyplot import cla
 import omegaconf
 import os
 import torch
@@ -53,6 +54,7 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "use_contrastive_loss_pretrain": cfg.pretraining.contrastive_loss.enabled,
         "use_byol_pretrain": cfg.pretraining.contrastive_loss.byol,
         "feature_scaling": cfg.architecture.feature_scaling,
+        "euclidean_latentspace": cfg.pretraining.euclidean_latentspace,
     }
     return md5(str(attr).encode()).hexdigest()
 
@@ -199,6 +201,7 @@ def get_pretrain_model(
             recon_weight=cfg.pretraining.recon_weight,
             projection_layer_dims=cfg.architecture.projection_head,
             feature_scaling=cfg.architecture.feature_scaling,
+            euclidean_latentspace=cfg.pretraining.euclidean_latentspace,
         )
     else:
         raise ValueError("Invalid autoencoder type")
@@ -246,6 +249,9 @@ def get_clustering_model(
         byol=cfg.clustering.contrastive_loss.byol,
         recon_weight=cfg.clustering.recon_weight,
         cluster_dim=cfg.architecture.cluster_dim,
+        hierarchy_weight=cfg.hyphc.hierarchy_weight,
+        hierarchy_margin=cfg.hyphc.hierarchy_margin,
+        triplet_margin=cfg.hyphc.triplet_margin,
     )
     return model
 

@@ -34,38 +34,27 @@ class BYOLTransform:
         self.transform1 = transforms.Compose(
             [
                 transforms.RandomResizedCrop(
-                    size=(resize, resize), scale=(0.2, 1.0), antialias=True
+                    size=(resize, resize), scale=(0.6, 1.0), ratio=(0.9, 1.1), antialias=True
                 ),
                 transforms.RandomHorizontalFlip(p=0.5),
                 transforms.RandomApply(
-                    [
-                        transforms.ColorJitter(
-                            brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1
-                        )
-                    ],
-                    p=0.8,
+                    [transforms.ColorJitter(0.2, 0.2, 0.2, 0.1)], p=0.3
                 ),
-                transforms.RandomGrayscale(p=0.2),
-                *gaussian_blur,
-                transforms.RandomSolarize(threshold=0.5, p=0.2),
                 transforms.ToImage(),
                 transforms.ToDtype(torch.float32, scale=True),
                 normalize_fn,
             ]
         )
+
+
         self.transform2 = transforms.Compose(
             [
                 transforms.RandomResizedCrop(
-                    size=(resize, resize), scale=(0.2, 1.0), antialias=True
+                    size=(resize, resize), scale=(0.2, 0.5), antialias=True
                 ),
                 transforms.RandomHorizontalFlip(p=0.5),
                 transforms.RandomApply(
-                    [
-                        transforms.ColorJitter(
-                            brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1
-                        )
-                    ],
-                    p=0.8,
+                    [transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8
                 ),
                 transforms.RandomGrayscale(p=0.2),
                 transforms.ToImage(),

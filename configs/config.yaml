@@ -15,6 +15,7 @@ pretraining:
   overwrite: False
   weight_decay: 0.0
   recon_weight: 0.0
+  euclidean_latentspace: False
   enable_checkpointing: False  # Enable for long training runs (e.g., ImageNet)
   # Contrastive learning parameters
   contrastive_loss:
@@ -64,6 +65,9 @@ hyphc:
   distances_type: 'geodesic' # 'geodesic', 'cosine_similarity'
   dist_sum_loss: True
   distances_version: 'default' # 'mobius_direct', 'lorentzian_proxy', 'default'
+  hierarchy_weight: 0.2
+  hierarchy_margin: 0.2
+  triplet_margin: 8.0
 
 ## Model architecture
 architecture:
@@ -92,17 +96,17 @@ architecture:
 
 ## Evaluation Metrics to be used and logged
 evaluation:
-  delta_hyperbolicity: True
+  delta_hyperbolicity: False
   dendrogram_purity_single: False
-  dendrogram_purity_complete: False
-  dendrogram_purity_average: False
+  dendrogram_purity_complete: True
+  dendrogram_purity_average: True
   dendrogram_purity_ward: True
   agglomerative_clustering_single: False
   agglomerative_clustering_complete: True
   agglomerative_clustering_average: True
   agglomerative_clustering_ward: True
-  nearest_neighbors_accuracy: False
-  spectral_clustering: True
+  nearest_neighbors_accuracy: True
+  spectral_clustering: False
   visualization: True
   kmeans: True
   dasgupta_cost: False
