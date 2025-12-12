@@ -59,6 +59,7 @@ hyphc:
   temperature: 0.01
   sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'chami', 'probabilistic_coverage'
   triplet_subsampling_size: 200
+  num_nn: 100
   triplet_subsampling_delta: 0.1 # The probability of missing a pair
   lca_version: 'ours' # 'ours', 'chami', 'contrastive_lca'
   normalized_loss: True
@@ -72,8 +73,8 @@ hyphc:
 ## Model architecture
 architecture:
   ae_type: 'feedforward' # 'feedforward', 'convolutional', 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152'
-  hidden_dims: [512, 256, 64, 16]
-  projection_head: [512, 256, 64, 16]
+  hidden_dims: [512, 256]
+  projection_head: [512, 256]
   cluster_dim: 4
   feature_scaling: True
   latent_dim: 10 # Hyperboloid automatically uses latent_dim + 1, i.e. latent_dim actually refers to the dimension of the hyperbolic manifold
@@ -100,11 +101,11 @@ evaluation:
   dendrogram_purity_single: False
   dendrogram_purity_complete: True
   dendrogram_purity_average: True
-  dendrogram_purity_ward: True
+  dendrogram_purity_ward: False
   agglomerative_clustering_single: False
   agglomerative_clustering_complete: True
   agglomerative_clustering_average: True
-  agglomerative_clustering_ward: True
+  agglomerative_clustering_ward: False
   nearest_neighbors_accuracy: True
   spectral_clustering: False
   visualization: True

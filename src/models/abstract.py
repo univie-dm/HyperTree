@@ -161,7 +161,9 @@ class AbstractModel(pl.LightningModule):
             )
             # Clamp distances to prevent numerical instability
             distance_matrix = distance_matrix.clamp(max=1e5)  # Prevent overflow in exp
-            similarity_matrix = -distance_matrix / temperature
+            similarity_matrix = -torch.log(1+distance_matrix) / temperature  # Convert to similarity
+            #similarity_matrix = -distance_matrix / temperature
+            #similarity_matrix = torch.reciprocal(1+ distance_matrix) / temperature
         else:
             raise ValueError(f"Invalid distances_type: {self.distances_type}")
 

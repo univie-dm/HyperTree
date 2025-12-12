@@ -94,6 +94,7 @@ def get_datamodule(
             subset=cfg.dataset.subset,
             num_workers=cfg.experiment.num_workers,
             selected_classes=cfg.dataset.get("selected_classes", None),
+            precision=cfg.architecture.precision,
         )
         input_dim = cfg.dataset.resize * cfg.dataset.resize * cfg.dataset.channels
         is_image = True
@@ -252,6 +253,7 @@ def get_clustering_model(
         hierarchy_weight=cfg.hyphc.hierarchy_weight,
         hierarchy_margin=cfg.hyphc.hierarchy_margin,
         triplet_margin=cfg.hyphc.triplet_margin,
+        hyphc_num_nn=cfg.hyphc.num_nn,
     )
     return model
 

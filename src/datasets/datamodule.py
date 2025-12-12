@@ -16,7 +16,7 @@ class BYOLTransform:
     """
 
     def __init__(
-        self, dataset_name: str, normalize_fn: transforms.Normalize, resize: int = 32
+        self, dataset_name: str, normalize_fn: transforms.Normalize, resize: int = 32, precision: torch.dtype = torch.float32
     ):
         if dataset_name == "imagenet":
             gaussian_blur = [
@@ -34,31 +34,42 @@ class BYOLTransform:
         self.transform1 = transforms.Compose(
             [
                 transforms.RandomResizedCrop(
-                    size=(resize, resize), scale=(0.6, 1.0), ratio=(0.9, 1.1), antialias=True
+                    size=(resize, resize), scale=(0.2, 1.0), antialias=True
                 ),
                 transforms.RandomHorizontalFlip(p=0.5),
                 transforms.RandomApply(
-                    [transforms.ColorJitter(0.2, 0.2, 0.2, 0.1)], p=0.3
+                    [
+                        transforms.ColorJitter(
+                            brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1
+                        )
+                    ],
+                    p=0.8,
                 ),
+                transforms.RandomGrayscale(p=0.2),
+                *gaussian_blur,
+                transforms.RandomSolarize(threshold=0.5, p=0.2),
                 transforms.ToImage(),
-                transforms.ToDtype(torch.float32, scale=True),
+                transforms.ToDtype(precision, scale=True),
                 normalize_fn,
             ]
         )
-
-
         self.transform2 = transforms.Compose(
             [
                 transforms.RandomResizedCrop(
-                    size=(resize, resize), scale=(0.2, 0.5), antialias=True
+                    size=(resize, resize), scale=(0.2, 1.0), antialias=True
                 ),
                 transforms.RandomHorizontalFlip(p=0.5),
                 transforms.RandomApply(
-                    [transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8
+                    [
+                        transforms.ColorJitter(
+                            brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1
+                        )
+                    ],
+                    p=0.8,
                 ),
                 transforms.RandomGrayscale(p=0.2),
                 transforms.ToImage(),
-                transforms.ToDtype(torch.float32, scale=True),
+                transforms.ToDtype(precision, scale=True),
                 normalize_fn,
             ]
         )
@@ -111,6 +122,7 @@ class ColorDataModule(pl.LightningDataModule):
         subset: str = "train",
         num_workers: int = 1,
         selected_classes: Optional[list] = None,
+        precision: str = "float32",
     ):
         super().__init__()
         self.hparams: argparse.Namespace
@@ -122,6 +134,13 @@ class ColorDataModule(pl.LightningDataModule):
             "gtsrb": datasets.GTSRB,
             "imagenet": datasets.ImageNet,
         }
+        self.precision: torch.dtype
+        if precision == "float32":
+            self.precision = torch.float32
+        elif precision == "float64":
+            self.precision = torch.float64
+        else:
+            raise ValueError(f"Unsupported precision: {precision}")
 
     @staticmethod
     def get_normalize_fn(data: torch.Tensor) -> transforms.Normalize:
@@ -212,7 +231,7 @@ class ColorDataModule(pl.LightningDataModule):
         transform_list.extend(
             [
                 transforms.ToImage(),
-                transforms.ToDtype(torch.float32, scale=True),
+                transforms.ToDtype(self.precision, scale=True),
                 normalize_fn,
             ]
         )
@@ -223,6 +242,7 @@ class ColorDataModule(pl.LightningDataModule):
             dataset_name=self.hparams.dataset_name,
             normalize_fn=normalize_fn,
             resize=self.hparams.resize or 32,
+            precision=self.precision,
         )
 
         # --- Filtering and Subsetting ---

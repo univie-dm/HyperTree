@@ -55,6 +55,7 @@ class HyperbolicHCModel(AbstractModel):
         byol: bool = False,
         recon_weight: float = 1.0,
         cluster_dim: int | None = None,
+        hyphc_num_nn: int = 10,
     ):
         super().__init__(
             model_type=ae_model.model_type,
@@ -100,6 +101,7 @@ class HyperbolicHCModel(AbstractModel):
         self.hierarchy_weight = hierarchy_weight
         self.byol = byol
         self.recon_weight = recon_weight
+        self.hyphc_num_nn = hyphc_num_nn
         if cluster_dim is None:
             self.cluster_dim = self.latent_dim
         else:
@@ -168,7 +170,7 @@ class HyperbolicHCModel(AbstractModel):
 
     def configure_optimizers(self) -> Any:
         optimizer = RiemannianAdam(
-            self.parameters(),
+            [{"params": self.cluster_head.parameters()}, {"params": self.encoder.parameters(), "lr": 1e-5}],
             lr=self.learning_rate,
             weight_decay=self.weight_decay,
         )
@@ -208,7 +210,7 @@ class HyperbolicHCModel(AbstractModel):
         return m
 
     def sample_triplets(
-        self, num_pts: int, device: torch.device
+        self, num_pts: int, device: torch.device, points: torch.Tensor | None = None
     ) -> Tuple[torch.Tensor, np.ndarray]:
         """Sample triplets for the HypHC loss."""
         if self.hyphc_sampling_strategy == "all_subsample_triplets":
@@ -245,6 +247,37 @@ class HyperbolicHCModel(AbstractModel):
                     )
             np_sampled_triplet_indices = sampled_triplet_indices.cpu().numpy()
             sampled_indices = torch.unique(sampled_triplet_indices)
+        elif self.hyphc_sampling_strategy == "nn" and points is not None:
+            anker_points = torch.randperm(num_pts, device=device)[
+                : min(self.hyphc_triplet_subsampling_size, num_pts)
+            ]
+            sampled_triplets = []
+            dists = compute_pairwise_distances(
+                points,
+                self.manifold,
+                version=self.distances_version,
+            )
+            for anker in anker_points:
+                sorted_indices = torch.argsort(dists[anker])
+                # Exclude the anker point itself
+                nn_idx = sorted_indices[1 : min( self.hyphc_num_nn + 1, sorted_indices.shape[0] )]
+                random_nn_1 = torch.randint(0, nn_idx.shape[0], (1,), device=device)
+                random_nn_2 = torch.randint(0, nn_idx.shape[0], (1,), device=device)
+                while random_nn_2 == random_nn_1:
+                    random_nn_2 = torch.randint(0, nn_idx.shape[0], (1,), device=device)
+                sampled_triplet = torch.tensor(
+                    [
+                        anker.item(),
+                        nn_idx[random_nn_1].item(),
+                        nn_idx[random_nn_2].item(),
+                    ],
+                    device=device,
+                )
+                sampled_triplets.append(sampled_triplet)
+            sampled_triplet_indices = torch.stack(sampled_triplets)
+            sampled_indices = torch.unique(sampled_triplet_indices)
+            np_sampled_triplet_indices = sampled_triplet_indices.cpu().numpy()
+
         else:
             raise ValueError(
                 f"Invalid sampling strategy: {self.hyphc_sampling_strategy}"
@@ -339,7 +372,7 @@ class HyperbolicHCModel(AbstractModel):
         device = embeddings.device
 
         # Sample triplets
-        sampled_indices, np_sampled_triplet_indices = self.sample_triplets(n, device)
+        sampled_indices, np_sampled_triplet_indices = self.sample_triplets(n, device, points=embeddings if self.hyphc_sampling_strategy=="nn" else None)
         # Compute the pairwise distances
         if self.distances_type == "geodesic":
             distances = compute_pairwise_distances(
@@ -530,6 +563,7 @@ class HyperbolicHCModel(AbstractModel):
             x_recon = torch.zeros_like(x)
             manifold_z, cluster_z = self.encode(x)
 
+        hierarchy_loss = None
         # HypHC loss
         if self.lca_version == "contrastive_lca":
 
@@ -555,12 +589,10 @@ class HyperbolicHCModel(AbstractModel):
 
             hierarchy_loss = torch.tensor(0.0, device=self.device)
 
-
-            h_loss_1 = self.compute_radius_hierarchy_loss(cluster_z_x, cluster_z_aug_1)
-
-            h_loss_2 = self.compute_radius_hierarchy_loss(cluster_z_x, cluster_z_aug_2)
+            #h_loss_1 = self.compute_radius_hierarchy_loss(parent_z=cluster_z_aug_1, child_z=cluster_z_x)
+            h_loss_2 = self.compute_radius_hierarchy_loss(parent_z=cluster_z_aug_1, child_z=cluster_z_aug_2)
             
-            hierarchy_loss = (h_loss_1 + h_loss_2) / 2
+            hierarchy_loss = h_loss_2 #(h_loss_1 + h_loss_2) / 2
             
 
             self.metrics.setdefault("clustering/hierarchy_loss", []).append(
@@ -609,6 +641,8 @@ class HyperbolicHCModel(AbstractModel):
         if hierarchy_loss:
             hyphc_loss = hyphc_loss + hierarchy_loss * self.hierarchy_weight
         total_loss = recon_loss * self.recon_weight + hyphc_loss * hyphc_loss_weight
+
+        ic(hyphc_loss, standard_hyphc_loss, normalized_loss, triplet_loss, similarties_sum, recon_loss, total_loss)
 
         if self.contrastive_enabled:
             # Encode both augmented views to get their hyperbolic embeddings

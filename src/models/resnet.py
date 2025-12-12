@@ -199,7 +199,7 @@ class HyperbolicResNet(AbstractModel):
             self.manifold = Euclidean()
             self.manifold_name = "Euclidean"
 
-        self.encoder = nn.Sequential(self.encoder, *projection_layers[:-2])
+        self.encoder = nn.Sequential(self.encoder, *projection_layers)
         self.rms = nn.RMSNorm(current_dim, elementwise_affine=False)
         if self.feature_scaling and not isinstance(self.manifold, Euclidean):
             self.feature_scaling_layer = FeatureScaling(current_dim, self.manifold.c)

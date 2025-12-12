@@ -50,7 +50,7 @@ def main(cfg: DictConfig) -> None:
             max_epochs=cfg.pretraining.epochs,
             devices="auto",
             accelerator="auto",
-            deterministic=True,
+            deterministic=True if cfg.experiment.seed >= 0 else False,
             enable_checkpointing=False,
             default_root_dir=None,
             gradient_clip_algorithm="value"
@@ -105,9 +105,9 @@ def main(cfg: DictConfig) -> None:
             max_epochs=cfg.clustering.epochs,
             devices="auto",
             accelerator="auto",
-            deterministic=True,
-            enable_checkpointing=cfg.clustering.get("enable_checkpointing", False),
-            default_root_dir=clustering_checkpoint_dir,
+            deterministic=True if cfg.experiment.seed >= 0 else False,
+            enable_checkpointing=False,
+            default_root_dir=None,
             accumulate_grad_batches=(accumulate_grad_batches),
             gradient_clip_algorithm="norm"
             if cfg.experiment.gradient_clip_value is not None
