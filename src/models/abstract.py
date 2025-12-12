@@ -12,7 +12,7 @@ from pytorch_lightning.loggers import WandbLogger
 
 from src.evaluation import evaluation
 from src.hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
-from src.hyperbolic_math.src.optim import RiemannianAdam, RiemannianSGD
+from torch.optim import AdamW, SGD
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 
 
@@ -192,19 +192,17 @@ class AbstractModel(pl.LightningModule):
 
     def configure_optimizers(self) -> Any:
         if self.optimizer_name == "RiemannianAdam":
-            optimizer = RiemannianAdam(
+            optimizer = AdamW(
                 filter(lambda p: p.requires_grad, self.parameters()),
                 lr=self.learning_rate,
                 eps=5e-4,
-                expmap_update=True,
                 weight_decay=self.weight_decay,
             )
         elif self.optimizer_name == "RiemannianSGD":
-            optimizer = RiemannianSGD(
+            optimizer = SGD(
                 filter(lambda p: p.requires_grad, self.parameters()),
                 lr=self.learning_rate,
                 momentum=0.9,
-                expmap_update=True,
                 weight_decay=self.weight_decay,
             )
         else:

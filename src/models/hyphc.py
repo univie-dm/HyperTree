@@ -11,7 +11,7 @@ import wandb
 
 from src.hyperbolic_math.src.utils.horo_pca import frechet_center_data
 from src.hyperbolic_math.src.manifolds import Euclidean, PoincareBall
-from src.hyperbolic_math.src.optim.riemannian_adam import RiemannianAdam
+from torch.optim import AdamW
 from src.models.abstract import AbstractModel
 from src.models.resnet import HyperbolicResNet
 from src.models.utils import (
@@ -169,7 +169,7 @@ class HyperbolicHCModel(AbstractModel):
             )
 
     def configure_optimizers(self) -> Any:
-        optimizer = RiemannianAdam(
+        optimizer = AdamW(
             [{"params": self.cluster_head.parameters()}, {"params": self.encoder.parameters(), "lr": 1e-5}],
             lr=self.learning_rate,
             weight_decay=self.weight_decay,
