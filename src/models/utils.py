@@ -137,7 +137,7 @@ def get_hyperbolic_encoding_layer_by_name(
             smoothing_factor=smoothing_factor,
         )
         weight = torch.randn((output_dim, input_dim), dtype=layer.params_dtype)
-        weight = nn.init.normal_(weight, mean=0.0, std=(1.0/np.sqrt(weight.size(1))))
+        weight = nn.init.normal_(weight, mean=0.0, std=(1.0 / np.sqrt(weight.size(1))))
         layer.weight = torch.nn.Parameter(weight, requires_grad=True)
     else:
         raise ValueError(

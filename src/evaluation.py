@@ -9,7 +9,11 @@ from typing import Union, Optional
 from scipy.cluster.hierarchy import linkage
 from scipy.spatial.distance import squareform
 from sklearn.cluster import AgglomerativeClustering, KMeans, SpectralClustering
-from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, confusion_matrix
+from sklearn.metrics import (
+    adjusted_rand_score,
+    normalized_mutual_info_score,
+    confusion_matrix,
+)
 from sklearn.base import BaseEstimator, ClusterMixin
 from scipy.sparse.linalg import eigsh
 from sklearn.neighbors import kneighbors_graph
@@ -60,37 +64,41 @@ def evaluation(
     points_in_manifold = False
     if metrics is None:
         return results
-    
+
     def get_categorical_colors(labels):
         """Create a list of distinct colors for categorical labels."""
         unique_labels = np.unique(labels)
         n_labels = len(unique_labels)
-        
+
         # Create color mapping
         if n_labels <= 10:
-            cmap = plt.cm.get_cmap('tab10')
+            cmap = plt.cm.get_cmap("tab10")
         elif n_labels <= 20:
-            cmap = plt.cm.get_cmap('tab20')
+            cmap = plt.cm.get_cmap("tab20")
         else:
-            cmap = plt.cm.get_cmap('hsv', n_labels)
-        
+            cmap = plt.cm.get_cmap("hsv", n_labels)
+
         # Map each unique label to a color index
         label_to_idx = {label: i for i, label in enumerate(unique_labels)}
         colors = [cmap(label_to_idx[label] / max(n_labels - 1, 1)) for label in labels]
         return colors, label_to_idx, cmap
-    
+
     def set_square_axes(ax, pts):
         """Set square axes with equal limits based on max range."""
-        max_range = max(pts[:, 0].max() - pts[:, 0].min(), pts[:, 1].max() - pts[:, 1].min())
+        max_range = max(
+            pts[:, 0].max() - pts[:, 0].min(), pts[:, 1].max() - pts[:, 1].min()
+        )
         mid_x = (pts[:, 0].max() + pts[:, 0].min()) / 2
         mid_y = (pts[:, 1].max() + pts[:, 1].min()) / 2
-        ax.set_xlim(mid_x - max_range/2, mid_x + max_range/2)
-        ax.set_ylim(mid_y - max_range/2, mid_y + max_range/2)
-        ax.set_aspect('equal', adjustable='box')
-    
-    def create_confusion_matrix_plot(y_true, y_pred, title="Confusion Matrix", str_labels=None):
+        ax.set_xlim(mid_x - max_range / 2, mid_x + max_range / 2)
+        ax.set_ylim(mid_y - max_range / 2, mid_y + max_range / 2)
+        ax.set_aspect("equal", adjustable="box")
+
+    def create_confusion_matrix_plot(
+        y_true, y_pred, title="Confusion Matrix", str_labels=None
+    ):
         """Create a confusion matrix visualization.
-        
+
         Parameters
         ----------
         y_true : array-like
@@ -101,7 +109,7 @@ def evaluation(
             Title for the plot
         str_labels : array-like, optional
             String labels for the classes
-            
+
         Returns
         -------
         matplotlib.figure.Figure
@@ -109,22 +117,28 @@ def evaluation(
         """
         # Compute confusion matrix
         cm = confusion_matrix(y_true, y_pred)
-        
+
         # Normalize by row (true label)
-        cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-        
+        cm_normalized = cm.astype("float") / cm.sum(axis=1)[:, np.newaxis]
+
         # Create figure
         fig, ax = plt.subplots(figsize=(12, 10))
-        im = ax.imshow(cm_normalized, interpolation='nearest', cmap=plt.cm.Blues)
+        im = ax.imshow(cm_normalized, interpolation="nearest", cmap=plt.cm.Blues)
         ax.figure.colorbar(im, ax=ax)
-        
+
         # Set labels
         if str_labels is not None:
             unique_true = np.unique(y_true)
             unique_pred = np.unique(y_pred)
             # Map true labels to string labels
-            true_label_names = [str(str_labels[np.where(y_true == label)[0][0]]) for label in unique_true]
-            predicted_label_names = [str(str_labels[np.where(y_true == label)[0][0]]) for label in unique_pred]
+            true_label_names = [
+                str(str_labels[np.where(y_true == label)[0][0]])
+                for label in unique_true
+            ]
+            predicted_label_names = [
+                str(str_labels[np.where(y_true == label)[0][0]])
+                for label in unique_pred
+            ]
             tick_marks_true = np.arange(len(unique_true))
             tick_marks_pred = np.arange(len(unique_pred))
             ax.set_yticks(tick_marks_true)
@@ -136,13 +150,13 @@ def evaluation(
             ax.set_yticklabels(np.unique(y_true), fontsize=8)
             ax.set_xticks(np.arange(cm.shape[1]))
             ax.set_xticklabels(np.unique(y_pred), fontsize=8)
-        
-        ax.set_ylabel('True Label', fontsize=10)
-        ax.set_xlabel('Predicted Cluster', fontsize=10)
+
+        ax.set_ylabel("True Label", fontsize=10)
+        ax.set_xlabel("Predicted Cluster", fontsize=10)
         ax.set_title(title, fontsize=12)
         plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
         plt.tight_layout()
-        
+
         return fig
 
     if metrics.get("test_sample_size", 0) > 0 and metrics["test_sample_size"] < len(X):
@@ -199,6 +213,7 @@ def evaluation(
         if isinstance(manifold, Euclidean):
             # Use standard sklearn PCA for Euclidean manifolds
             from sklearn.decomposition import PCA as SklearnPCA
+
             pca = SklearnPCA(n_components=2)
             points_sampled_np = points_sampled.detach().cpu().numpy()
             two_d_pts = pca.fit_transform(points_sampled_np)
@@ -229,7 +244,10 @@ def evaluation(
                 points_sampled = poincare_64.to_hyperboloid(points_sampled)
             points_sampled = points_sampled.to(torch.float64)
             two_d_pts, _ = pointsTo2dPoincare(
-                x=points_sampled, poincare=poincare_64, hyperplanes=None, settings=settings
+                x=points_sampled,
+                poincare=poincare_64,
+                hyperplanes=None,
+                settings=settings,
             )
             two_d_pts = (
                 two_d_pts.detach()
@@ -244,7 +262,9 @@ def evaluation(
                 points_in_manifold = True
 
     if metrics.get("delta_hyperbolicity", False):
-        delta_hyp, diam_hyp, rel_delta_hyp = get_delta(X, manifold, len(X), version="average", batch_size=100)
+        delta_hyp, diam_hyp, rel_delta_hyp = get_delta(
+            X, manifold, len(X), version="average", batch_size=100
+        )
         results["delta_hyperbolicity"] = delta_hyp.item()
         results["diameter_hyperbolicity"] = diam_hyp.item()
         results["relative_delta_hyperbolicity"] = rel_delta_hyp.item()
@@ -309,13 +329,21 @@ def evaluation(
         ari_single = adjusted_rand_score(Y_numpy, pred_labels_single)
         results["agglomerative_clustering_single_nmi"] = nmi_single
         results["agglomerative_clustering_single_ari"] = ari_single
-        
+
         # Generate confusion matrix (use coarse labels if available for visualization)
         Y_for_cm = Y_coarse if Y_coarse is not None else Y_numpy
-        Y_for_cm_np = Y_for_cm.cpu().numpy() if isinstance(Y_for_cm, torch.Tensor) else np.asarray(Y_for_cm)
+        Y_for_cm_np = (
+            Y_for_cm.cpu().numpy()
+            if isinstance(Y_for_cm, torch.Tensor)
+            else np.asarray(Y_for_cm)
+        )
         # Map predicted labels to coarse labels for confusion matrix
         if Y_coarse is not None:
-            Y_coarse_np = Y_coarse.cpu().numpy() if isinstance(Y_coarse, torch.Tensor) else np.asarray(Y_coarse)
+            Y_coarse_np = (
+                Y_coarse.cpu().numpy()
+                if isinstance(Y_coarse, torch.Tensor)
+                else np.asarray(Y_coarse)
+            )
             # For each predicted cluster, assign it to the most common coarse label
             pred_labels_for_cm = np.copy(pred_labels_single)
             for cluster_id in np.unique(pred_labels_single):
@@ -326,13 +354,16 @@ def evaluation(
         else:
             pred_labels_for_cm = pred_labels_single
         cm_fig = create_confusion_matrix_plot(
-            Y_for_cm_np, pred_labels_for_cm,
+            Y_for_cm_np,
+            pred_labels_for_cm,
             title="Agglomerative Clustering (Single Linkage) - Confusion Matrix",
-            str_labels=str_labels
+            str_labels=str_labels,
         )
-        results["agglomerative_clustering_single_confusion_matrix"] = wandb.Image(cm_fig)
+        results["agglomerative_clustering_single_confusion_matrix"] = wandb.Image(
+            cm_fig
+        )
         plt.close(cm_fig)
-        
+
         if metrics["visualization"] and points_in_manifold:
             # Map predicted labels to string labels if available
             Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
@@ -346,12 +377,18 @@ def evaluation(
                 Y_numpy[pca_sample_indices],
                 str_labels_subset,
             )
-            
+
             if isinstance(manifold, Euclidean):
                 # Create PCA scatter plot for Euclidean
                 fig, ax = plt.subplots(figsize=(10, 10))
-                two_d_pts_np = two_d_pts.cpu().numpy() if isinstance(two_d_pts, torch.Tensor) else two_d_pts
-                colors, label_to_idx, cmap = get_categorical_colors(visualization_labels)
+                two_d_pts_np = (
+                    two_d_pts.cpu().numpy()
+                    if isinstance(two_d_pts, torch.Tensor)
+                    else two_d_pts
+                )
+                colors, label_to_idx, cmap = get_categorical_colors(
+                    visualization_labels
+                )
                 scatter = ax.scatter(
                     two_d_pts_np[:, 0],
                     two_d_pts_np[:, 1],
@@ -361,14 +398,34 @@ def evaluation(
                 )
                 # Add legend
                 unique_labels = np.unique(visualization_labels)
-                handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=cmap(label_to_idx[label] / max(len(unique_labels) - 1, 1)), markersize=8, label=str(label)) for label in unique_labels]
-                ax.legend(handles=handles, loc='center left', bbox_to_anchor=(1, 0.5), frameon=True)
+                handles = [
+                    plt.Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        color="w",
+                        markerfacecolor=cmap(
+                            label_to_idx[label] / max(len(unique_labels) - 1, 1)
+                        ),
+                        markersize=8,
+                        label=str(label),
+                    )
+                    for label in unique_labels
+                ]
+                ax.legend(
+                    handles=handles,
+                    loc="center left",
+                    bbox_to_anchor=(1, 0.5),
+                    frameon=True,
+                )
                 set_square_axes(ax, two_d_pts_np)
                 ax.set_title("PCA Agglomerative Clustering Single Linkage")
                 ax.set_xlabel("PC1")
                 ax.set_ylabel("PC2")
                 plt.tight_layout()
-                results["agglomerative_clustering_single_pca_embeddings"] = wandb.Image(fig)
+                results["agglomerative_clustering_single_pca_embeddings"] = wandb.Image(
+                    fig
+                )
                 plt.close(fig)
             else:
                 # Create HoroPCA figure for hyperbolic
@@ -400,13 +457,21 @@ def evaluation(
         ari_complete = adjusted_rand_score(Y_numpy, pred_labels_complete)
         results["agglomerative_clustering_complete_nmi"] = nmi_complete
         results["agglomerative_clustering_complete_ari"] = ari_complete
-        
+
         # Generate confusion matrix (use coarse labels if available for visualization)
         Y_for_cm = Y_coarse if Y_coarse is not None else Y_numpy
-        Y_for_cm_np = Y_for_cm.cpu().numpy() if isinstance(Y_for_cm, torch.Tensor) else np.asarray(Y_for_cm)
+        Y_for_cm_np = (
+            Y_for_cm.cpu().numpy()
+            if isinstance(Y_for_cm, torch.Tensor)
+            else np.asarray(Y_for_cm)
+        )
         # Map predicted labels to coarse labels for confusion matrix
         if Y_coarse is not None:
-            Y_coarse_np = Y_coarse.cpu().numpy() if isinstance(Y_coarse, torch.Tensor) else np.asarray(Y_coarse)
+            Y_coarse_np = (
+                Y_coarse.cpu().numpy()
+                if isinstance(Y_coarse, torch.Tensor)
+                else np.asarray(Y_coarse)
+            )
             pred_labels_for_cm = np.copy(pred_labels_complete)
             for cluster_id in np.unique(pred_labels_complete):
                 cluster_mask = pred_labels_complete == cluster_id
@@ -416,13 +481,16 @@ def evaluation(
         else:
             pred_labels_for_cm = pred_labels_complete
         cm_fig = create_confusion_matrix_plot(
-            Y_for_cm_np, pred_labels_for_cm,
+            Y_for_cm_np,
+            pred_labels_for_cm,
             title="Agglomerative Clustering (Complete Linkage) - Confusion Matrix",
-            str_labels=str_labels
+            str_labels=str_labels,
         )
-        results["agglomerative_clustering_complete_confusion_matrix"] = wandb.Image(cm_fig)
+        results["agglomerative_clustering_complete_confusion_matrix"] = wandb.Image(
+            cm_fig
+        )
         plt.close(cm_fig)
-        
+
         if metrics["visualization"] and points_in_manifold:
             # Map predicted labels to string labels if available
             Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
@@ -436,12 +504,18 @@ def evaluation(
                 Y_numpy[pca_sample_indices],
                 str_labels_subset,
             )
-            
+
             if isinstance(manifold, Euclidean):
                 # Create PCA scatter plot for Euclidean
                 fig, ax = plt.subplots(figsize=(10, 10))
-                two_d_pts_np = two_d_pts.cpu().numpy() if isinstance(two_d_pts, torch.Tensor) else two_d_pts
-                colors, label_to_idx, cmap = get_categorical_colors(visualization_labels)
+                two_d_pts_np = (
+                    two_d_pts.cpu().numpy()
+                    if isinstance(two_d_pts, torch.Tensor)
+                    else two_d_pts
+                )
+                colors, label_to_idx, cmap = get_categorical_colors(
+                    visualization_labels
+                )
                 scatter = ax.scatter(
                     two_d_pts_np[:, 0],
                     two_d_pts_np[:, 1],
@@ -451,14 +525,34 @@ def evaluation(
                 )
                 # Add legend
                 unique_labels = np.unique(visualization_labels)
-                handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=cmap(label_to_idx[label] / max(len(unique_labels) - 1, 1)), markersize=8, label=str(label)) for label in unique_labels]
-                ax.legend(handles=handles, loc='center left', bbox_to_anchor=(1, 0.5), frameon=True)
+                handles = [
+                    plt.Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        color="w",
+                        markerfacecolor=cmap(
+                            label_to_idx[label] / max(len(unique_labels) - 1, 1)
+                        ),
+                        markersize=8,
+                        label=str(label),
+                    )
+                    for label in unique_labels
+                ]
+                ax.legend(
+                    handles=handles,
+                    loc="center left",
+                    bbox_to_anchor=(1, 0.5),
+                    frameon=True,
+                )
                 set_square_axes(ax, two_d_pts_np)
                 ax.set_title("PCA Agglomerative Clustering Complete Linkage")
                 ax.set_xlabel("PC1")
                 ax.set_ylabel("PC2")
                 plt.tight_layout()
-                results["agglomerative_clustering_complete_pca_embeddings"] = wandb.Image(fig)
+                results["agglomerative_clustering_complete_pca_embeddings"] = (
+                    wandb.Image(fig)
+                )
                 plt.close(fig)
             else:
                 # Create HoroPCA figure for hyperbolic
@@ -473,7 +567,9 @@ def evaluation(
                     "file_format": "png",
                 }
                 # Map predicted labels to string labels if available
-                Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+                Y_numpy = (
+                    Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+                )
                 str_labels_subset = (
                     np.asarray(str_labels)[pca_sample_indices]
                     if str_labels is not None
@@ -502,13 +598,21 @@ def evaluation(
         ari_average = adjusted_rand_score(Y_numpy, pred_labels_average)
         results["agglomerative_clustering_average_nmi"] = nmi_average
         results["agglomerative_clustering_average_ari"] = ari_average
-        
+
         # Generate confusion matrix (use coarse labels if available for visualization)
         Y_for_cm = Y_coarse if Y_coarse is not None else Y_numpy
-        Y_for_cm_np = Y_for_cm.cpu().numpy() if isinstance(Y_for_cm, torch.Tensor) else np.asarray(Y_for_cm)
+        Y_for_cm_np = (
+            Y_for_cm.cpu().numpy()
+            if isinstance(Y_for_cm, torch.Tensor)
+            else np.asarray(Y_for_cm)
+        )
         # Map predicted labels to coarse labels for confusion matrix
         if Y_coarse is not None:
-            Y_coarse_np = Y_coarse.cpu().numpy() if isinstance(Y_coarse, torch.Tensor) else np.asarray(Y_coarse)
+            Y_coarse_np = (
+                Y_coarse.cpu().numpy()
+                if isinstance(Y_coarse, torch.Tensor)
+                else np.asarray(Y_coarse)
+            )
             pred_labels_for_cm = np.copy(pred_labels_average)
             for cluster_id in np.unique(pred_labels_average):
                 cluster_mask = pred_labels_average == cluster_id
@@ -518,13 +622,16 @@ def evaluation(
         else:
             pred_labels_for_cm = pred_labels_average
         cm_fig = create_confusion_matrix_plot(
-            Y_for_cm_np, pred_labels_for_cm,
+            Y_for_cm_np,
+            pred_labels_for_cm,
             title="Agglomerative Clustering (Average Linkage) - Confusion Matrix",
-            str_labels=str_labels
+            str_labels=str_labels,
         )
-        results["agglomerative_clustering_average_confusion_matrix"] = wandb.Image(cm_fig)
+        results["agglomerative_clustering_average_confusion_matrix"] = wandb.Image(
+            cm_fig
+        )
         plt.close(cm_fig)
-        
+
         if metrics["visualization"] and points_in_manifold:
             # Map predicted labels to string labels if available
             Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
@@ -538,12 +645,18 @@ def evaluation(
                 Y_numpy[pca_sample_indices],
                 str_labels_subset,
             )
-            
+
             if isinstance(manifold, Euclidean):
                 # Create PCA scatter plot for Euclidean
                 fig, ax = plt.subplots(figsize=(10, 10))
-                two_d_pts_np = two_d_pts.cpu().numpy() if isinstance(two_d_pts, torch.Tensor) else two_d_pts
-                colors, label_to_idx, cmap = get_categorical_colors(visualization_labels)
+                two_d_pts_np = (
+                    two_d_pts.cpu().numpy()
+                    if isinstance(two_d_pts, torch.Tensor)
+                    else two_d_pts
+                )
+                colors, label_to_idx, cmap = get_categorical_colors(
+                    visualization_labels
+                )
                 scatter = ax.scatter(
                     two_d_pts_np[:, 0],
                     two_d_pts_np[:, 1],
@@ -553,14 +666,34 @@ def evaluation(
                 )
                 # Add legend
                 unique_labels = np.unique(visualization_labels)
-                handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=cmap(label_to_idx[label] / max(len(unique_labels) - 1, 1)), markersize=8, label=str(label)) for label in unique_labels]
-                ax.legend(handles=handles, loc='center left', bbox_to_anchor=(1, 0.5), frameon=True)
+                handles = [
+                    plt.Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        color="w",
+                        markerfacecolor=cmap(
+                            label_to_idx[label] / max(len(unique_labels) - 1, 1)
+                        ),
+                        markersize=8,
+                        label=str(label),
+                    )
+                    for label in unique_labels
+                ]
+                ax.legend(
+                    handles=handles,
+                    loc="center left",
+                    bbox_to_anchor=(1, 0.5),
+                    frameon=True,
+                )
                 set_square_axes(ax, two_d_pts_np)
                 ax.set_title("PCA Agglomerative Clustering Average Linkage")
                 ax.set_xlabel("PC1")
                 ax.set_ylabel("PC2")
                 plt.tight_layout()
-                results["agglomerative_clustering_average_pca_embeddings"] = wandb.Image(fig)
+                results["agglomerative_clustering_average_pca_embeddings"] = (
+                    wandb.Image(fig)
+                )
                 plt.close(fig)
             else:
                 # Create HoroPCA figure for hyperbolic
@@ -575,7 +708,9 @@ def evaluation(
                     "file_format": "png",
                 }
                 # Map predicted labels to string labels if available
-                Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+                Y_numpy = (
+                    Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+                )
                 str_labels_subset = (
                     np.asarray(str_labels)[pca_sample_indices]
                     if str_labels is not None
@@ -613,11 +748,15 @@ def evaluation(
             )
         else:
             labels = Y_numpy[pca_sample_indices]
-        
+
         if isinstance(manifold, Euclidean):
             # Create PCA scatter plot for Euclidean
             fig, ax = plt.subplots(figsize=(10, 10))
-            two_d_pts_np = two_d_pts.cpu().numpy() if isinstance(two_d_pts, torch.Tensor) else two_d_pts
+            two_d_pts_np = (
+                two_d_pts.cpu().numpy()
+                if isinstance(two_d_pts, torch.Tensor)
+                else two_d_pts
+            )
             colors, label_to_idx, cmap = get_categorical_colors(labels)
             scatter = ax.scatter(
                 two_d_pts_np[:, 0],
@@ -628,8 +767,26 @@ def evaluation(
             )
             # Add legend
             unique_labels = np.unique(labels)
-            handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=cmap(label_to_idx[label] / max(len(unique_labels) - 1, 1)), markersize=8, label=str(label)) for label in unique_labels]
-            ax.legend(handles=handles, loc='center left', bbox_to_anchor=(1, 0.5), frameon=True)
+            handles = [
+                plt.Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    markerfacecolor=cmap(
+                        label_to_idx[label] / max(len(unique_labels) - 1, 1)
+                    ),
+                    markersize=8,
+                    label=str(label),
+                )
+                for label in unique_labels
+            ]
+            ax.legend(
+                handles=handles,
+                loc="center left",
+                bbox_to_anchor=(1, 0.5),
+                frameon=True,
+            )
             set_square_axes(ax, two_d_pts_np)
             ax.set_title("PCA Embeddings (Euclidean)")
             ax.set_xlabel("PC1")
@@ -683,13 +840,21 @@ def evaluation(
         ari_spectral = adjusted_rand_score(Y_numpy, pred_labels_spectral)
         results["spectral_clustering_nmi"] = nmi_spectral
         results["spectral_clustering_ari"] = ari_spectral
-        
+
         # Generate confusion matrix (use coarse labels if available for visualization)
         Y_for_cm = Y_coarse if Y_coarse is not None else Y_numpy
-        Y_for_cm_np = Y_for_cm.cpu().numpy() if isinstance(Y_for_cm, torch.Tensor) else np.asarray(Y_for_cm)
+        Y_for_cm_np = (
+            Y_for_cm.cpu().numpy()
+            if isinstance(Y_for_cm, torch.Tensor)
+            else np.asarray(Y_for_cm)
+        )
         # Map predicted labels to coarse labels for confusion matrix
         if Y_coarse is not None:
-            Y_coarse_np = Y_coarse.cpu().numpy() if isinstance(Y_coarse, torch.Tensor) else np.asarray(Y_coarse)
+            Y_coarse_np = (
+                Y_coarse.cpu().numpy()
+                if isinstance(Y_coarse, torch.Tensor)
+                else np.asarray(Y_coarse)
+            )
             pred_labels_for_cm = np.copy(pred_labels_spectral)
             for cluster_id in np.unique(pred_labels_spectral):
                 cluster_mask = pred_labels_spectral == cluster_id
@@ -699,13 +864,14 @@ def evaluation(
         else:
             pred_labels_for_cm = pred_labels_spectral
         cm_fig = create_confusion_matrix_plot(
-            Y_for_cm_np, pred_labels_for_cm,
+            Y_for_cm_np,
+            pred_labels_for_cm,
             title="Spectral Clustering - Confusion Matrix",
-            str_labels=str_labels
+            str_labels=str_labels,
         )
         results["spectral_clustering_confusion_matrix"] = wandb.Image(cm_fig)
         plt.close(cm_fig)
-        
+
         if metrics["visualization"] and points_in_manifold:
             # Map predicted labels to string labels if available
             Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
@@ -719,12 +885,18 @@ def evaluation(
                 Y_numpy[pca_sample_indices],
                 str_labels_subset,
             )
-            
+
             if isinstance(manifold, Euclidean):
                 # Create PCA scatter plot for Euclidean
                 fig, ax = plt.subplots(figsize=(10, 10))
-                two_d_pts_np = two_d_pts.cpu().numpy() if isinstance(two_d_pts, torch.Tensor) else two_d_pts
-                colors, label_to_idx, cmap = get_categorical_colors(visualization_labels)
+                two_d_pts_np = (
+                    two_d_pts.cpu().numpy()
+                    if isinstance(two_d_pts, torch.Tensor)
+                    else two_d_pts
+                )
+                colors, label_to_idx, cmap = get_categorical_colors(
+                    visualization_labels
+                )
                 scatter = ax.scatter(
                     two_d_pts_np[:, 0],
                     two_d_pts_np[:, 1],
@@ -734,8 +906,26 @@ def evaluation(
                 )
                 # Add legend
                 unique_labels = np.unique(visualization_labels)
-                handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=cmap(label_to_idx[label] / max(len(unique_labels) - 1, 1)), markersize=8, label=str(label)) for label in unique_labels]
-                ax.legend(handles=handles, loc='center left', bbox_to_anchor=(1, 0.5), frameon=True)
+                handles = [
+                    plt.Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        color="w",
+                        markerfacecolor=cmap(
+                            label_to_idx[label] / max(len(unique_labels) - 1, 1)
+                        ),
+                        markersize=8,
+                        label=str(label),
+                    )
+                    for label in unique_labels
+                ]
+                ax.legend(
+                    handles=handles,
+                    loc="center left",
+                    bbox_to_anchor=(1, 0.5),
+                    frameon=True,
+                )
                 set_square_axes(ax, two_d_pts_np)
                 ax.set_title("PCA Spectral Clustering")
                 ax.set_xlabel("PC1")
@@ -771,13 +961,21 @@ def evaluation(
         ari_kmeans = adjusted_rand_score(Y_numpy, pred_labels_kmeans)
         results["kmeans_nmi"] = nmi_kmeans
         results["kmeans_ari"] = ari_kmeans
-        
+
         # Generate confusion matrix (use coarse labels if available for visualization)
         Y_for_cm = Y_coarse if Y_coarse is not None else Y_numpy
-        Y_for_cm_np = Y_for_cm.cpu().numpy() if isinstance(Y_for_cm, torch.Tensor) else np.asarray(Y_for_cm)
+        Y_for_cm_np = (
+            Y_for_cm.cpu().numpy()
+            if isinstance(Y_for_cm, torch.Tensor)
+            else np.asarray(Y_for_cm)
+        )
         # Map predicted labels to coarse labels for confusion matrix
         if Y_coarse is not None:
-            Y_coarse_np = Y_coarse.cpu().numpy() if isinstance(Y_coarse, torch.Tensor) else np.asarray(Y_coarse)
+            Y_coarse_np = (
+                Y_coarse.cpu().numpy()
+                if isinstance(Y_coarse, torch.Tensor)
+                else np.asarray(Y_coarse)
+            )
             pred_labels_for_cm = np.copy(pred_labels_kmeans)
             for cluster_id in np.unique(pred_labels_kmeans):
                 cluster_mask = pred_labels_kmeans == cluster_id
@@ -787,13 +985,14 @@ def evaluation(
         else:
             pred_labels_for_cm = pred_labels_kmeans
         cm_fig = create_confusion_matrix_plot(
-            Y_for_cm_np, pred_labels_for_cm,
+            Y_for_cm_np,
+            pred_labels_for_cm,
             title="K-Means Clustering - Confusion Matrix",
-            str_labels=str_labels
+            str_labels=str_labels,
         )
         results["kmeans_confusion_matrix"] = wandb.Image(cm_fig)
         plt.close(cm_fig)
-        
+
         if metrics["visualization"] and points_in_manifold:
             # Map predicted labels to string labels if available
             Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
@@ -807,12 +1006,18 @@ def evaluation(
                 Y_numpy[pca_sample_indices],
                 str_labels_subset,
             )
-            
+
             if isinstance(manifold, Euclidean):
                 # Create PCA scatter plot for Euclidean
                 fig, ax = plt.subplots(figsize=(10, 10))
-                two_d_pts_np = two_d_pts.cpu().numpy() if isinstance(two_d_pts, torch.Tensor) else two_d_pts
-                colors, label_to_idx, cmap = get_categorical_colors(visualization_labels)
+                two_d_pts_np = (
+                    two_d_pts.cpu().numpy()
+                    if isinstance(two_d_pts, torch.Tensor)
+                    else two_d_pts
+                )
+                colors, label_to_idx, cmap = get_categorical_colors(
+                    visualization_labels
+                )
                 scatter = ax.scatter(
                     two_d_pts_np[:, 0],
                     two_d_pts_np[:, 1],
@@ -822,8 +1027,26 @@ def evaluation(
                 )
                 # Add legend
                 unique_labels = np.unique(visualization_labels)
-                handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=cmap(label_to_idx[label] / max(len(unique_labels) - 1, 1)), markersize=8, label=str(label)) for label in unique_labels]
-                ax.legend(handles=handles, loc='center left', bbox_to_anchor=(1, 0.5), frameon=True)
+                handles = [
+                    plt.Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        color="w",
+                        markerfacecolor=cmap(
+                            label_to_idx[label] / max(len(unique_labels) - 1, 1)
+                        ),
+                        markersize=8,
+                        label=str(label),
+                    )
+                    for label in unique_labels
+                ]
+                ax.legend(
+                    handles=handles,
+                    loc="center left",
+                    bbox_to_anchor=(1, 0.5),
+                    frameon=True,
+                )
                 set_square_axes(ax, two_d_pts_np)
                 ax.set_title("PCA KMeans Clustering")
                 ax.set_xlabel("PC1")
@@ -1449,4 +1672,3 @@ def stratified_sample(
             sampled_indices.extend(sampled)
 
     return np.array(sampled_indices)
-

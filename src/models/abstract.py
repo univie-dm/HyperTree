@@ -4,7 +4,6 @@ import torch
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 import wandb
-from sklearn.decomposition import PCA
 
 from typing import Tuple, Any
 from pytorch_lightning.loggers import WandbLogger
@@ -162,9 +161,9 @@ class AbstractModel(pl.LightningModule):
             )
             # Clamp distances to prevent numerical instability
             distance_matrix = distance_matrix.clamp(max=1e5)  # Prevent overflow in exp
-            #similarity_matrix = -torch.log(1+distance_matrix) / temperature  # Convert to similarity
+            # similarity_matrix = -torch.log(1+distance_matrix) / temperature  # Convert to similarity
             similarity_matrix = -distance_matrix / temperature
-            #similarity_matrix = torch.reciprocal(1+ distance_matrix) / temperature
+            # similarity_matrix = torch.reciprocal(1+ distance_matrix) / temperature
         else:
             raise ValueError(f"Invalid distances_type: {self.distances_type}")
 
@@ -680,41 +679,6 @@ class AbstractModel(pl.LightningModule):
             lcas[indices[1, :batch_size], indices[0, :batch_size]] = lca_depth
             indices = indices[:, batch_size:]
         return lcas
-    
-    def augment_hyperbolic_features(self, z: torch.Tensor, sigma: float = 0.1) -> torch.Tensor:
-        """
-        Implements Hyperbolic Feature Augmentation (Algorithm 1 from the paper).
-        Generates a new view z_aug near z by sampling in the tangent space.
-        
-        Args:
-            z: Latent embeddings on the manifold (Batch, Dim)
-            sigma: Variance of the noise (controls how 'far' the augmentation is)
-        """
-        # 1. Sample noise in the Tangent Space at the Origin (T_0)
-        # The paper samples from N(0, I) [cite: 147]
-        noise_t0 = torch.randn_like(z, device=z.device) * sigma
-        
-        # 2. Parallel Transport the noise from Origin to z
-        # The paper moves the noise vector to the tangent space of z [cite: 149]
-        # Formula: v = PT_{0->z}(noise_t0)
-        # Note: In Poincare Ball, PT_{0->z}(u) = (1 - ||z||^2) * u is the conformal factor scaling.
-        # A more precise implementation uses the gyration operator, but for noise 
-        # centered at 0, scaling by lambda_z is the standard approximation.
-        
-        lambda_z = 2 / (1 - z.pow(2).sum(dim=-1, keepdim=True).clamp(min=1e-15))
-        # Inverse conformal factor for transport from 0 to z is often simplified,
-        # but the rigorous way in the paper uses PT.
-        # Let's use the explicit mobius addition formulation for "adding noise":
-        # z_aug = z (+) exp_0(noise_t0) which is effectively what the paper does via transport.
-        
-        # 3. Map back to the Manifold
-        # z_new = z (+) exp_0(noise)
-        # This is mathematically equivalent to the Transport + ExpMap steps 
-        # for rotationally symmetric noise.
-        noise_manifold = self.manifold.expmap_0(noise_t0)
-        z_aug = self.manifold.addition(z, noise_manifold)
-        
-        return z_aug
 
 
 class FeatureScaling(torch.nn.Module):
@@ -736,4 +700,3 @@ class FeatureScaling(torch.nn.Module):
         normalized_scale = torch.nn.functional.sigmoid(self.scale) * self.max_scale
         x = normalized_scale * x
         return x, normalized_scale
-

@@ -16,7 +16,11 @@ class BYOLTransform:
     """
 
     def __init__(
-        self, dataset_name: str, normalize_fn: transforms.Normalize, resize: int = 32, precision: torch.dtype = torch.float32
+        self,
+        dataset_name: str,
+        normalize_fn: transforms.Normalize,
+        resize: int = 32,
+        precision: torch.dtype = torch.float32,
     ):
         if dataset_name == "imagenet":
             gaussian_blur = [

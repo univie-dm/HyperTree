@@ -154,6 +154,7 @@ class HyperbolicHCModel(AbstractModel):
             )
 
         if use_seperate_heads:
+            print("Using separate cluster head with hyperbolic manifold.")
             if isinstance(self.manifold, Euclidean):
                 self.cluster_head = nn.Linear(
                     self.encoder[-1].out_features,  # type: ignore
@@ -171,30 +172,33 @@ class HyperbolicHCModel(AbstractModel):
                     learnable_scale=self.learnable_scale,
                     FHCNN_normalize=self.FHCNN_normalize,
                 )
+                self.cluster_head.load_state_dict(
+                    ae_model.hyperbolic_encoding_layer.state_dict()
+                )
 
     def configure_optimizers(self) -> Any:
         if self.optimizer_name == "RiemannianAdam":
             optimizer = RiemannianAdam(
-                [{"params": self.cluster_head.parameters()}, {"params": self.encoder.parameters(), "lr": 1e-5}],
+                self.parameters(),
                 lr=self.learning_rate,
                 weight_decay=self.weight_decay,
             )
         elif self.optimizer_name == "RiemannianSGD":
             optimizer = RiemannianSGD(
-                [{"params": self.cluster_head.parameters()}, {"params": self.encoder.parameters(), "lr": 1e-5}],
+                self.parameters(),
                 lr=self.learning_rate,
                 weight_decay=self.weight_decay,
                 momentum=0.9,
             )
         elif self.optimizer_name == "Adam":
             optimizer = AdamW(
-                [{"params": self.cluster_head.parameters()}, {"params": self.encoder.parameters(), "lr": 1e-5}],
+                self.parameters(),
                 lr=self.learning_rate,
                 weight_decay=self.weight_decay,
             )
         elif self.optimizer_name == "SGD":
             optimizer = SGD(
-                [{"params": self.cluster_head.parameters()}, {"params": self.encoder.parameters(), "lr": 1e-5}],
+                self.parameters(),
                 lr=self.learning_rate,
                 weight_decay=self.weight_decay,
                 momentum=0.9,
@@ -287,7 +291,9 @@ class HyperbolicHCModel(AbstractModel):
             for anker in anker_points:
                 sorted_indices = torch.argsort(dists[anker])
                 # Exclude the anker point itself
-                nn_idx = sorted_indices[1 : min( self.hyphc_num_nn + 1, sorted_indices.shape[0] )]
+                nn_idx = sorted_indices[
+                    1 : min(self.hyphc_num_nn + 1, sorted_indices.shape[0])
+                ]
                 random_nn_1 = torch.randint(0, nn_idx.shape[0], (1,), device=device)
                 random_nn_2 = torch.randint(0, nn_idx.shape[0], (1,), device=device)
                 while random_nn_2 == random_nn_1:
@@ -357,7 +363,9 @@ class HyperbolicHCModel(AbstractModel):
             indices = indices[:, batch_size:]
         return lcas
 
-    def compute_contrastive_lca(self, x: torch.Tensor, x_aug1: torch.Tensor, x_aug2: torch.Tensor) -> torch.Tensor:
+    def compute_contrastive_lca(
+        self, x: torch.Tensor, x_aug1: torch.Tensor, x_aug2: torch.Tensor
+    ) -> torch.Tensor:
         # Fréchet center x_aug1 & x_aug2 points around x
         x_aug1 = frechet_center_data(x_aug1, x, self.manifold)
         x_aug2 = frechet_center_data(x_aug2, x, self.manifold)
@@ -369,12 +377,16 @@ class HyperbolicHCModel(AbstractModel):
             x_aug1_2 = x_aug1.pow(2).sum(dim=-1, keepdim=True)
             x_aug2_2 = x_aug2.pow(2).sum(dim=-1, keepdim=True)
 
-            denom = (2 * self.manifold.c * (x_aug1_2 * x_aug2_2 - x_aug_inner**2)).clamp(min=1e-15)
+            denom = (
+                2 * self.manifold.c * (x_aug1_2 * x_aug2_2 - x_aug_inner**2)
+            ).clamp(min=1e-15)
             alpha = (
-                (1 + self.manifold.c * x_aug1_2) * x_aug2_2 - (1 + self.manifold.c * x_aug2_2) * x_aug_inner
+                (1 + self.manifold.c * x_aug1_2) * x_aug2_2
+                - (1 + self.manifold.c * x_aug2_2) * x_aug_inner
             ) / denom
             beta = (
-                (1 + self.manifold.c * x_aug2_2) * x_aug1_2 - (1 + self.manifold.c * x_aug1_2) * x_aug_inner
+                (1 + self.manifold.c * x_aug2_2) * x_aug1_2
+                - (1 + self.manifold.c * x_aug1_2) * x_aug_inner
             ) / denom
             z = alpha * x_aug1 + beta * x_aug2
 
@@ -399,7 +411,11 @@ class HyperbolicHCModel(AbstractModel):
         device = embeddings.device
 
         # Sample triplets
-        sampled_indices, np_sampled_triplet_indices = self.sample_triplets(n, device, points=embeddings if self.hyphc_sampling_strategy=="nn" else None)
+        sampled_indices, np_sampled_triplet_indices = self.sample_triplets(
+            n,
+            device,
+            points=embeddings if self.hyphc_sampling_strategy == "nn" else None,
+        )
         # Compute the pairwise distances
         if self.distances_type == "geodesic":
             distances = compute_pairwise_distances(
@@ -549,34 +565,33 @@ class HyperbolicHCModel(AbstractModel):
             return torch.zeros_like(x), manifold_z, cluster_z
         x_recon = self.decode(manifold_z)
         return x_recon, manifold_z, cluster_z
-    
 
     def compute_contrastive_triplet_loss(
-        self, 
-        anchor: torch.Tensor, 
-        positive: torch.Tensor, 
-        negative: torch.Tensor | None = None
+        self,
+        anchor: torch.Tensor,
+        positive: torch.Tensor,
+        negative: torch.Tensor | None = None,
     ) -> torch.Tensor:
-
         d_pos = self.manifold.dist(anchor, positive)
 
         dists_matrix = compute_pairwise_distances(anchor, self.manifold)
-        
+
         eye = torch.eye(dists_matrix.size(0), device=dists_matrix.device)
-        dists_matrix = dists_matrix + eye * 1e9 
+        dists_matrix = dists_matrix + eye * 1e9
 
         d_neg, _ = dists_matrix.min(dim=1)
 
         loss = torch.clamp(d_pos - d_neg + self.triplet_margin, min=0.0)
-        
-        return loss.mean()
-    
-    def compute_radius_hierarchy_loss(self, parent_z: torch.Tensor, child_z: torch.Tensor) -> torch.Tensor:
 
+        return loss.mean()
+
+    def compute_radius_hierarchy_loss(
+        self, parent_z: torch.Tensor, child_z: torch.Tensor
+    ) -> torch.Tensor:
         d_parent = self.manifold.dist_0(parent_z)
         d_child = self.manifold.dist_0(child_z)
         loss = torch.clamp(d_parent - d_child + self.hierarchy_margin, min=0.0)
-        
+
         return loss.mean()
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
@@ -599,14 +614,12 @@ class HyperbolicHCModel(AbstractModel):
         _, cluster_z_aug_1 = self.encode(x_aug_1)
         _, cluster_z_aug_2 = self.encode(x_aug_2)
         if self.lca_version == "contrastive_lca":
-
             triplet_loss_val = self.compute_contrastive_triplet_loss(
-                anchor=cluster_z_x,
-                positive=cluster_z_aug_1
+                anchor=cluster_z_x, positive=cluster_z_aug_1
             )
             dist_to_center = self.manifold.dist_0(cluster_z_x).mean()
 
-            #triplet_loss_val += dist_to_center * 0.01 
+            # triplet_loss_val += dist_to_center * 0.01
             self.metrics.setdefault("clustering/dist_to_center", []).append(
                 dist_to_center.detach().item()
             )
@@ -617,11 +630,12 @@ class HyperbolicHCModel(AbstractModel):
 
             hierarchy_loss = torch.tensor(0.0, device=self.device)
 
-            #h_loss_1 = self.compute_radius_hierarchy_loss(parent_z=cluster_z_aug_1, child_z=cluster_z_x)
-            h_loss_2 = self.compute_radius_hierarchy_loss(parent_z=cluster_z_aug_1, child_z=cluster_z_aug_2)
-            
-            hierarchy_loss = h_loss_2 #(h_loss_1 + h_loss_2) / 2
-            
+            # h_loss_1 = self.compute_radius_hierarchy_loss(parent_z=cluster_z_aug_1, child_z=cluster_z_x)
+            h_loss_2 = self.compute_radius_hierarchy_loss(
+                parent_z=cluster_z_aug_1, child_z=cluster_z_aug_2
+            )
+
+            hierarchy_loss = h_loss_2  # (h_loss_1 + h_loss_2) / 2
 
             self.metrics.setdefault("clustering/hierarchy_loss", []).append(
                 hierarchy_loss.detach().item()
@@ -631,20 +645,25 @@ class HyperbolicHCModel(AbstractModel):
                 x_0 = x[0].detach().clone()
                 x_aug_1_0 = x_aug_1[0].detach().clone()
                 x_aug_2_0 = x_aug_2[0].detach().clone()
-                
+
                 # Normalize each image to [0, 1] range
                 x_0 = (x_0 - x_0.min()) / (x_0.max() - x_0.min()).clamp(min=1e-8)
-                x_aug_1_0 = (x_aug_1_0 - x_aug_1_0.min()) / (x_aug_1_0.max() - x_aug_1_0.min()).clamp(min=1e-8)
-                x_aug_2_0 = (x_aug_2_0 - x_aug_2_0.min()) / (x_aug_2_0.max() - x_aug_2_0.min()).clamp(min=1e-8)
-                
-                images = torch.cat([x_0, x_aug_1_0, x_aug_2_0], dim=1) * 255
-                self.metrics["clustering/input_augmentations"] = wandb.Image(images.to(dtype=torch.uint8))
-            
+                x_aug_1_0 = (x_aug_1_0 - x_aug_1_0.min()) / (
+                    x_aug_1_0.max() - x_aug_1_0.min()
+                ).clamp(min=1e-8)
+                x_aug_2_0 = (x_aug_2_0 - x_aug_2_0.min()) / (
+                    x_aug_2_0.max() - x_aug_2_0.min()
+                ).clamp(min=1e-8)
 
-            triplet_loss = triplet_loss_val # Zum Loggen
+                images = torch.cat([x_0, x_aug_1_0, x_aug_2_0], dim=1) * 255
+                self.metrics["clustering/input_augmentations"] = wandb.Image(
+                    images.to(dtype=torch.uint8)
+                )
+
+            triplet_loss = triplet_loss_val  # Zum Loggen
             similarties_sum = torch.zeros_like(triplet_loss_val)
             normalized_loss = triplet_loss_val
-            
+
             # dists = self.compute_contrastive_lca(cluster_z, cluster_z_aug_1, cluster_z_aug_2)
             # standard_hyphc_loss += dists
         else:

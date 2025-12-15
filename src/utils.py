@@ -1,4 +1,3 @@
-from matplotlib.pyplot import cla
 import omegaconf
 import os
 import torch
@@ -254,6 +253,7 @@ def get_clustering_model(
         hierarchy_margin=cfg.hyphc.hierarchy_margin,
         triplet_margin=cfg.hyphc.triplet_margin,
         hyphc_num_nn=cfg.hyphc.num_nn,
+        use_seperate_heads=cfg.architecture.use_seperate_heads,
     )
     return model
 

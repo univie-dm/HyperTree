@@ -172,14 +172,16 @@ class HyperbolicResNet(AbstractModel):
 
         # Modify encoder for CIFAR-10/100 (32x32 images)
         if self.output_size == 32:
-            print("Modifying ResNet encoder for CIFAR-10/100 (32x32 images).", flush=True)
+            print(
+                "Modifying ResNet encoder for CIFAR-10/100 (32x32 images).", flush=True
+            )
             self.encoder.conv1 = nn.Conv2d(
                 3, 64, kernel_size=3, stride=1, padding=1, bias=False
             )
             self.encoder.maxpool = nn.Identity()
-        
+
         in_features = self.encoder.fc.in_features
-        
+
         self.encoder.fc = nn.Identity()
 
         # Build projection head layers progressively
@@ -295,7 +297,6 @@ class HyperbolicResNet(AbstractModel):
             self.decoder = None
             self.hyperbolic_decoding_layer = None
 
-
     def _make_decoder_layer(
         self, planes: int, blocks: int, scale: float = 1
     ) -> nn.Sequential:
@@ -358,7 +359,7 @@ class HyperbolicResNet(AbstractModel):
             else:
                 z_x = self.encode(x)
                 z_aug_2 = self.encode(x_aug_1)
-                #z_aug_2 = self.augment_hyperbolic_features(self.encode(x))
+                # z_aug_2 = self.augment_hyperbolic_features(self.encode(x))
 
             if not torch.isfinite(z_x).all() or not torch.isfinite(z_aug_2).all():
                 raise ValueError(
