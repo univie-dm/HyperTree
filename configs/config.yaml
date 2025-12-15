@@ -73,8 +73,9 @@ hyphc:
 ## Model architecture
 architecture:
   ae_type: 'feedforward' # 'feedforward', 'convolutional', 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152'
-  hidden_dims: [512, 256]
-  projection_head: [512, 256]
+  hidden_dims: [512, 256, 128, 64, 16]
+  projection_head: [512, 256, 128, 64, 16]
+  use_seperate_heads: True
   cluster_dim: 4
   feature_scaling: True
   latent_dim: 10 # Hyperboloid automatically uses latent_dim + 1, i.e. latent_dim actually refers to the dimension of the hyperbolic manifold

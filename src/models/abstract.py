@@ -13,6 +13,7 @@ from pytorch_lightning.loggers import WandbLogger
 from src.evaluation import evaluation
 from src.hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
 from torch.optim import AdamW, SGD
+from src.hyperbolic_math.src.optim.riemannian_adam import RiemannianAdam
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 
 
@@ -161,8 +162,8 @@ class AbstractModel(pl.LightningModule):
             )
             # Clamp distances to prevent numerical instability
             distance_matrix = distance_matrix.clamp(max=1e5)  # Prevent overflow in exp
-            similarity_matrix = -torch.log(1+distance_matrix) / temperature  # Convert to similarity
-            #similarity_matrix = -distance_matrix / temperature
+            #similarity_matrix = -torch.log(1+distance_matrix) / temperature  # Convert to similarity
+            similarity_matrix = -distance_matrix / temperature
             #similarity_matrix = torch.reciprocal(1+ distance_matrix) / temperature
         else:
             raise ValueError(f"Invalid distances_type: {self.distances_type}")
@@ -192,13 +193,26 @@ class AbstractModel(pl.LightningModule):
 
     def configure_optimizers(self) -> Any:
         if self.optimizer_name == "RiemannianAdam":
-            optimizer = AdamW(
+            optimizer = RiemannianAdam(
                 filter(lambda p: p.requires_grad, self.parameters()),
                 lr=self.learning_rate,
                 eps=5e-4,
                 weight_decay=self.weight_decay,
             )
         elif self.optimizer_name == "RiemannianSGD":
+            optimizer = SGD(
+                filter(lambda p: p.requires_grad, self.parameters()),
+                lr=self.learning_rate,
+                momentum=0.9,
+                weight_decay=self.weight_decay,
+            )
+        elif self.optimizer_name == "Adam":
+            optimizer = AdamW(
+                filter(lambda p: p.requires_grad, self.parameters()),
+                lr=self.learning_rate,
+                weight_decay=self.weight_decay,
+            )
+        elif self.optimizer_name == "SGD":
             optimizer = SGD(
                 filter(lambda p: p.requires_grad, self.parameters()),
                 lr=self.learning_rate,

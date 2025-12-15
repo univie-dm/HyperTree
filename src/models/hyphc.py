@@ -11,7 +11,8 @@ import wandb
 
 from src.hyperbolic_math.src.utils.horo_pca import frechet_center_data
 from src.hyperbolic_math.src.manifolds import Euclidean, PoincareBall
-from torch.optim import AdamW
+from torch.optim import AdamW, SGD
+from src.hyperbolic_math.src.optim import RiemannianAdam, RiemannianSGD
 from src.models.abstract import AbstractModel
 from src.models.resnet import HyperbolicResNet
 from src.models.utils import (
@@ -56,6 +57,7 @@ class HyperbolicHCModel(AbstractModel):
         recon_weight: float = 1.0,
         cluster_dim: int | None = None,
         hyphc_num_nn: int = 10,
+        use_seperate_heads: bool = False,
     ):
         super().__init__(
             model_type=ae_model.model_type,
@@ -102,6 +104,7 @@ class HyperbolicHCModel(AbstractModel):
         self.byol = byol
         self.recon_weight = recon_weight
         self.hyphc_num_nn = hyphc_num_nn
+        self.use_seperate_heads = use_seperate_heads
         if cluster_dim is None:
             self.cluster_dim = self.latent_dim
         else:
@@ -150,30 +153,54 @@ class HyperbolicHCModel(AbstractModel):
                 "hyphc_start_weight must be less than or equal to hyphc_end_weight."
             )
 
-        if isinstance(self.manifold, Euclidean):
-            self.cluster_head = nn.Linear(
-                self.encoder[-1].out_features,  # type: ignore
-                self.cluster_dim,
-            )
-        else:
-            self.cluster_head = get_hyperbolic_encoding_layer_by_name(
-                layer_name=str(self.hyperbolic_encoding),
-                manifold=self.manifold,
-                input_dim=self.encoder[-1].out_features,  # type: ignore
-                output_dim=self.cluster_dim,
-                params_dtype=self.params_dtype,
-                clamping_factor=self.clamping_factor,
-                smoothing_factor=self.smoothing_factor,
-                learnable_scale=self.learnable_scale,
-                FHCNN_normalize=self.FHCNN_normalize,
-            )
+        if use_seperate_heads:
+            if isinstance(self.manifold, Euclidean):
+                self.cluster_head = nn.Linear(
+                    self.encoder[-1].out_features,  # type: ignore
+                    self.cluster_dim,
+                )
+            else:
+                self.cluster_head = get_hyperbolic_encoding_layer_by_name(
+                    layer_name=str(self.hyperbolic_encoding),
+                    manifold=self.manifold,
+                    input_dim=self.encoder[-1].out_features,  # type: ignore
+                    output_dim=self.cluster_dim,
+                    params_dtype=self.params_dtype,
+                    clamping_factor=self.clamping_factor,
+                    smoothing_factor=self.smoothing_factor,
+                    learnable_scale=self.learnable_scale,
+                    FHCNN_normalize=self.FHCNN_normalize,
+                )
 
     def configure_optimizers(self) -> Any:
-        optimizer = AdamW(
-            [{"params": self.cluster_head.parameters()}, {"params": self.encoder.parameters(), "lr": 1e-5}],
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay,
-        )
+        if self.optimizer_name == "RiemannianAdam":
+            optimizer = RiemannianAdam(
+                [{"params": self.cluster_head.parameters()}, {"params": self.encoder.parameters(), "lr": 1e-5}],
+                lr=self.learning_rate,
+                weight_decay=self.weight_decay,
+            )
+        elif self.optimizer_name == "RiemannianSGD":
+            optimizer = RiemannianSGD(
+                [{"params": self.cluster_head.parameters()}, {"params": self.encoder.parameters(), "lr": 1e-5}],
+                lr=self.learning_rate,
+                weight_decay=self.weight_decay,
+                momentum=0.9,
+            )
+        elif self.optimizer_name == "Adam":
+            optimizer = AdamW(
+                [{"params": self.cluster_head.parameters()}, {"params": self.encoder.parameters(), "lr": 1e-5}],
+                lr=self.learning_rate,
+                weight_decay=self.weight_decay,
+            )
+        elif self.optimizer_name == "SGD":
+            optimizer = SGD(
+                [{"params": self.cluster_head.parameters()}, {"params": self.encoder.parameters(), "lr": 1e-5}],
+                lr=self.learning_rate,
+                weight_decay=self.weight_decay,
+                momentum=0.9,
+            )
+        else:
+            raise ValueError(f"Invalid optimizer name: {self.optimizer_name}")
 
         if self.lr_scheduler_params is not None:
             if self.lr_scheduler_params["type"] is None:
@@ -483,7 +510,10 @@ class HyperbolicHCModel(AbstractModel):
             )
 
         manifold_z = self.hyperbolic_encoding_layer(hidden)  # type: ignore
-        cluster_z = self.cluster_head(hidden)
+        if self.use_seperate_heads:
+            cluster_z = self.cluster_head(hidden)
+        else:
+            cluster_z = manifold_z
         return manifold_z, cluster_z
 
     def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
@@ -565,12 +595,10 @@ class HyperbolicHCModel(AbstractModel):
 
         hierarchy_loss = None
         # HypHC loss
+        _, cluster_z_x = self.encode(x)
+        _, cluster_z_aug_1 = self.encode(x_aug_1)
+        _, cluster_z_aug_2 = self.encode(x_aug_2)
         if self.lca_version == "contrastive_lca":
-
-            _, cluster_z_x = self.encode(x)
-            _, cluster_z_aug_1 = self.encode(x_aug_1)
-            _, cluster_z_aug_2 = self.encode(x_aug_2)
-            
 
             triplet_loss_val = self.compute_contrastive_triplet_loss(
                 anchor=cluster_z_x,
@@ -642,17 +670,8 @@ class HyperbolicHCModel(AbstractModel):
             hyphc_loss = hyphc_loss + hierarchy_loss * self.hierarchy_weight
         total_loss = recon_loss * self.recon_weight + hyphc_loss * hyphc_loss_weight
 
-        ic(hyphc_loss, standard_hyphc_loss, normalized_loss, triplet_loss, similarties_sum, recon_loss, total_loss)
-
         if self.contrastive_enabled:
             # Encode both augmented views to get their hyperbolic embeddings
-
-            self.metrics.setdefault("clustering/x_xaug_1_dist", []).append(
-                cluster_z_x.dist(cluster_z_aug_1).mean().detach().item()
-            )
-            self.metrics.setdefault("clustering/x_xaug_2_dist", []).append(
-                cluster_z_x.dist(cluster_z_aug_2).mean().detach().item()
-            )
 
             if self.byol:
                 proj1 = cluster_z_aug_1
