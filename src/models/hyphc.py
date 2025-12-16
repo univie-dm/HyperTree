@@ -606,13 +606,31 @@ class HyperbolicHCModel(AbstractModel):
         else:
             recon_loss = 0.0
             x_recon = torch.zeros_like(x)
-            manifold_z, cluster_z = self.encode(x)
 
-        hierarchy_loss = None
         # HypHC loss
         _, cluster_z_x = self.encode(x)
         _, cluster_z_aug_1 = self.encode(x_aug_1)
         _, cluster_z_aug_2 = self.encode(x_aug_2)
+
+
+        h_loss_inner = self.compute_radius_hierarchy_loss(
+            parent_z=cluster_z_aug_2,
+            child_z=cluster_z_aug_1
+        )
+
+
+        h_loss_outer = self.compute_radius_hierarchy_loss(
+            parent_z=cluster_z_aug_1,
+            child_z=cluster_z_x
+        )
+
+
+        hierarchy_loss = (h_loss_inner + h_loss_outer) / 2
+        
+        self.metrics.setdefault("clustering/hierarchy_loss", []).append(
+            hierarchy_loss.detach().item()
+        )
+
         if self.lca_version == "contrastive_lca":
             triplet_loss_val = self.compute_contrastive_triplet_loss(
                 anchor=cluster_z_x, positive=cluster_z_aug_1
@@ -628,18 +646,6 @@ class HyperbolicHCModel(AbstractModel):
             # triplet_loss_val = (triplet_loss_val + triplet_loss_x) / 2
             standard_hyphc_loss = triplet_loss_val
 
-            hierarchy_loss = torch.tensor(0.0, device=self.device)
-
-            # h_loss_1 = self.compute_radius_hierarchy_loss(parent_z=cluster_z_aug_1, child_z=cluster_z_x)
-            h_loss_2 = self.compute_radius_hierarchy_loss(
-                parent_z=cluster_z_aug_1, child_z=cluster_z_aug_2
-            )
-
-            hierarchy_loss = h_loss_2  # (h_loss_1 + h_loss_2) / 2
-
-            self.metrics.setdefault("clustering/hierarchy_loss", []).append(
-                hierarchy_loss.detach().item()
-            )
 
             if batch_idx == 0:
                 x_0 = x[0].detach().clone()
@@ -668,7 +674,7 @@ class HyperbolicHCModel(AbstractModel):
             # standard_hyphc_loss += dists
         else:
             standard_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = (
-                self.compute_hyphc_loss(cluster_z)
+                self.compute_hyphc_loss(cluster_z_x)
             )
 
         if self.normalized_hyphc_loss:
@@ -696,7 +702,7 @@ class HyperbolicHCModel(AbstractModel):
                 proj1 = cluster_z_aug_1
                 proj2 = cluster_z_aug_2
             else:
-                proj1 = manifold_z
+                proj1 = cluster_z_x
                 proj2 = cluster_z_aug_1
             contrastive_loss = self.compute_contrastive_loss(
                 proj1,
@@ -739,19 +745,19 @@ class HyperbolicHCModel(AbstractModel):
         if isinstance(self.manifold.c, torch.Tensor):
             self.metrics.setdefault("clustering/c", []).append(self.manifold.c.item())
         self.metrics.setdefault("latent_space/mean", []).append(
-            manifold_z.mean().detach().item()
+            cluster_z_x.mean().detach().item()
         )
         self.metrics.setdefault("latent_space/std", []).append(
-            manifold_z.std().detach().item()
+            cluster_z_x.std().detach().item()
         )
         self.metrics.setdefault("latent_space/max", []).append(
-            manifold_z.max().detach().item()
+            cluster_z_x.max().detach().item()
         )
         self.metrics.setdefault("latent_space/min", []).append(
-            manifold_z.min().detach().item()
+            cluster_z_x.min().detach().item()
         )
         self.metrics.setdefault("latent_space/norm_mean", []).append(
-            manifold_z.norm(p=2, dim=-1).mean().detach().item()
+            cluster_z_x.norm(p=2, dim=-1).mean().detach().item()
         )
 
         self.metrics["clustering/hyphc_loss_weight"] = hyphc_loss_weight

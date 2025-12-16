@@ -73,8 +73,8 @@ hyphc:
 ## Model architecture
 architecture:
   ae_type: 'feedforward' # 'feedforward', 'convolutional', 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152'
-  hidden_dims: [512, 256, 128, 64, 16]
-  projection_head: [512, 256, 128, 64, 16]
+  hidden_dims: [512, 256, 128]
+  projection_head: [512, 256, 128]
   use_seperate_heads: True
   cluster_dim: 4
   feature_scaling: True
