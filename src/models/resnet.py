@@ -82,7 +82,7 @@ class HyperbolicResNet(AbstractModel):
         trainable_curvature: bool = False,
         hyperbolic_decoding: str = "Log_EuclideanLinear",
         output_size: int = 32,
-        optimizer_name: str = "RiemannianAdam",
+        optimizer_name: str = "Adam",
         learning_rate: float = 1e-3,
         log_interval: int = 5,
         stage: str = "pretrain",
@@ -94,7 +94,6 @@ class HyperbolicResNet(AbstractModel):
         distances_type: str = "geodesic",
         learnable_scale: bool = False,
         normalize: bool = False,
-        distances_version: str = "mobius_direct",
         contrastive_enabled: bool = False,
         contrastive_weight: float = 0.5,
         contrastive_temperature: float = 0.1,
@@ -123,7 +122,6 @@ class HyperbolicResNet(AbstractModel):
             evaluation_metrics=evaluation_metrics,
             activation_function=activation_function,
             distances_type=distances_type,
-            distances_version=distances_version,
             lr_scheduler_params=lr_scheduler_params,
             clamping_factor=clamping_factor,
             smoothing_factor=smoothing_factor,
@@ -199,7 +197,6 @@ class HyperbolicResNet(AbstractModel):
 
         if self.euclidean_latentspace:
             self.manifold = Euclidean()
-            self.manifold_name = "Euclidean"
 
         self.encoder = nn.Sequential(self.encoder, *projection_layers[:-2])
         self.rms = nn.RMSNorm(current_dim, elementwise_affine=False)
@@ -317,9 +314,10 @@ class HyperbolicResNet(AbstractModel):
         hidden = self.rms(hidden)
         if self.feature_scaling and not isinstance(self.manifold, Euclidean):
             hidden, scaler = self.feature_scaling_layer(hidden)
-            self.metrics.setdefault("pretrain/feature_scale", []).append(
-                scaler.detach().item()
-            )
+            if self.feature_scaling_layer.version == "scalar":
+                self.metrics.setdefault("pretrain/feature_scale", []).append(
+                    scaler.detach().item()
+                )
         manifold_z = self.hyperbolic_encoding_layer(hidden)
         return manifold_z
 
@@ -373,7 +371,7 @@ class HyperbolicResNet(AbstractModel):
                 use_euclidean=False,
             )
             loss = self.recon_weight * loss + self.contrastive_weight * contrastive_loss
-            dist_to_center = self.manifold.dist_0(z_x).mean()
+            dist_to_center = self.manifold.dist_0(z_x, version=self.distances_version).mean()
             loss = loss + dist_to_center * 0.01  # Regularization term
             self.metrics.setdefault("pretrain/dist_to_center", []).append(
                 dist_to_center.detach().item()

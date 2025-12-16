@@ -26,7 +26,7 @@ class HyperbolicAE(AbstractModel):
         curvature_magnitude: float = 1.0,
         trainable_curvature: bool = False,
         hyperbolic_decoding: str = "Log_EuclideanLinear",
-        optimizer_name: str = "RiemannianAdam",
+        optimizer_name: str = "Adam",
         learning_rate: float = 1e-3,
         log_interval: int = 5,
         distances_type: str = "geodesic",
@@ -38,7 +38,6 @@ class HyperbolicAE(AbstractModel):
         smoothing_factor: float = 50.0,
         learnable_scale: bool = False,
         FHCNN_normalize: bool = False,
-        distances_version: str = "mobius_direct",
         spectral_normalization: bool = False,
         lr_scheduler_params: dict | None = None,
     ):
@@ -60,7 +59,6 @@ class HyperbolicAE(AbstractModel):
             evaluation_metrics=evaluation_metrics,
             activation_function=activation_function,
             distances_type=distances_type,
-            distances_version=distances_version,
             lr_scheduler_params=lr_scheduler_params,
         )
         self.input_dim = input_dim

@@ -5,7 +5,6 @@ import torch.nn as nn
 from typing import Dict, Union
 from src.hyperbolic_math.src.manifolds import Manifold, Hyperboloid, PoincareBall
 from src.hyperbolic_math.src.nn_layers import (
-    HyperbolicLinearPoincare,
     HyperbolicLinearPoincarePP,
     HyperbolicLinearHyperboloid,
     HyperbolicLinearHyperboloidFHNN,
@@ -69,7 +68,7 @@ def get_hyperbolic_encoding_layer_by_name(
     smoothing_factor: float = 50.0,
     learnable_scale: bool = False,
     FHCNN_normalize: bool = True,
-) -> Union[nn.Sequential, HyperbolicLinearPoincare, HyperbolicLinearPoincarePP]:
+) -> Union[nn.Sequential, HyperbolicLinearPoincarePP]:
     if layer_name == "EuclideanLinear_Exp":
         layer = nn.Sequential(
             nn.Linear(input_dim, output_dim),
@@ -118,14 +117,6 @@ def get_hyperbolic_encoding_layer_by_name(
             ),
         )
     # PoincareBall layers
-    elif layer_name == "HyperbolicLinear" and isinstance(manifold, PoincareBall):
-        layer = HyperbolicLinearPoincare(
-            manifold=manifold,
-            input_dim=input_dim,
-            output_dim=output_dim,
-            params_dtype=params_dtype,
-            input_space="tangent",
-        )
     elif layer_name == "HyperbolicLinearPP" and isinstance(manifold, PoincareBall):
         layer = HyperbolicLinearPoincarePP(
             manifold=manifold,
@@ -137,12 +128,12 @@ def get_hyperbolic_encoding_layer_by_name(
             smoothing_factor=smoothing_factor,
         )
         weight = torch.randn((output_dim, input_dim), dtype=layer.params_dtype)
-        weight = nn.init.normal_(weight, mean=0.0, std=(1.0 / np.sqrt(weight.size(1))))
+        weight = nn.init.normal_(weight, mean=0.0, std=(1.0/np.sqrt(weight.size(1))))
         layer.weight = torch.nn.Parameter(weight, requires_grad=True)
     else:
         raise ValueError(
             f"Unknown hyperbolic layer name: {layer_name}. "
-            "Available options are: 'EuclideanLinear_Exp', 'HyperbolicLinear', "
+            "Available options are: 'EuclideanLinear_Exp', "
             "'HyperbolicLinearHyperboloidFHNN', 'HyperbolicLinearHyperboloidFHCNN', 'HyperbolicLinearPP'."
         )
     return layer
@@ -233,19 +224,6 @@ def get_hyperbolic_decoding_layer_by_name(
             activation_function,
         )
     # PoincareBall layers
-    elif layer_name == "HyperbolicLinear_Log" and isinstance(manifold, PoincareBall):
-        layer = nn.Sequential(
-            HyperbolicLinearPoincare(
-                manifold=manifold,
-                input_dim=input_dim,
-                output_dim=output_dim,
-                params_dtype=params_dtype,
-                input_space="manifold",
-            ),
-            Logmap_0(manifold=manifold),
-            nn.BatchNorm1d(output_dim),
-            activation_function,
-        )
     elif layer_name == "HyperbolicLinearPP_Log" and isinstance(manifold, PoincareBall):
         layer = nn.Sequential(
             HyperbolicLinearPoincarePP(
@@ -292,7 +270,7 @@ def get_hyperbolic_decoding_layer_by_name(
     else:
         raise ValueError(
             f"Unknown hyperbolic layer name: {layer_name}. "
-            "Available options are: 'Log_EuclideanLinear', 'HyperbolicLinear_Log', "
+            "Available options are: 'Log_EuclideanLinear', "
             "'HyperbolicLinearHyperboloidFHNN_Log', 'HyperbolicLinearHyperboloidFHCNN_Log', "
             "'HyperbolicLinearPP_Log', 'HyperbolicRegression', 'HyperbolicRegressionPP'."
         )

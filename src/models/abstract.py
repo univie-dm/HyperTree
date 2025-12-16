@@ -11,9 +11,8 @@ from pytorch_lightning.loggers import WandbLogger
 
 from src.evaluation import evaluation
 from src.hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
-from torch.optim import AdamW, SGD
-from src.hyperbolic_math.src.optim.riemannian_adam import RiemannianAdam
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
+from src.hyperbolic_math.src.utils.math_utils import atanh
 
 
 class AbstractModel(pl.LightningModule):
@@ -28,7 +27,7 @@ class AbstractModel(pl.LightningModule):
         curvature_magnitude: float | torch.Tensor = 1.0,
         trainable_curvature: bool = False,
         hyperbolic_decoding: str | None = None,
-        optimizer_name: str = "RiemannianAdam",
+        optimizer_name: str = "Adam",
         learning_rate: float = 1e-3,
         weight_decay: float = 0.0,
         log_interval: int = 5,
@@ -37,7 +36,6 @@ class AbstractModel(pl.LightningModule):
         distances_type: str = "geodesic",
         evaluation_metrics: dict[str, bool] = {},
         activation_function: str = "relu",
-        distances_version: str = "mobius_direct",
         lr_scheduler_params: dict | None = None,
         clamping_factor: float = 1.0,
         smoothing_factor: float = 50.0,
@@ -51,7 +49,6 @@ class AbstractModel(pl.LightningModule):
         self.params_dtype = params_dtype
         self.latent_dim = latent_dim
         self.manifold_name = manifold_name
-        self.distances_version = distances_version
         self.clamping_factor = clamping_factor
         self.smoothing_factor = smoothing_factor
         self.learnable_scale = learnable_scale
@@ -70,10 +67,12 @@ class AbstractModel(pl.LightningModule):
             self.manifold = Hyperboloid(
                 c=c_tensor, trainable_c=trainable_curvature, dtype=manifold_precision
             )
+            self.distances_version = "smoothened"
         elif manifold_name == "PoincareBall":
             self.manifold = PoincareBall(
                 c=c_tensor, trainable_c=trainable_curvature, dtype=manifold_precision
             )
+            self.distances_version = "default"
         else:
             raise ValueError(f"Invalid manifold name: {manifold_name}")
 
@@ -91,7 +90,6 @@ class AbstractModel(pl.LightningModule):
         self.orginal_input_shape = None
         # Evaluation & Logging
         self.metrics = {}
-        self.euclidean_manifold = Euclidean()
         self.old_nmi = 0
         self.old_ari = 0
         self.distances_type = distances_type
@@ -159,11 +157,7 @@ class AbstractModel(pl.LightningModule):
             distance_matrix = compute_pairwise_distances(
                 z, self.manifold, version=self.distances_version
             )
-            # Clamp distances to prevent numerical instability
-            # distance_matrix = distance_matrix.clamp(max=1e5)  # Prevent overflow in exp
-            # similarity_matrix = -torch.log(1+distance_matrix) / temperature  # Convert to similarity
             similarity_matrix = -distance_matrix / temperature
-            # similarity_matrix = torch.reciprocal(1+ distance_matrix) / temperature
         else:
             raise ValueError(f"Invalid distances_type: {self.distances_type}")
 
@@ -182,38 +176,22 @@ class AbstractModel(pl.LightningModule):
         mask = torch.eye(2 * batch_size, dtype=torch.bool, device=z.device)
         similarity_matrix = similarity_matrix.masked_fill(mask, float("-inf"))
 
-        # Compute log-softmax
-        log_prob = torch.nn.functional.log_softmax(similarity_matrix, dim=1)
-
         # Compute loss
-        loss = -log_prob[torch.arange(2 * batch_size, device=z.device), labels].mean()
+        loss = torch.nn.functional.cross_entropy(similarity_matrix, labels)
 
         return loss
 
     def configure_optimizers(self) -> Any:
-        if self.optimizer_name == "RiemannianAdam":
-            optimizer = RiemannianAdam(
-                filter(lambda p: p.requires_grad, self.parameters()),
+        if self.optimizer_name == "Adam":
+            optimizer = torch.optim.Adam(
+                self.parameters(),
                 lr=self.learning_rate,
-                eps=5e-4,
-                weight_decay=self.weight_decay,
-            )
-        elif self.optimizer_name == "RiemannianSGD":
-            optimizer = SGD(
-                filter(lambda p: p.requires_grad, self.parameters()),
-                lr=self.learning_rate,
-                momentum=0.9,
-                weight_decay=self.weight_decay,
-            )
-        elif self.optimizer_name == "Adam":
-            optimizer = AdamW(
-                filter(lambda p: p.requires_grad, self.parameters()),
-                lr=self.learning_rate,
+                eps=1e-5,
                 weight_decay=self.weight_decay,
             )
         elif self.optimizer_name == "SGD":
-            optimizer = SGD(
-                filter(lambda p: p.requires_grad, self.parameters()),
+            optimizer = torch.optim.SGD(
+                self.parameters(),
                 lr=self.learning_rate,
                 momentum=0.9,
                 weight_decay=self.weight_decay,
@@ -333,10 +311,10 @@ class AbstractModel(pl.LightningModule):
                 all_embeddings = torch.cat(embeddings, dim=0)
                 all_labels = torch.cat(labels, dim=0)
 
-                # Compute the pairwise distances
+                # Compute the pairwise distances (non-smoothened for evaluation)
                 if self.distances_type == "geodesic":
                     distance_matrix = compute_pairwise_distances(
-                        all_embeddings, self.manifold, version=self.distances_version
+                        all_embeddings, self.manifold
                     )
                 elif self.distances_type == "cosine_similarity":
                     all_embeddings_normalized = torch.nn.functional.normalize(
@@ -345,7 +323,7 @@ class AbstractModel(pl.LightningModule):
                     similarties = torch.mm(
                         all_embeddings_normalized, all_embeddings_normalized.T
                     ).clamp(min=-1.0, max=1.0)
-                    distance_matrix = (1 - similarties) / (1 + similarties)
+                    distance_matrix = (1 - similarties) / (1 + similarties).clamp_min(1e-15)
                 else:
                     raise ValueError(f"Invalid distances_type: {self.distances_type}")
 
@@ -667,7 +645,8 @@ class AbstractModel(pl.LightningModule):
                 )  # True iff the lca lies outside
                 lca_depth = torch.where(
                     condition,
-                    torch.min(self.manifold.dist_0(x), self.manifold.dist_0(y)),
+                    torch.min(self.manifold.dist_0(x, version=self.distances_version),
+                              self.manifold.dist_0(y, version=self.distances_version)),
                     lca_depth,
                 )
                 lca_depth = torch.where(
@@ -680,23 +659,29 @@ class AbstractModel(pl.LightningModule):
             indices = indices[:, batch_size:]
         return lcas
 
-
 class FeatureScaling(torch.nn.Module):
     def __init__(
         self,
         dim: int,
-        curvature: float = 1.0,
-        max_norm: float = 0.95,
+        curvature: torch.Tensor,
+        max_norm: torch.Tensor = torch.tensor([0.99]),
     ):
         super().__init__()
         self.dim = dim
+        max_scale = atanh(max_norm) / curvature.sqrt()
+        self.register_buffer('max_scale', max_scale)
 
-        max_scale = math.atanh(max_norm) / math.sqrt(curvature)
-        self.max_scale = max_scale
-        self.scale = torch.nn.Parameter(torch.Tensor([1.0]))
+        self.version = 'vector'
+        if self.version == 'scalar':
+            self.scale = torch.nn.Parameter(torch.Tensor([1.0]))
+        elif self.version == 'vector':
+            self.scale = torch.nn.Linear(self.dim, 1)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         x = x / np.sqrt(x.shape[-1])
-        normalized_scale = torch.nn.functional.sigmoid(self.scale) * self.max_scale
+        if self.version == 'scalar':
+            normalized_scale = torch.nn.functional.sigmoid(self.scale) * self.max_scale
+        elif self.version == 'vector':
+            normalized_scale = torch.nn.functional.sigmoid(self.scale(x)) * self.max_scale
         x = normalized_scale * x
         return x, normalized_scale

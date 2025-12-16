@@ -4,7 +4,7 @@ experiment:
   num_workers: 8
   batch_size: 512
   log_interval: 10
-  optimizer: 'RiemannianAdam' # 'RiemannianAdam', 'RiemannianSGD'
+  optimizer: 'Adam' # 'Adam', 'SGD'
   gradient_clip_value: 100.0 # None, Float
 
 ## Pretraining parameters
@@ -65,7 +65,6 @@ hyphc:
   normalized_loss: True
   distances_type: 'geodesic' # 'geodesic', 'cosine_similarity'
   dist_sum_loss: True
-  distances_version: 'default' # 'mobius_direct', 'lorentzian_proxy', 'default'
   hierarchy_weight: 0.2
   hierarchy_margin: 0.2
   triplet_margin: 8.0
@@ -81,10 +80,10 @@ architecture:
   latent_dim: 10 # Hyperboloid automatically uses latent_dim + 1, i.e. latent_dim actually refers to the dimension of the hyperbolic manifold
   hyperbolic_encoding: 'HyperbolicLinearPP' # 'EuclideanLinear_Exp'
                                             #  Hyperboloid: 'HyperbolicLinear', 'HyperbolicLinearHyperboloidFHNN', 'HyperbolicLinearHyperboloidFHCNN'
-                                            #  Poincare: 'HyperbolicLinear', 'HyperbolicLinearPP'
+                                            #  Poincare: 'HyperbolicLinearPP'
   hyperbolic_decoding: 'Log_EuclideanLinear' # 'Log_EuclideanLinear'
                                              # Hyperboloid: 'HyperbolicLinear_Log', 'HyperbolicLinearHyperboloidFHNN_Log', 'HyperbolicLinearHyperboloidFHCNN_Log', 'HyperbolicRegression'
-                                             # Poincare: 'HyperbolicLinear_Log', 'HyperbolicLinearPP_Log', 'HyperbolicRegression', 'HyperbolicRegressionPP'
+                                             # Poincare: 'HyperbolicLinearPP_Log', 'HyperbolicRegression', 'HyperbolicRegressionPP'
   precision: 'float64' # 'float32', 'float64'
   manifold_name: 'PoincareBall' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
   manifold_precision: 'float64' # 'float32', 'float64'
