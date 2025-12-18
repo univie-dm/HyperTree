@@ -77,6 +77,8 @@ class HyperbolicHCModel(AbstractModel):
             distances_type=distances_type,
             evaluation_metrics=evaluation_metrics,
         )
+        # Save hyperparameters while ignoring non-serializable ae_model
+        self.save_hyperparameters(ignore=["ae_model"])
         self.orginal_input_shape = ae_model.orginal_input_shape
         # HypHC parameters
         self.hyphc_start_weight = hyphc_start_weight
@@ -168,9 +170,10 @@ class HyperbolicHCModel(AbstractModel):
                     learnable_scale=self.learnable_scale,
                     FHCNN_normalize=self.FHCNN_normalize,
                 )
-                self.cluster_head.load_state_dict(
-                    ae_model.hyperbolic_encoding_layer.state_dict()
-                )
+                if self.cluster_dim == self.encoder[-1].out_features:
+                    self.cluster_head.load_state_dict(
+                        ae_model.hyperbolic_encoding_layer.state_dict()
+                    )
 
     def configure_optimizers(self) -> Any:
         if self.optimizer_name == "Adam":
@@ -569,6 +572,9 @@ class HyperbolicHCModel(AbstractModel):
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug_1, x_aug_2, x, _ = batch
+        x_aug_1 = x_aug_1.to(dtype=get_dtype_from_precision(self.params_dtype))
+        x_aug_2 = x_aug_2.to(dtype=get_dtype_from_precision(self.params_dtype))
+        x = x.to(dtype=get_dtype_from_precision(self.params_dtype))
         if self.recon_weight > 0.0:
             x_recon, manifold_z, cluster_z = self(x)
             if x_recon.shape != x.shape:

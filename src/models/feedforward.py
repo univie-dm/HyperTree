@@ -167,9 +167,10 @@ class HyperbolicAE(AbstractModel):
         hidden = self.rms(hidden)
         if self.feature_scaling and not isinstance(self.manifold, Euclidean):
             hidden, scaler = self.feature_scaling_layer(hidden)
-            self.metrics.setdefault("pretrain/feature_scale", []).append(
-                scaler.detach().item()
-            )
+            if self.feature_scaling_layer.version == "scalar":
+                self.metrics.setdefault("pretrain/feature_scale", []).append(
+                    scaler.detach().item()
+                )
         hidden = torch.nn.Tanh()(hidden)
         manifold_z = self.hyperbolic_encoding_layer(hidden)
         return manifold_z

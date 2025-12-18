@@ -96,7 +96,7 @@ class AbstractModel(pl.LightningModule):
         self.evaluation_metrics = evaluation_metrics
         self.weight_decay = weight_decay
         self.lr_scheduler_params = lr_scheduler_params
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["manifold_precision"])
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -663,13 +663,13 @@ class FeatureScaling(torch.nn.Module):
     def __init__(
         self,
         dim: int,
-        curvature: float = 1.0,
+        curvature: torch.Tensor,
         max_norm: float = 0.95,
         dtype: torch.dtype = torch.float32,
     ):
         super().__init__()
         self.dim = dim
-        max_scale = atanh(max_norm) / curvature.sqrt()
+        max_scale = atanh(torch.tensor(max_norm).to(dtype=dtype)) / curvature.sqrt()
         self.register_buffer('max_scale', max_scale)
 
         self.version = 'vector'
