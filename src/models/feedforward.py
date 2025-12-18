@@ -90,9 +90,6 @@ class HyperbolicAE(AbstractModel):
         self.encoder = nn.Sequential(
             *encoder_layers[:-2]
         )  # Remove the last activation function
-        self.encoder.extend(
-            [nn.Tanh()]
-        )  # Add a Tanh activation at the end of the encoder
 
         # Add hyperbolic encoding layer(s)
         if isinstance(self.manifold, Euclidean) or hyperbolic_encoding is None:
