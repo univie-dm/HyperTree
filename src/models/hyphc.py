@@ -11,8 +11,6 @@ import wandb
 
 from src.hyperbolic_math.src.utils.horo_pca import frechet_center_data
 from src.hyperbolic_math.src.manifolds import Euclidean, PoincareBall
-from torch.optim import AdamW, SGD
-from src.hyperbolic_math.src.optim import RiemannianAdam, RiemannianSGD
 from src.models.abstract import AbstractModel
 from src.models.resnet import HyperbolicResNet
 from src.models.utils import (
@@ -45,7 +43,6 @@ class HyperbolicHCModel(AbstractModel):
         distances_type: str = "geodesic",
         hyphc_dist_sum_loss: bool = True,
         evaluation_metrics: dict[str, bool] = {},
-        distances_version: str = "mobius_direct",
         freeze_encoder: bool = False,
         contrastive_enabled: bool = False,
         contrastive_weight: float = 1.0,
@@ -79,7 +76,6 @@ class HyperbolicHCModel(AbstractModel):
             global_epoch=global_epoch,
             distances_type=distances_type,
             evaluation_metrics=evaluation_metrics,
-            distances_version=distances_version,
         )
         self.orginal_input_shape = ae_model.orginal_input_shape
         # HypHC parameters
@@ -177,31 +173,19 @@ class HyperbolicHCModel(AbstractModel):
                 )
 
     def configure_optimizers(self) -> Any:
-        if self.optimizer_name == "RiemannianAdam":
-            optimizer = RiemannianAdam(
+        if self.optimizer_name == "Adam":
+            optimizer = torch.optim.Adam(
                 self.parameters(),
                 lr=self.learning_rate,
-                weight_decay=self.weight_decay,
-            )
-        elif self.optimizer_name == "RiemannianSGD":
-            optimizer = RiemannianSGD(
-                self.parameters(),
-                lr=self.learning_rate,
-                weight_decay=self.weight_decay,
-                momentum=0.9,
-            )
-        elif self.optimizer_name == "Adam":
-            optimizer = AdamW(
-                self.parameters(),
-                lr=self.learning_rate,
+                eps=1e-5,
                 weight_decay=self.weight_decay,
             )
         elif self.optimizer_name == "SGD":
-            optimizer = SGD(
+            optimizer = torch.optim.SGD(
                 self.parameters(),
                 lr=self.learning_rate,
-                weight_decay=self.weight_decay,
                 momentum=0.9,
+                weight_decay=self.weight_decay,
             )
         else:
             raise ValueError(f"Invalid optimizer name: {self.optimizer_name}")
@@ -399,7 +383,7 @@ class HyperbolicHCModel(AbstractModel):
             denom = self.manifold.c * z_norm * (z_norm + sqrt_term).clamp(min=1e-15)
             lca = z / denom
 
-            dists = self.manifold.dist_0(lca)
+            dists = self.manifold.dist_0(lca, version=self.distances_version)
         else:
             raise NotImplementedError("Only PoincareBall manifold is implemented.")
         return dists.mean()
@@ -423,15 +407,6 @@ class HyperbolicHCModel(AbstractModel):
                 self.manifold,
                 version=self.distances_version,
             )
-            if self.distances_version == "lorentzian_proxy":
-                # distances = distances + 2/self.manifold.c
-                if torch.any(distances < 0):
-                    print(
-                        "Warning: Negative distances encountered with lorentzian_proxy distance version. Min:{}".format(
-                            distances.min().item()
-                        )
-                    )
-                distances = distances.clamp(min=0.0)
             similarties = torch.reciprocal(1 + distances)
         elif self.distances_type == "cosine_similarity":
             embeddings_normalized = torch.nn.functional.normalize(
@@ -521,10 +496,10 @@ class HyperbolicHCModel(AbstractModel):
         hidden = torch.nn.functional.tanh(hidden)
         if self.feature_scaling and not isinstance(self.manifold, Euclidean):
             hidden, scaler = self.feature_scaling_layer(hidden)
-            self.metrics.setdefault("clustering/feature_scale", []).append(
-                scaler.detach().item()
-            )
-
+            if self.feature_scaling_layer.version == "scalar":
+                self.metrics.setdefault("clustering/feature_scale", []).append(
+                    scaler.detach().item()
+                )
         manifold_z = self.hyperbolic_encoding_layer(hidden)  # type: ignore
         if self.use_seperate_heads:
             cluster_z = self.cluster_head(hidden)
@@ -572,10 +547,11 @@ class HyperbolicHCModel(AbstractModel):
         positive: torch.Tensor,
         negative: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        d_pos = self.manifold.dist(anchor, positive)
 
-        dists_matrix = compute_pairwise_distances(anchor, self.manifold)
+        d_pos = self.manifold.dist(anchor, positive, version=self.distances_version)
 
+        dists_matrix = compute_pairwise_distances(anchor, self.manifold, version=self.distances_version)
+        
         eye = torch.eye(dists_matrix.size(0), device=dists_matrix.device)
         dists_matrix = dists_matrix + eye * 1e9
 
@@ -584,14 +560,11 @@ class HyperbolicHCModel(AbstractModel):
         loss = torch.clamp(d_pos - d_neg + self.triplet_margin, min=0.0)
 
         return loss.mean()
-
-    def compute_radius_hierarchy_loss(
-        self, parent_z: torch.Tensor, child_z: torch.Tensor
-    ) -> torch.Tensor:
-        d_parent = self.manifold.dist_0(parent_z)
-        d_child = self.manifold.dist_0(child_z)
+    
+    def compute_radius_hierarchy_loss(self, parent_z: torch.Tensor, child_z: torch.Tensor) -> torch.Tensor:
+        d_parent = self.manifold.dist_0(parent_z, version=self.distances_version)
+        d_child = self.manifold.dist_0(child_z, version=self.distances_version)
         loss = torch.clamp(d_parent - d_child + self.hierarchy_margin, min=0.0)
-
         return loss.mean()
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
@@ -635,7 +608,7 @@ class HyperbolicHCModel(AbstractModel):
             triplet_loss_val = self.compute_contrastive_triplet_loss(
                 anchor=cluster_z_x, positive=cluster_z_aug_1
             )
-            dist_to_center = self.manifold.dist_0(cluster_z_x).mean()
+            dist_to_center = self.manifold.dist_0(cluster_z_x, version=self.distances_version).mean()
 
             # triplet_loss_val += dist_to_center * 0.01
             self.metrics.setdefault("clustering/dist_to_center", []).append(

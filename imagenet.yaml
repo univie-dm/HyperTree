@@ -30,7 +30,7 @@ parameters:
   hyphc.dist_sum_loss: True
   experiment.gradient_clip_value: 1.0
   hyphc.triplet_subsampling_size: 150
-  experiment.optimizer: RiemannianAdam
+  experiment.optimizer: Adam
   experiment.num_workers: 30
   pretraining.weight_decay: 1e-5
   clustering.weight_decay: 1e-5
@@ -45,7 +45,6 @@ parameters:
   architecture.spectral_normalization: False
   architecture.activation_function: swish
   experiment.log_interval: 25
-  hyphc.distances_version: default
   architecture.manifold_name: PoincareBall
   architecture.hyperbolic_encoding: HyperbolicLinearPP
   architecture.manifold_precision: float32
@@ -73,4 +72,3 @@ parameters:
   evaluation.test_sample_size: 1000
   clustering.freeze_encoder: True
   clustering.contrastive_loss.enabled: True
-
