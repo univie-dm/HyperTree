@@ -204,7 +204,7 @@ class HyperbolicResNet(AbstractModel):
         self.encoder = nn.Sequential(self.encoder, *projection_layers[:-2])
         self.rms = nn.RMSNorm(current_dim, elementwise_affine=False)
         if self.feature_scaling and not isinstance(self.manifold, Euclidean):
-            self.feature_scaling_layer = FeatureScaling(current_dim, self.manifold.c)
+            self.feature_scaling_layer = FeatureScaling(current_dim, self.manifold.c, dtype=self.manifold.dtype)
 
         # Add hyperbolic encoding layer(s)
         if isinstance(self.manifold, Euclidean) or hyperbolic_encoding is None:

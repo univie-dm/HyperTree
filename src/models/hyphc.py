@@ -625,7 +625,7 @@ class HyperbolicHCModel(AbstractModel):
         )
 
 
-        hierarchy_loss = (h_loss_inner + h_loss_outer) / 2
+        hierarchy_loss = (h_loss_inner) #+ h_loss_outer) / 2
         
         self.metrics.setdefault("clustering/hierarchy_loss", []).append(
             hierarchy_loss.detach().item()
@@ -673,8 +673,9 @@ class HyperbolicHCModel(AbstractModel):
             # dists = self.compute_contrastive_lca(cluster_z, cluster_z_aug_1, cluster_z_aug_2)
             # standard_hyphc_loss += dists
         else:
+            #TODO find out which one works better
             standard_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = (
-                self.compute_hyphc_loss(cluster_z_x)
+                self.compute_hyphc_loss(cluster_z_aug_1)
             )
 
         if self.normalized_hyphc_loss:

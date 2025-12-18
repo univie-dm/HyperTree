@@ -217,7 +217,7 @@ def evaluation(
             pca = SklearnPCA(n_components=2)
             points_sampled_np = points_sampled.detach().cpu().numpy()
             two_d_pts = pca.fit_transform(points_sampled_np)
-            two_d_pts = torch.tensor(two_d_pts, dtype=torch.float64, device=X.device)
+            two_d_pts = torch.tensor(two_d_pts, dtype=X.dtype, device=X.device)
             points_in_manifold = True
             colormap = "tab10"
             if len(np.unique(Y)) > 10:
@@ -227,7 +227,7 @@ def evaluation(
         else:
             # Use HoroPCA for non-Euclidean manifolds
             settings = {
-                "plot_manifold_dtype": torch.float64,
+                "plot_manifold_dtype": manifold.dtype,
                 "dim_red_method": "HoroPCA",
                 "title": "Hyperbolic Embeddings",
                 "show_origin": True,
@@ -242,7 +242,7 @@ def evaluation(
             )
             if manifold.name == "PoincareBall":
                 points_sampled = poincare_64.to_hyperboloid(points_sampled)
-            points_sampled = points_sampled.to(torch.float64)
+            points_sampled = points_sampled.to(settings["plot_manifold_dtype"])
             two_d_pts, _ = pointsTo2dPoincare(
                 x=points_sampled,
                 poincare=poincare_64,
@@ -430,7 +430,7 @@ def evaluation(
             else:
                 # Create HoroPCA figure for hyperbolic
                 settings = {
-                    "plot_manifold_dtype": torch.float64,
+                    "plot_manifold_dtype": manifold.dtype,
                     "dim_red_method": "HoroPCA",
                     "title": "Hyperbolic Embeddings Agglomerative Clustering Single Linkage",
                     "show_origin": True,
@@ -557,7 +557,7 @@ def evaluation(
             else:
                 # Create HoroPCA figure for hyperbolic
                 settings = {
-                    "plot_manifold_dtype": torch.float64,
+                    "plot_manifold_dtype": manifold.dtype,
                     "dim_red_method": "HoroPCA",
                     "title": "Hyperbolic Embeddings Agglomerative Clustering Complete Linkage",
                     "show_origin": True,
@@ -698,7 +698,7 @@ def evaluation(
             else:
                 # Create HoroPCA figure for hyperbolic
                 settings = {
-                    "plot_manifold_dtype": torch.float64,
+                    "plot_manifold_dtype": manifold.dtype,
                     "dim_red_method": "HoroPCA",
                     "title": "Hyperbolic Embeddings Agglomerative Clustering Average Linkage",
                     "show_origin": True,
@@ -797,7 +797,7 @@ def evaluation(
         else:
             # Create HoroPCA figure for hyperbolic
             settings = {
-                "plot_manifold_dtype": torch.float64,
+                "plot_manifold_dtype": manifold.dtype,
                 "dim_red_method": "HoroPCA",
                 "title": "Hyperbolic Embeddings",
                 "show_origin": True,
@@ -936,7 +936,7 @@ def evaluation(
             else:
                 # Create HoroPCA figure for hyperbolic
                 settings = {
-                    "plot_manifold_dtype": torch.float64,
+                    "plot_manifold_dtype": manifold.dtype,
                     "dim_red_method": "HoroPCA",
                     "title": "Hyperbolic Embeddings Spectral Clustering",
                     "show_origin": True,
@@ -1057,7 +1057,7 @@ def evaluation(
             else:
                 # Create HoroPCA figure for hyperbolic
                 settings = {
-                    "plot_manifold_dtype": torch.float64,
+                    "plot_manifold_dtype": manifold.dtype,
                     "dim_red_method": "HoroPCA",
                     "title": "Hyperbolic Embeddings KMeans Clustering",
                     "show_origin": True,

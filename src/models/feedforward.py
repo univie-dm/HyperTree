@@ -1,10 +1,11 @@
+from math import tanh
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from lightning.pytorch.utilities import grad_norm
 
 from typing import List, Tuple
-from src.models.abstract import AbstractModel
+from src.models.abstract import AbstractModel, FeatureScaling
 from src.models.utils import (
     get_dtype_from_precision,
     get_hyperbolic_encoding_layer_by_name,
@@ -41,6 +42,7 @@ class HyperbolicAE(AbstractModel):
         distances_version: str = "mobius_direct",
         spectral_normalization: bool = False,
         lr_scheduler_params: dict | None = None,
+        feature_scaling: bool = True,
     ):
         super().__init__(
             model_type="feedforward",
@@ -159,12 +161,21 @@ class HyperbolicAE(AbstractModel):
             prev_dim = hidden_dim
         decoder_layers.append(nn.Linear(self.hidden_dims[0], input_dim))
         self.decoder = nn.Sequential(*decoder_layers)
+        self.rms = nn.RMSNorm(self.hidden_dims[-1], elementwise_affine=False)
+        if self.feature_scaling and not isinstance(self.manifold, Euclidean):
+            self.feature_scaling_layer = FeatureScaling(self.hidden_dims[-1], self.manifold.c, dtype=self.manifold.dtype)
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         self.original_input_shape = x.shape[1:]
         x = x.view(x.size(0), -1)
         hidden = self.encoder(x)
-        hidden = hidden / (self.hidden_dims[-1] ** 0.5)  # Scale by input dimension
+        hidden = self.rms(hidden)
+        if self.feature_scaling and not isinstance(self.manifold, Euclidean):
+            hidden, scaler = self.feature_scaling_layer(hidden)
+            self.metrics.setdefault("pretrain/feature_scale", []).append(
+                scaler.detach().item()
+            )
+        hidden = torch.nn.Tanh()(hidden)
         manifold_z = self.hyperbolic_encoding_layer(hidden)
         return manifold_z
 
@@ -178,6 +189,7 @@ class HyperbolicAE(AbstractModel):
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         _, _, x, _ = batch
+        x =         x = x.to(dtype=get_dtype_from_precision(self.params_dtype))
         # Feedforward model uses only clean images for reconstruction
         (
             x_recon,

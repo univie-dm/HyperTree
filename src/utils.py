@@ -139,6 +139,7 @@ def get_pretrain_model(
             distances_version=cfg.hyphc.distances_version,
             spectral_normalization=cfg.architecture.spectral_normalization,
             lr_scheduler_params=cfg.pretraining.get("lr_scheduler", None),
+            feature_scaling=cfg.architecture.feature_scaling,
         )
     elif cfg.architecture.ae_type == "convolutional":
         model = HyperbolicConvAE(

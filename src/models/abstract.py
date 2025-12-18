@@ -687,13 +687,14 @@ class FeatureScaling(torch.nn.Module):
         dim: int,
         curvature: float = 1.0,
         max_norm: float = 0.95,
+        dtype: torch.dtype = torch.float32,
     ):
         super().__init__()
         self.dim = dim
 
         max_scale = math.atanh(max_norm) / math.sqrt(curvature)
         self.max_scale = max_scale
-        self.scale = torch.nn.Parameter(torch.Tensor([1.0]))
+        self.scale = torch.nn.Parameter(torch.tensor([1.0], dtype=dtype))
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         x = x / np.sqrt(x.shape[-1])

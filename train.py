@@ -1,3 +1,4 @@
+from src.models.utils import get_dtype_from_precision
 from src.utils import (
     get_datamodule,
     get_pretrain_model,
@@ -43,6 +44,7 @@ def main(cfg: DictConfig) -> None:
         warnings.filterwarnings(
             "ignore", ".*is smaller than the logging interval Trainer.*"
         )
+        torch.set_default_dtype(get_dtype_from_precision(cfg.architecture.precision))
         logger = get_logger(cfg)
 
         trainer = pl.Trainer(
