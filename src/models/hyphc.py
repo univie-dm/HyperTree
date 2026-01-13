@@ -467,10 +467,6 @@ class HyperbolicHCModel(AbstractModel):
             scale_min.detach().item()
         )
 
-        plt.hist(similarties.cpu().detach().numpy(), bins=20)
-        wandb.log({"clustering/similarities_histogram": wandb.Image(plt)})
-        plt.clf()
-
         return total_loss, triplet_loss, similarties.sum(), total_loss
 
 
@@ -841,7 +837,7 @@ class HyperbolicHCModel(AbstractModel):
             on_epoch=True,
             prog_bar=True,
             logger=False,
-            sync_dist=True,
+            sync_dist=False,
         )
 
         return total_loss

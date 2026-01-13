@@ -399,7 +399,7 @@ class HyperbolicResNet(AbstractModel):
             prog_bar=True,
             on_epoch=True,
             on_step=False,
-            sync_dist=True,
+            sync_dist=False,
         )
         self.metrics.setdefault("latent_space/mean", []).append(
             z_x.mean().detach().item()
