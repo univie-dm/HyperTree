@@ -8,6 +8,7 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from typing import Any, Tuple
 from lightning.pytorch.utilities import grad_norm
 import wandb
+import matplotlib.pyplot as plt
 
 from src.hyperbolic_math.src.utils.horo_pca import frechet_center_data
 from src.hyperbolic_math.src.manifolds import Euclidean, PoincareBall
@@ -465,6 +466,10 @@ class HyperbolicHCModel(AbstractModel):
         self.metrics.setdefault("clustering/scale_min", []).append(
             scale_min.detach().item()
         )
+
+        plt.hist(similarties.cpu().detach().numpy(), bins=50)
+        wandb.log({"clustering/similarities_histogram": wandb.Image(plt)})
+        plt.clf()
 
         return total_loss, triplet_loss, similarties.sum(), total_loss
 
