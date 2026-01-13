@@ -340,7 +340,7 @@ class AbstractModel(pl.LightningModule):
                     Y_coarse=coarse_labels_array,
                 )
                 plt.hist(similarties.cpu().detach().numpy(), bins=20)
-                wandb.log({"clustering/similarities_histogram": wandb.Image(plt)})
+                wandb.log({"test/similarities_histogram": wandb.Image(plt)})
                 plt.clf()
 
                 del all_embeddings, all_labels, distance_matrix, embeddings, labels
