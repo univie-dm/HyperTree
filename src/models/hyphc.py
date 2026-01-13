@@ -182,6 +182,7 @@ class HyperbolicHCModel(AbstractModel):
                 lr=self.learning_rate,
                 eps=1e-5,
                 weight_decay=self.weight_decay,
+                amsgrad=True,
             )
         elif self.optimizer_name == "SGD":
             optimizer = torch.optim.SGD(
@@ -270,14 +271,15 @@ class HyperbolicHCModel(AbstractModel):
                 : min(self.hyphc_triplet_subsampling_size, num_pts)
             ]
             sampled_triplets = []
-            dists = compute_pairwise_distances(
-                points,
-                self.manifold,
-                version=self.distances_version,
-            )
+            # Use cosine similarity for neighbor search (stable at ball edge)
+            # Normalize points for cosine similarity computation
+            points_normalized = F.normalize(points, p=2, dim=-1)
+            cosine_similarities = torch.mm(points_normalized, points_normalized.T)
+            
             for anker in anker_points:
-                sorted_indices = torch.argsort(dists[anker])
-                # Exclude the anker point itself
+                # Sort by cosine similarity (descending, higher is more similar)
+                sorted_indices = torch.argsort(cosine_similarities[anker], descending=True)
+                # Exclude the anker point itself (it will be first with similarity ~1.0)
                 nn_idx = sorted_indices[
                     1 : min(self.hyphc_num_nn + 1, sorted_indices.shape[0])
                 ]
@@ -391,9 +393,89 @@ class HyperbolicHCModel(AbstractModel):
             raise NotImplementedError("Only PoincareBall manifold is implemented.")
         return dists.mean()
 
+    def compute_hyphc_loss_wang(self, embeddings: torch.Tensor) -> Tuple[
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        n = embeddings.size(0)
+        device = embeddings.device
+
+        # Sample triplets
+        sampled_indices, np_sampled_triplet_indices = self.sample_triplets(
+            n,
+            device,
+            points=embeddings if self.hyphc_sampling_strategy == "nn" else None,
+        )
+        # Compute the pairwise distances
+        if self.distances_type == "geodesic":
+            distances = compute_pairwise_distances(
+                embeddings[sampled_indices],
+                self.manifold,
+                version=self.distances_version,
+            )
+            similarties = torch.reciprocal(1 + distances)
+        elif self.distances_type == "cosine_similarity":
+            embeddings_normalized = torch.nn.functional.normalize(
+                embeddings[sampled_indices], p=2, dim=-1
+            )
+            distances = torch.mm(embeddings_normalized, embeddings_normalized.T).clamp(
+                min=-1.0, max=1.0
+            )
+            similarties = (1 - distances) / (1 + distances)
+        else:
+            raise ValueError(f"Invalid distances type: {self.distances_type}")
+
+        # Compute the pairwise lcas
+        lcas = self.compute_lca_depth(embeddings[sampled_indices])
+
+        # Keep track of the storage of triplets
+        lookup_table = {
+            idx: pos for pos, idx in enumerate(sampled_indices.cpu().numpy())
+        }
+        _i, _j, _k = np_sampled_triplet_indices.T
+        i = np.vectorize(lookup_table.get)(_i)
+        j = np.vectorize(lookup_table.get)(_j)
+        k = np.vectorize(lookup_table.get)(_k)
+
+        # Compute the scaled safe softmax of the lcas
+        lca_triplets = torch.stack((lcas[i, j], lcas[i, k], lcas[j, k]), dim=1)
+        lca_triplet_max, _ = torch.max(lca_triplets, dim=1, keepdim=True)
+        scaled_softmax = torch.exp(
+            (lca_triplets - lca_triplet_max) / self.hyphc_temperature
+        )
+        scaled_softmax = scaled_softmax / scaled_softmax.sum(dim=1, keepdim=True)
+
+        # Compute the triplet loss for the subsampled triplets
+        sim_stack = torch.stack(
+            (similarties[i, j], similarties[i, k], similarties[j, k]), dim=1
+        )
+        sim_stack2 = torch.stack(
+            (
+                similarties[i, j] + similarties[i, k],
+                similarties[i, j] + similarties[j, k],
+                similarties[i, k] + similarties[j, k],
+            ),
+            dim=1,
+        )
+        sim_stack2_min, _ = torch.min(sim_stack2, dim=1, keepdim=False)
+        triplet_loss = torch.sum(sim_stack * (1 - scaled_softmax))
+
+        scale_min = sim_stack2_min.sum()
+
+        total_loss = triplet_loss / scale_min
+
+        self.metrics.setdefault("clustering/scale_min", []).append(
+            scale_min.detach().item()
+        )
+
+        return total_loss, triplet_loss, similarties.sum(), total_loss
+
+
     def compute_hyphc_loss(
         self, embeddings: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        
+        if self.lca_version == "wang":
+            return self.compute_hyphc_loss_wang(embeddings)
+        
         n = embeddings.size(0)
         device = embeddings.device
 

@@ -188,6 +188,7 @@ class AbstractModel(pl.LightningModule):
                 lr=self.learning_rate,
                 eps=1e-5,
                 weight_decay=self.weight_decay,
+                amsgrad=True,
             )
         elif self.optimizer_name == "SGD":
             optimizer = torch.optim.SGD(

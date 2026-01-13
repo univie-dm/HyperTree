@@ -61,7 +61,7 @@ hyphc:
   triplet_subsampling_size: 200
   num_nn: 100
   triplet_subsampling_delta: 0.1 # The probability of missing a pair
-  lca_version: 'ours' # 'ours', 'chami', 'contrastive_lca'
+  lca_version: 'ours' # 'ours', 'chami', 'contrastive_lca', 'wang'
   normalized_loss: True
   distances_type: 'geodesic' # 'geodesic', 'cosine_similarity'
   dist_sum_loss: True
