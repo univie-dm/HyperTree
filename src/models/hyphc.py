@@ -467,7 +467,7 @@ class HyperbolicHCModel(AbstractModel):
             scale_min.detach().item()
         )
 
-        plt.hist(similarties.cpu().detach().numpy(), bins=50)
+        plt.hist(similarties.cpu().detach().numpy(), bins=20)
         wandb.log({"clustering/similarities_histogram": wandb.Image(plt)})
         plt.clf()
 
