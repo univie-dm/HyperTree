@@ -57,7 +57,7 @@ hyphc:
   min_loss_weight: 0.0
   loss_weight_interval: 0 # 0 equals to max_loss_weight all times
   temperature: 0.01
-  sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'chami', 'probabilistic_coverage'
+  sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'chami', 'probabilistic_coverage','random'
   triplet_subsampling_size: 200
   num_nn: 100
   triplet_subsampling_delta: 0.1 # The probability of missing a pair

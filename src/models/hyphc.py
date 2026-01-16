@@ -88,7 +88,7 @@ class HyperbolicHCModel(AbstractModel):
         self.hyphc_temperature = hyphc_temperature
         self.hyphc_sampling_strategy = hyphc_sampling_strategy
         self.hyphc_triplet_subsampling_delta = hyphc_triplet_subsampling_delta
-        self.hyphc_triplet_subsampling_size = hyphc_triplet_subsampling_size
+        self.hyphc_triplet_subsampling_size = int(hyphc_triplet_subsampling_size)
         self.lca_version = lca_version
         self.normalized_hyphc_loss = normalized_hyphc_loss
         self.distances_type = distances_type
@@ -171,7 +171,9 @@ class HyperbolicHCModel(AbstractModel):
                     learnable_scale=self.learnable_scale,
                     FHCNN_normalize=self.FHCNN_normalize,
                 )
-                if self.cluster_dim == self.encoder[-1].out_features:
+                print(f'Cluster head dim: {self.cluster_dim}, Encoder output dim: {self.encoder[-1].out_features}')  # type: ignore
+                if self.cluster_dim == self.encoder[-1].out_features: # type: ignore
+                    print("Initializing cluster head with AE hyperbolic encoding weights.")
                     self.cluster_head.load_state_dict(
                         ae_model.hyperbolic_encoding_layer.state_dict()
                     )
@@ -298,6 +300,16 @@ class HyperbolicHCModel(AbstractModel):
                 )
                 sampled_triplets.append(sampled_triplet)
             sampled_triplet_indices = torch.stack(sampled_triplets)
+            sampled_indices = torch.unique(sampled_triplet_indices)
+            np_sampled_triplet_indices = sampled_triplet_indices.cpu().numpy()
+
+        elif self.hyphc_sampling_strategy == "random":
+            num_samples = self.hyphc_triplet_subsampling_size
+            samples = []
+            for _ in range(num_samples):
+                triplet = [torch.randint(0, num_pts, (1,)).item() for _ in range(3)]
+                samples.append(triplet)
+            sampled_triplet_indices = torch.tensor(samples, device=device)
             sampled_indices = torch.unique(sampled_triplet_indices)
             np_sampled_triplet_indices = sampled_triplet_indices.cpu().numpy()
 
