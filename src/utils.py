@@ -233,6 +233,7 @@ def get_clustering_model(
         hyphc_weight_interval=cfg.hyphc.loss_weight_interval,
         hyphc_temperature=cfg.hyphc.temperature,
         hyphc_sampling_strategy=cfg.hyphc.sampling_strategy,
+        hyphc_fine_triplet_ratio=cfg.hyphc.fine_triplet_ratio,
         hyphc_triplet_subsampling_size=cfg.hyphc.triplet_subsampling_size,
         hyphc_triplet_subsampling_delta=cfg.hyphc.triplet_subsampling_delta,
         lca_version=cfg.hyphc.lca_version,
@@ -252,6 +253,11 @@ def get_clustering_model(
         triplet_margin=cfg.hyphc.triplet_margin,
         hyphc_num_nn=cfg.hyphc.num_nn,
         use_seperate_heads=cfg.architecture.use_seperate_heads,
+        gt_similarity_mode=cfg.hyphc.gt_similarity_mode,
+        gt_alpha=cfg.hyphc.gt_alpha,
+        s_fine=cfg.hyphc.s_fine,
+        s_coarse=cfg.hyphc.s_coarse,
+        s_diff=cfg.hyphc.s_diff,
     )
     return model
 

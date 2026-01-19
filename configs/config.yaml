@@ -56,8 +56,9 @@ hyphc:
   max_loss_weight: 1.0
   min_loss_weight: 0.0
   loss_weight_interval: 0 # 0 equals to max_loss_weight all times
-  temperature: 0.01
+  temperature: 0.5  # Increased from 0.01 for softer gradients when using GT
   sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'chami', 'probabilistic_coverage','random'
+  fine_triplet_ratio: 0.5
   triplet_subsampling_size: 200
   num_nn: 100
   triplet_subsampling_delta: 0.1 # The probability of missing a pair
@@ -68,6 +69,12 @@ hyphc:
   hierarchy_weight: 0.2
   hierarchy_margin: 0.2
   triplet_margin: 8.0
+  # GT-based similarity parameters
+  gt_similarity_mode: 'hybrid'  # 'none', 'hierarchical', 'hybrid'
+  gt_alpha: 0.7  # Influence of GT vs. Geometry (for hybrid mode)
+  s_fine: 1.0  # Weight for same class
+  s_coarse: 0.4  # Weight for same superclass, different class
+  s_diff: 0.05  # Weight for completely different classes
 
 ## Model architecture
 architecture:

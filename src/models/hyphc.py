@@ -20,6 +20,15 @@ from src.models.utils import (
 )
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 
+# CIFAR100 Coarse Labels Mapping
+_CIFAR100_COARSE_LABELS = [
+    4, 1, 14, 8, 0, 6, 7, 7, 18, 3, 3, 14, 9, 18, 7, 11, 3, 9, 7, 11,
+    6, 11, 5, 10, 7, 6, 13, 15, 3, 15, 0, 11, 1, 10, 12, 14, 16, 9, 11, 5,
+    5, 19, 8, 8, 15, 13, 14, 17, 18, 10, 16, 4, 17, 4, 2, 0, 17, 4, 18, 17,
+    10, 3, 2, 12, 12, 16, 12, 1, 9, 19, 2, 10, 0, 1, 16, 12, 9, 13, 15, 13,
+    16, 19, 2, 4, 6, 19, 5, 5, 8, 19, 18, 1, 2, 15, 6, 0, 17, 8, 14, 13,
+]
+
 
 class HyperbolicHCModel(AbstractModel):
     def __init__(
@@ -37,6 +46,7 @@ class HyperbolicHCModel(AbstractModel):
         hyphc_weight_interval: int = 0,
         hyphc_temperature: float = 0.05,
         hyphc_sampling_strategy: str = "all_subsample_triplets",
+        hyphc_fine_triplet_ratio: float = 0.5,
         hyphc_triplet_subsampling_size: int = 100,
         hyphc_triplet_subsampling_delta: float = 0.05,
         lca_version: str = "ours",
@@ -56,6 +66,11 @@ class HyperbolicHCModel(AbstractModel):
         cluster_dim: int | None = None,
         hyphc_num_nn: int = 10,
         use_seperate_heads: bool = False,
+        gt_similarity_mode: str = "none",  # "none", "hierarchical", "hybrid"
+        gt_alpha: float = 0.7,  # Influence of GT vs. Geometry for hybrid mode
+        s_fine: float = 1.0,  # Weight for same class
+        s_coarse: float = 0.4,  # Weight for same superclass, different class
+        s_diff: float = 0.05,  # Weight for completely different classes
     ):
         super().__init__(
             model_type=ae_model.model_type,
@@ -87,9 +102,15 @@ class HyperbolicHCModel(AbstractModel):
         self.hyphc_weight_interval = hyphc_weight_interval
         self.hyphc_temperature = hyphc_temperature
         self.hyphc_sampling_strategy = hyphc_sampling_strategy
+        self.hyphc_fine_triplet_ratio = hyphc_fine_triplet_ratio
         self.hyphc_triplet_subsampling_delta = hyphc_triplet_subsampling_delta
         self.hyphc_triplet_subsampling_size = int(hyphc_triplet_subsampling_size)
         self.lca_version = lca_version
+        self.gt_similarity_mode = gt_similarity_mode
+        self.gt_alpha = gt_alpha
+        self.s_fine = s_fine
+        self.s_coarse = s_coarse
+        self.s_diff = s_diff
         self.normalized_hyphc_loss = normalized_hyphc_loss
         self.distances_type = distances_type
         self.hyphc_dist_sum_loss = hyphc_dist_sum_loss
@@ -231,10 +252,126 @@ class HyperbolicHCModel(AbstractModel):
         )
         return m
 
+    def _sample_ground_truth_triplets(
+        self,
+        num_pts: int,
+        device: torch.device,
+        labels: torch.Tensor,
+        coarse_labels: torch.Tensor | None = None
+    ) -> Tuple[torch.Tensor, np.ndarray]:
+        num_total = self.hyphc_triplet_subsampling_size
+        num_fine = int(num_total * self.hyphc_fine_triplet_ratio)
+        if coarse_labels is None:
+             num_fine = num_total
+             num_coarse = 0
+        else:
+             num_coarse = num_total - num_fine
+        
+        triplets = []
+        
+        # Helper to get indices
+        label_to_indices = {}
+        for idx, lbl in enumerate(labels):
+            lbl = lbl.item()
+            if lbl not in label_to_indices:
+                label_to_indices[lbl] = []
+            label_to_indices[lbl].append(idx)
+            
+        coarse_label_to_indices = {}
+        if coarse_labels is not None:
+             for idx, lbl in enumerate(coarse_labels):
+                lbl = lbl.item()
+                if lbl not in coarse_label_to_indices:
+                    coarse_label_to_indices[lbl] = []
+                coarse_label_to_indices[lbl].append(idx)
+
+        # Sampling Fine Triplets
+        # Anchor i: random
+        # Positive j: same label
+        # Negative k: different fine label
+        
+        for _ in range(num_fine):
+            # Pick anchor
+            anchor_idx = torch.randint(0, num_pts, (1,)).item()
+            fine_lbl = labels[anchor_idx].item()
+            
+            # Pick positive (same fine label)
+            pos_candidates = label_to_indices[fine_lbl]
+            if len(pos_candidates) < 2:
+                 # Skip if only 1 sample alone
+                 continue
+            
+            pos_idx = pos_candidates[torch.randint(0, len(pos_candidates), (1,)).item()]
+            while pos_idx == anchor_idx:
+                pos_idx = pos_candidates[torch.randint(0, len(pos_candidates), (1,)).item()]
+                
+            # Pick negative (diff fine label)
+            # Just pick random until fine label is different
+            neg_idx = torch.randint(0, num_pts, (1,)).item()
+            while labels[neg_idx].item() == fine_lbl:
+                 neg_idx = torch.randint(0, num_pts, (1,)).item()
+            
+            triplets.append([anchor_idx, pos_idx, neg_idx])
+            
+        # Sampling Coarse Triplets
+        if coarse_labels is not None:
+            for _ in range(num_coarse):
+                 # Pick anchor
+                anchor_idx = torch.randint(0, num_pts, (1,)).item()
+                coarse_lbl = coarse_labels[anchor_idx].item()
+                fine_lbl = labels[anchor_idx].item()
+                
+                # Pick positive (same coarse label, different fine label)
+                # Candidates: indices with same coarse label
+                # Exclude: indices with same fine label
+                
+                if coarse_lbl in coarse_label_to_indices:
+                    coarse_group = coarse_label_to_indices[coarse_lbl]
+                    # Filter out same fine label
+                    pos_candidates = [idx for idx in coarse_group if labels[idx].item() != fine_lbl]
+                    
+                    if len(pos_candidates) == 0:
+                        continue
+                    
+                    pos_idx = pos_candidates[torch.randint(0, len(pos_candidates), (1,)).item()]
+                    
+                    # Pick negative (different coarse label)
+                    neg_idx = torch.randint(0, num_pts, (1,)).item()
+                    while coarse_labels[neg_idx].item() == coarse_lbl:
+                        neg_idx = torch.randint(0, num_pts, (1,)).item()
+                        
+                    triplets.append([anchor_idx, pos_idx, neg_idx])
+
+        if not triplets:
+             # Fallback to random if empty
+             num_samples = self.hyphc_triplet_subsampling_size
+             samples = []
+             for _ in range(num_samples):
+                triplet = [torch.randint(0, num_pts, (1,)).item() for _ in range(3)]
+                samples.append(triplet)
+             sampled_triplet_indices = torch.tensor(samples, device=device)
+             sampled_indices = torch.unique(sampled_triplet_indices)
+             np_sampled_triplet_indices = sampled_triplet_indices.cpu().numpy()
+             return sampled_indices, np_sampled_triplet_indices
+             
+        sampled_triplet_indices = torch.tensor(triplets, device=device)
+        sampled_indices = torch.unique(sampled_triplet_indices)
+        np_sampled_triplet_indices = sampled_triplet_indices.cpu().numpy()
+        
+        return sampled_indices, np_sampled_triplet_indices
+
     def sample_triplets(
-        self, num_pts: int, device: torch.device, points: torch.Tensor | None = None
+        self,
+        num_pts: int,
+        device: torch.device,
+        points: torch.Tensor | None = None,
+        labels: torch.Tensor | None = None,
+        coarse_labels: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, np.ndarray]:
         """Sample triplets for the HypHC loss."""
+        if self.hyphc_sampling_strategy == "ground_truth" and labels is not None:
+            return self._sample_ground_truth_triplets(num_pts, device, labels, coarse_labels)
+        
         if self.hyphc_sampling_strategy == "all_subsample_triplets":
             sampled_indices = torch.randperm(num_pts, device=device)[
                 : min(self.hyphc_triplet_subsampling_size, num_pts)
@@ -406,7 +543,12 @@ class HyperbolicHCModel(AbstractModel):
             raise NotImplementedError("Only PoincareBall manifold is implemented.")
         return dists.mean()
 
-    def compute_hyphc_loss_wang(self, embeddings: torch.Tensor) -> Tuple[
+    def compute_hyphc_loss_wang(
+        self, 
+        embeddings: torch.Tensor,
+        labels: torch.Tensor | None = None,
+        coarse_labels: torch.Tensor | None = None
+    ) -> Tuple[
         torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         n = embeddings.size(0)
         device = embeddings.device
@@ -416,6 +558,8 @@ class HyperbolicHCModel(AbstractModel):
             n,
             device,
             points=embeddings if self.hyphc_sampling_strategy == "nn" else None,
+            labels=labels,
+            coarse_labels=coarse_labels,
         )
         # Compute the pairwise distances
         if self.distances_type == "geodesic":
@@ -424,7 +568,7 @@ class HyperbolicHCModel(AbstractModel):
                 self.manifold,
                 version=self.distances_version,
             )
-            similarties = torch.reciprocal(1 + distances)
+            dist_similarities = torch.reciprocal(1 + distances)
         elif self.distances_type == "cosine_similarity":
             embeddings_normalized = torch.nn.functional.normalize(
                 embeddings[sampled_indices], p=2, dim=-1
@@ -432,9 +576,47 @@ class HyperbolicHCModel(AbstractModel):
             distances = torch.mm(embeddings_normalized, embeddings_normalized.T).clamp(
                 min=-1.0, max=1.0
             )
-            similarties = (1 - distances) / (1 + distances)
+            dist_similarities = (1 - distances) / (1 + distances)
         else:
             raise ValueError(f"Invalid distances type: {self.distances_type}")
+        
+        # Compute similarities based on GT labels
+        if self.gt_similarity_mode == "hierarchical" and labels is not None and coarse_labels is not None:
+            # Multi-level hierarchical similarity using both fine and coarse labels
+            fine_match = (labels[sampled_indices].unsqueeze(0) == labels[sampled_indices].unsqueeze(1)).float()
+            coarse_match = (coarse_labels[sampled_indices].unsqueeze(0) == coarse_labels[sampled_indices].unsqueeze(1)).float()
+            
+            # Combine into a smooth, multi-level weight matrix
+            # Points with same fine label get S_FINE
+            # Points with same coarse label (but different fine) get S_COARSE
+            # Others get S_DIFF
+            similarties = fine_match * self.s_fine + \
+                         (coarse_match - fine_match) * self.s_coarse + \
+                         (1 - coarse_match) * self.s_diff
+        
+        elif self.gt_similarity_mode == "hybrid" and labels is not None:
+            # Hybrid GT-Distance similarity: blend GT labels with manifold distances
+            # This anchors GT labels to the current latent representation for smoother optimization
+            label_match = (labels[sampled_indices].unsqueeze(0) == labels[sampled_indices].unsqueeze(1)).float()
+            # Apply label smoothing to prevent sharp boundaries
+            smooth_label_match = label_match * 0.9 + 0.05
+            
+            # If coarse labels are available, use hierarchical weights for better blending
+            if coarse_labels is not None:
+                fine_match = label_match
+                coarse_match = (coarse_labels[sampled_indices].unsqueeze(0) == coarse_labels[sampled_indices].unsqueeze(1)).float()
+                gt_similarities = fine_match * self.s_fine + \
+                                 (coarse_match - fine_match) * self.s_coarse + \
+                                 (1 - coarse_match) * self.s_diff
+            else:
+                gt_similarities = smooth_label_match
+            
+            # Blend GT-based similarity with distance-based similarity
+            similarties = self.gt_alpha * gt_similarities + (1 - self.gt_alpha) * dist_similarities
+        
+        else:
+            # Default: use only distance-based similarities
+            similarties = dist_similarities
 
         # Compute the pairwise lcas
         lcas = self.compute_lca_depth(embeddings[sampled_indices])
@@ -483,11 +665,18 @@ class HyperbolicHCModel(AbstractModel):
 
 
     def compute_hyphc_loss(
-        self, embeddings: torch.Tensor
+        self,
+        embeddings: torch.Tensor,
+        labels: torch.Tensor | None = None,
+        coarse_labels: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         
         if self.lca_version == "wang":
-            return self.compute_hyphc_loss_wang(embeddings)
+            return self.compute_hyphc_loss_wang(
+                embeddings, 
+                labels=labels, 
+                coarse_labels=coarse_labels
+            )
         
         n = embeddings.size(0)
         device = embeddings.device
@@ -497,6 +686,8 @@ class HyperbolicHCModel(AbstractModel):
             n,
             device,
             points=embeddings if self.hyphc_sampling_strategy == "nn" else None,
+            labels=labels,
+            coarse_labels=coarse_labels,
         )
         # Compute the pairwise distances
         if self.distances_type == "geodesic":
@@ -666,7 +857,7 @@ class HyperbolicHCModel(AbstractModel):
         return loss.mean()
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
-        x_aug_1, x_aug_2, x, _ = batch
+        x_aug_1, x_aug_2, x, labels = batch
         x_aug_1 = x_aug_1.to(dtype=get_dtype_from_precision(self.params_dtype))
         x_aug_2 = x_aug_2.to(dtype=get_dtype_from_precision(self.params_dtype))
         x = x.to(dtype=get_dtype_from_precision(self.params_dtype))
@@ -748,8 +939,18 @@ class HyperbolicHCModel(AbstractModel):
             # standard_hyphc_loss += dists
         else:
             #TODO find out which one works better
+            coarse_labels = None
+            if self.hyphc_sampling_strategy == "ground_truth":
+                is_cifar100 = False
+                if hasattr(self, "trainer") and hasattr(self.trainer, "datamodule") and hasattr(self.trainer.datamodule, "hparams"):
+                    if self.trainer.datamodule.hparams.dataset_name == "cifar100":
+                        is_cifar100 = True
+                
+                if is_cifar100:
+                    coarse_labels = torch.tensor([_CIFAR100_COARSE_LABELS[l.item()] for l in labels], device=labels.device)
+
             standard_hyphc_loss, triplet_loss, similarties_sum, normalized_loss = (
-                self.compute_hyphc_loss(cluster_z_aug_1)
+                self.compute_hyphc_loss(cluster_z_aug_1, labels=labels, coarse_labels=coarse_labels)
             )
 
         if self.normalized_hyphc_loss:
