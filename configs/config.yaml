@@ -72,9 +72,9 @@ hyphc:
   # GT-based similarity parameters
   gt_similarity_mode: 'hybrid'  # 'none', 'hierarchical', 'hybrid'
   gt_alpha: 0.7  # Influence of GT vs. Geometry (for hybrid mode)
-  s_fine: 1.0  # Weight for same class
-  s_coarse: 0.4  # Weight for same superclass, different class
-  s_diff: 0.05  # Weight for completely different classes
+  s_fine: 0.9  # Weight for same class
+  s_coarse: 0.5  # Weight for same superclass, different class
+  s_diff: 0.1  # Weight for completely different classes
 
 ## Model architecture
 architecture:
@@ -107,19 +107,23 @@ evaluation:
   delta_hyperbolicity: False
   dendrogram_purity_single: False
   dendrogram_purity_complete: True
-  dendrogram_purity_average: True
-  dendrogram_purity_ward: False
+  dendrogram_purity_average: False
+  dendrogram_purity_ward: True
   agglomerative_clustering_single: False
   agglomerative_clustering_complete: True
-  agglomerative_clustering_average: True
-  agglomerative_clustering_ward: False
-  nearest_neighbors_accuracy: True
+  agglomerative_clustering_average: False
+  agglomerative_clustering_ward: True
+  nearest_neighbors_accuracy: False
   spectral_clustering: False
   visualization: True
-  kmeans: True
+  kmeans: False
   dasgupta_cost: False
   visualization_sample_size: 5000
   test_sample_size: 0 # if 0 all datapoints are used
+  # WordNet hierarchy for CIFAR-100 evaluation
+  use_wordnet_labels: False  # Use WordNet hierarchy instead of standard coarse labels for CIFAR-100
+  wordnet_hierarchy_path: './data/cifar100_wordnet_hierarchy.txt'  # Path to parent-child hierarchy file
+  wordnet_download_if_missing: True  # Automatically download hierarchy file if not found
 
 ## Logging
 wandb:

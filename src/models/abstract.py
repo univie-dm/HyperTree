@@ -13,6 +13,7 @@ from src.evaluation import evaluation
 from src.hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.hyperbolic_math.src.utils.math_utils import atanh
+from src.utils.wordnet_hierarchy import get_wordnet_labels_for_cifar100
 
 
 class AbstractModel(pl.LightningModule):
@@ -311,6 +312,44 @@ class AbstractModel(pl.LightningModule):
 
                 all_embeddings = torch.cat(embeddings, dim=0)
                 all_labels = torch.cat(labels, dim=0)
+                
+                # Override with WordNet labels if configured for CIFAR-100
+                use_wordnet = self.evaluation_metrics.get("use_wordnet_labels", False)
+                if use_wordnet:
+                    try:
+                        # Get dataset name from datamodule
+                        dataset_name = None
+                        if hasattr(self.trainer, 'datamodule') and self.trainer.datamodule is not None:
+                            datamodule_hparams = getattr(self.trainer.datamodule, 'hparams', None)
+                            if datamodule_hparams and hasattr(datamodule_hparams, 'dataset_name'):
+                                dataset_name = datamodule_hparams.dataset_name
+                        
+                        # Only apply WordNet labels for CIFAR-100
+                        if dataset_name == "cifar100":
+                            wordnet_path = self.evaluation_metrics.get(
+                                "wordnet_hierarchy_path", 
+                                "./data/cifar100_wordnet_hierarchy.txt"
+                            )
+                            download_if_missing = self.evaluation_metrics.get(
+                                "wordnet_download_if_missing", 
+                                True
+                            )
+                            
+                            # Ensure types are correct
+                            if not isinstance(wordnet_path, str):
+                                wordnet_path = str(wordnet_path)
+                            if not isinstance(download_if_missing, bool):
+                                download_if_missing = bool(download_if_missing)
+
+                            wordnet_labels, _ = get_wordnet_labels_for_cifar100(
+                                all_labels.cpu().numpy(),
+                                hierarchy_file=wordnet_path,
+                                download_if_missing=download_if_missing
+                            )
+                            coarse_labels_array = wordnet_labels
+                    except Exception as e:
+                        print(f"Warning: Failed to load WordNet labels: {e}")
+                        print("Falling back to standard coarse labels (if available)")
 
                 # Compute the pairwise distances (non-smoothened for evaluation)
                 if self.distances_type == "geodesic":
@@ -328,6 +367,17 @@ class AbstractModel(pl.LightningModule):
                 else:
                     raise ValueError(f"Invalid distances_type: {self.distances_type}")
 
+                distance_matrix_triu = torch.triu(distance_matrix, diagonal=1)
+                mask = torch.triu(torch.ones_like(distance_matrix), diagonal=1).bool()
+                plt.hist(distance_matrix_triu[mask].cpu().numpy().flatten(), bins=50)
+                self.metrics["test/distance_histogram"] = wandb.Image(plt)
+                plt.clf()
+
+                self.metrics["test/mean_distance"] = distance_matrix_triu[mask].mean().item()
+                self.metrics["test/std_distance"] = distance_matrix_triu[mask].std().item()
+                self.metrics["test/min_distance"] = distance_matrix_triu[mask].min().item()
+                self.metrics["test/max_distance"] = distance_matrix_triu[mask].max().item()
+
                 str_labels_array = np.array(str_labels) if str_labels else None
 
                 evaluation_results = evaluation(
@@ -339,11 +389,7 @@ class AbstractModel(pl.LightningModule):
                     str_labels=str_labels_array,
                     Y_coarse=coarse_labels_array,
                 )
-                similarties = distance_matrix.cpu().detach()
-                similarties = 1 / (1 + similarties).clamp_min(1e-15)
-                plt.hist(similarties.numpy().flatten(), bins=20)
-                self.metrics["test/similarities_histogram"] = wandb.Image(plt)
-                plt.clf()
+
 
                 del all_embeddings, all_labels, distance_matrix, embeddings, labels
 
@@ -386,6 +432,7 @@ class AbstractModel(pl.LightningModule):
         self.train()
 
     def on_train_epoch_end(self) -> None:
+        print('\n',self.minimum, '\n',flush=True)
         if self.current_epoch > 0:
             self.test_phase()
         self.metrics[f"{self.stage}/epoch"] = self.current_epoch + 1

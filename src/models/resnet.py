@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
+from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.models.abstract import AbstractModel, FeatureScaling
 from src.models.utils import (
     get_dtype_from_precision,
@@ -128,20 +129,18 @@ class HyperbolicResNet(AbstractModel):
             FHCNN_normalize=FHCNN_normalize,
             feature_scaling=feature_scaling,
         )
-        self.output_size = output_size
-        self.clamping_factor = clamping_factor
-        self.smoothing_factor = smoothing_factor
-        self.learnable_scale = learnable_scale
-        self.normalize = normalize
-        self.contrastive_enabled = contrastive_enabled
-        self.contrastive_weight = contrastive_weight
-        self.recon_weight = recon_weight
-        self.contrastive_temperature = contrastive_temperature
-        self.byol = byol
-        self.projection_layer_dims = projection_layer_dims
-        self.euclidean_latentspace = euclidean_latentspace
+        self.minimum = 100000.0
 
         self.save_hyperparameters()
+        self.output_size = output_size
+        self.projection_layer_dims = projection_layer_dims
+        self.contrastive_enabled = contrastive_enabled
+        self.contrastive_weight = contrastive_weight
+        self.contrastive_temperature = contrastive_temperature
+        self.byol = byol
+        self.recon_weight = recon_weight
+        self.euclidean_latentspace = euclidean_latentspace
+        self.normalize = normalize
 
         # Decoder params
         # ResNet18 and ResNet34 use BasicBlock (expansion=1)
@@ -415,6 +414,13 @@ class HyperbolicResNet(AbstractModel):
         )
         self.metrics.setdefault("latent_space/norm_mean", []).append(
             z_x.norm(p=2, dim=-1).mean().detach().item()
+        )
+
+        distance_matrix = compute_pairwise_distances(
+            z_x, self.manifold, version=self.distances_version
+        )
+        self.minimum = min(
+            self.minimum, distance_matrix.min().detach().item()
         )
 
         if not isinstance(loss, torch.Tensor):

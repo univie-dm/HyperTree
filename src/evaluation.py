@@ -187,12 +187,6 @@ def evaluation(
             f"Embeddings appear collapsed (std={embedding_std:.2e}, mean_norm={embedding_mean_norm:.2e}). Clustering metrics may be unreliable."
         )
 
-    if not isinstance(manifold, Euclidean):
-        distance_matrix += (
-            2 / manifold.c
-            if isinstance(manifold.c, torch.Tensor)
-            else 2 / torch.tensor(manifold.c)
-        )
     if distance_matrix.min() < 0:
         warning(
             "Distance matrix contains negative values. Clipping to zero. Minimum: {}".format(

@@ -1,0 +1,67 @@
+architecture:
+  latent_dim: 32
+  cluster_dim: 32
+  ae_type: resnet50
+  curvature_magnitude: 1.0
+  spectral_normalization: false
+  activation_function: swish
+  manifold_name: PoincareBall
+  hyperbolic_encoding: HyperbolicLinearPP
+  manifold_precision: float64
+  precision: float64
+  use_seperate_heads: false
+
+pretraining:
+  epochs: 20
+  overwrite: false
+  recon_weight: 0.0
+  weight_decay: 1e-5
+  trainable_curvature: false
+  learning_rate: 0.003
+  contrastive_loss:
+    temperature: 0.5
+    enabled: true
+    byol: false
+
+clustering:
+  epochs: 200
+  learning_rate: 1e-4
+  weight_decay: 1e-5
+  freeze_encoder: false
+  contrastive_loss:
+    enabled: true
+    weight: 0.1
+
+hyphc:
+  max_loss_weight: 10.0
+  min_loss_weight: 1.0
+  loss_weight_interval: 100
+  normalized_loss: true
+  dist_sum_loss: true
+  triplet_subsampling_size: 500
+  sampling_strategy: chami
+  fine_triplet_ratio: 0.5
+  lca_version: wang
+  triplet_margin: 1.0
+  hierarchy_weight: 0.0
+  hierarchy_margin: 0.1
+  distances_type: geodesic
+
+experiment:
+  gradient_clip_value: 5.0
+  optimizer: Adam
+  num_workers: 20
+  batch_size: 512
+  log_interval: 2
+  seed: 1
+
+wandb:
+  tags:
+    - cifar100
+    - poincare
+
+evaluation:
+  use_wordnet_labels: true
+
+defaults:
+ - config

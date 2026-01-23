@@ -1,5 +1,5 @@
 from src.models.utils import get_dtype_from_precision
-from src.utils import (
+from src.utils.utils import (
     get_datamodule,
     get_pretrain_model,
     get_clustering_model,
@@ -27,11 +27,11 @@ install()
 @threadpool_limits.wrap(limits=1, user_api="blas")
 def main(cfg: DictConfig) -> None:
     try:
-        print(cfg, flush=True)
+        print(cfg)
         if cfg.experiment.seed >= 0:
             seed_everything(cfg.experiment.seed)
         else:
-            print("Warning: Running without setting seed!", flush=True)
+            print("Warning: Running without setting seed!")
         if cfg.architecture.precision == "float32":
             torch.set_float32_matmul_precision("medium")
             torch.set_default_dtype(torch.float32)

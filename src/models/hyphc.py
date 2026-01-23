@@ -971,6 +971,9 @@ class HyperbolicHCModel(AbstractModel):
             hyphc_loss = hyphc_loss + hierarchy_loss * self.hierarchy_weight
         total_loss = recon_loss * self.recon_weight + hyphc_loss * hyphc_loss_weight
 
+        dist_to_origin = self.manifold.dist_0(cluster_z_x).mean()
+        #total_loss += dist_to_origin * 0.05  # Prevents boundary collapse
+
         if self.contrastive_enabled:
             # Encode both augmented views to get their hyperbolic embeddings
 
