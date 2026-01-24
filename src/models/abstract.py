@@ -432,7 +432,6 @@ class AbstractModel(pl.LightningModule):
         self.train()
 
     def on_train_epoch_end(self) -> None:
-        print('\n',self.minimum, '\n',flush=True)
         if self.current_epoch > 0:
             self.test_phase()
         self.metrics[f"{self.stage}/epoch"] = self.current_epoch + 1

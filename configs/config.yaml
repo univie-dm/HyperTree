@@ -70,8 +70,8 @@ hyphc:
   hierarchy_margin: 0.2
   triplet_margin: 8.0
   # GT-based similarity parameters
-  gt_similarity_mode: 'hybrid'  # 'none', 'hierarchical', 'hybrid'
-  gt_alpha: 0.7  # Influence of GT vs. Geometry (for hybrid mode)
+  gt_similarity_mode: 'none'  # 'none', 'hierarchical', 'hybrid'
+  gt_alpha: 0.0  # Influence of GT vs. Geometry (for hybrid mode)
   s_fine: 0.9  # Weight for same class
   s_coarse: 0.5  # Weight for same superclass, different class
   s_diff: 0.1  # Weight for completely different classes
@@ -113,7 +113,7 @@ evaluation:
   agglomerative_clustering_complete: True
   agglomerative_clustering_average: False
   agglomerative_clustering_ward: True
-  nearest_neighbors_accuracy: False
+  nearest_neighbors_accuracy: True
   spectral_clustering: False
   visualization: True
   kmeans: False

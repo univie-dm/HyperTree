@@ -567,7 +567,7 @@ class HyperbolicHCModel(AbstractModel):
                 embeddings[sampled_indices],
                 self.manifold,
                 version=self.distances_version,
-            )
+            ).clamp(min=1e-2)
             dist_similarities = torch.reciprocal(1 + distances)
         elif self.distances_type == "cosine_similarity":
             embeddings_normalized = torch.nn.functional.normalize(

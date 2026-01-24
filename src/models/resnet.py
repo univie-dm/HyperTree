@@ -129,7 +129,6 @@ class HyperbolicResNet(AbstractModel):
             FHCNN_normalize=FHCNN_normalize,
             feature_scaling=feature_scaling,
         )
-        self.minimum = 100000.0
 
         self.save_hyperparameters()
         self.output_size = output_size
@@ -414,13 +413,6 @@ class HyperbolicResNet(AbstractModel):
         )
         self.metrics.setdefault("latent_space/norm_mean", []).append(
             z_x.norm(p=2, dim=-1).mean().detach().item()
-        )
-
-        distance_matrix = compute_pairwise_distances(
-            z_x, self.manifold, version=self.distances_version
-        )
-        self.minimum = min(
-            self.minimum, distance_matrix.min().detach().item()
         )
 
         if not isinstance(loss, torch.Tensor):
