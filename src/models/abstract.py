@@ -156,7 +156,7 @@ class AbstractModel(pl.LightningModule):
         elif self.distances_type == "geodesic":
             # Use geodesic distance for hyperbolic embeddings
             distance_matrix = compute_pairwise_distances(
-                z, self.manifold, version=self.distances_version
+                z, self.manifold
             )
             similarity_matrix = -distance_matrix / temperature
         else:

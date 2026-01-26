@@ -369,7 +369,7 @@ class HyperbolicResNet(AbstractModel):
                 use_euclidean=False,
             )
             loss = self.recon_weight * loss + self.contrastive_weight * contrastive_loss
-            dist_to_center = self.manifold.dist_0(z_x, version=self.distances_version).mean()
+            dist_to_center = self.manifold.dist_0(z_x).mean()
             #loss = loss + dist_to_center * 0.01  # Regularization term
             self.metrics.setdefault("pretrain/dist_to_center", []).append(
                 dist_to_center.detach().item()

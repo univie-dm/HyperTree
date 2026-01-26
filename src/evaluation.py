@@ -1,3 +1,4 @@
+import os
 from logging import warning
 from matplotlib import pyplot as plt
 import torch
@@ -1362,6 +1363,71 @@ def dendrogram_purity(
     return total_purity_sum / num_same_class_pairs
 
 
+def _load_cifar100_hierarchy(file_path):
+    """
+    Parses the CIFAR-100 WordNet hierarchy file.
+    Returns a list of sets, where each set contains the fine labels (0-99)
+    belonging to a node in the hierarchy.
+    """
+    if not os.path.exists(file_path):
+        return None
+        
+    adj = {}
+    nodes = set()
+    try:
+        with open(file_path, 'r') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    u, v = int(parts[0]), int(parts[1])
+                    # Format is usually Parent Child.
+                    adj.setdefault(u, []).append(v)
+                    nodes.add(u)
+                    nodes.add(v)
+    except Exception:
+        return None
+                
+    node_leaves = {}
+    
+    def get_leaves(u):
+        if u in node_leaves:
+            return node_leaves[u]
+        
+        # If u is a leaf (0-99), return {u}
+        if 0 <= u <= 99:
+             s = {u}
+             node_leaves[u] = s
+             return s
+             
+        leaves = set()
+        if u in adj:
+            for v in adj[u]:
+                leaves.update(get_leaves(v))
+        
+        node_leaves[u] = leaves
+        return leaves
+
+    all_clusters = []
+    for u in nodes:
+        leaves = get_leaves(u)
+        if len(leaves) > 0:
+            all_clusters.append(leaves)
+            
+    # Include individual leaves if not covered (they should be, but as singletons)
+    # The loop above covers leaf nodes if they are in 'nodes'.
+    # If a leaf is disconnected or only a child, it's in 'nodes'.
+    
+    unique_clusters = []
+    seen = set()
+    for c in all_clusters:
+        c_frozen = frozenset(c)
+        if c_frozen not in seen and len(c) > 0:
+            seen.add(c_frozen)
+            unique_clusters.append(c)
+            
+    return unique_clusters
+
+
 def hierarchical_dendrogram_purity(
     distance_matrix: torch.Tensor,
     labels_fine: np.ndarray | torch.Tensor,
@@ -1370,40 +1436,12 @@ def hierarchical_dendrogram_purity(
 ) -> float:
     """
     Computes the Hierarchical Dendrogram Purity for a hierarchy built from a distance matrix.
-
-    This function evaluates the dendrogram against multiple levels of ground-truth labels,
-    calculating the purity for both fine-grained and coarse-grained classes.
-
-    This is the correct metric for datasets with hierarchical structure like:
-    - CIFAR-100 (100 fine classes nested in 20 coarse classes)
-    - GTSRB (43 fine traffic signs nested in coarse categories)
-
-    The formula computes:
-    DP_hierarchical(T) = (1 / |P*|) * Σ_{all clusters C*} Σ_{xi, xj ∈ C*, i≠j} pur(lca(xi, xj), C*)
-
-    where P* includes pairs from both fine AND coarse ground-truth clusters.
-
-    Args:
-        distance_matrix (torch.Tensor): A square N x N matrix of pairwise distances.
-        labels_fine (np.ndarray | torch.Tensor): A 1D array of size N with fine-grained class labels.
-        labels_coarse (np.ndarray | torch.Tensor): A 1D array of size N with coarse-grained class labels.
-        linkage_method (str): The linkage algorithm to use (e.g., 'average', 'single', 'complete').
-
-    Returns:
-        float: The Hierarchical Dendrogram Purity score, between 0 and 1.
-
-    Example:
-        For CIFAR-100:
-        - labels_fine: 100 fine classes (e.g., 'maple_tree', 'oak_tree', 'palm_tree', ...)
-        - labels_coarse: 20 coarse classes (e.g., 'trees', 'flowers', 'people', ...)
-
-        This will evaluate against all 120 ground-truth clusters (100 fine + 20 coarse).
+    Supports CIFAR-100 full 8-level hierarchy if the hierarchy file is present.
     """
     num_samples = len(labels_fine)
     if num_samples < 2:
         return 1.0
 
-    # Ensure numpy arrays
     distance_matrix_np = distance_matrix.cpu().numpy()
     labels_fine_np = np.asarray(labels_fine)
     labels_coarse_np = np.asarray(labels_coarse)
@@ -1411,6 +1449,73 @@ def hierarchical_dendrogram_purity(
     if distance_matrix_np.shape != (num_samples, num_samples):
         raise ValueError("Distance matrix must be square and match number of labels.")
 
+    # Check for CIFAR-100 full hierarchy
+    # Hardcoded path relative to workspace or generic check
+    hierarchy_path = os.path.abspath("data/cifar100_wordnet_hierarchy.txt")
+    full_hierarchy_clusters = None
+    
+    # Simple heuristic to detect CIFAR-100: labels 0-99
+    if len(np.unique(labels_fine_np)) == 100 and labels_fine_np.max() == 99:
+        full_hierarchy_clusters = _load_cifar100_hierarchy(hierarchy_path)
+
+    if full_hierarchy_clusters:
+        # Use generalized hierarchical DP
+        
+        # 1. Calculate Normalization Factor
+        _, fine_counts = np.unique(labels_fine_np, return_counts=True)
+        # We need a map label -> count
+        fine_label_counts_map = dict(zip(np.unique(labels_fine_np), fine_counts))
+        
+        num_same_class_pairs = 0
+        for cluster in full_hierarchy_clusters:
+            # Count points in this cluster
+            count = sum(fine_label_counts_map.get(l, 0) for l in cluster)
+            num_same_class_pairs += count * (count - 1) // 2
+            
+        if num_same_class_pairs == 0:
+            return 1.0
+
+        # 2. Build Dendrogram
+        condensed_distances = squareform(distance_matrix_np, checks=False)
+        Z = linkage(condensed_distances, method=linkage_method)
+
+        # 3. Calculate Purity
+        total_purity_sum = 0.0
+        cluster_label_counts = {i: Counter({labels_fine_np[i]: 1}) for i in range(num_samples)}
+
+        for i, merge in enumerate(Z):
+            node1_id, node2_id = int(merge[0]), int(merge[1])
+            new_node_id = num_samples + i
+
+            counts1 = cluster_label_counts[node1_id]
+            counts2 = cluster_label_counts[node2_id]
+            new_node_counts = counts1 + counts2
+            cluster_label_counts[new_node_id] = new_node_counts
+            lca_node_size = sum(new_node_counts.values())
+
+            # For optimization, we only evaluate clusters that have representatives in both children
+            # But iterating all clusters is safer/easier logic and fast enough
+            
+            # Optimization: Only iterate clusters that contain at least one label present in new_node_counts
+            # present_labels = set(new_node_counts.keys())
+            # But constructing set every time is slow.
+            
+            for cluster in full_hierarchy_clusters:
+                n1_k = sum(counts1[l] for l in cluster if l in counts1)
+                n2_k = sum(counts2[l] for l in cluster if l in counts2)
+                
+                num_new_pairs = n1_k * n2_k
+                if num_new_pairs > 0:
+                    count_in_lca = n1_k + n2_k
+                    purity = count_in_lca / lca_node_size
+                    total_purity_sum += num_new_pairs * purity
+
+            del cluster_label_counts[node1_id]
+            del cluster_label_counts[node2_id]
+            
+        return total_purity_sum / num_same_class_pairs
+
+    # Fallback to original 2-level logic
     if len(labels_fine_np) != len(labels_coarse_np):
         raise ValueError("Fine and coarse labels must have the same length.")
 

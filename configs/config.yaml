@@ -70,7 +70,7 @@ hyphc:
   hierarchy_margin: 0.2
   triplet_margin: 8.0
   # GT-based similarity parameters
-  gt_similarity_mode: 'none'  # 'none', 'hierarchical', 'hybrid'
+  gt_similarity_mode: 'none'  # 'none', 'hierarchical', 'hybrid', 'pseudo'
   gt_alpha: 0.0  # Influence of GT vs. Geometry (for hybrid mode)
   s_fine: 0.9  # Weight for same class
   s_coarse: 0.5  # Weight for same superclass, different class

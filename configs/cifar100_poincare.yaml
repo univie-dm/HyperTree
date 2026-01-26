@@ -2,10 +2,10 @@ architecture:
   latent_dim: 32
   cluster_dim: 32
   ae_type: resnet50
-  curvature_magnitude: 1.0
+  curvature_magnitude: 0.0
   spectral_normalization: false
   activation_function: swish
-  manifold_name: PoincareBall
+  manifold_name: Euclidean
   hyperbolic_encoding: HyperbolicLinearPP
   manifold_precision: float64
   precision: float64
@@ -46,7 +46,8 @@ hyphc:
   hierarchy_weight: 0.0
   hierarchy_margin: 0.1
   distances_type: geodesic
-  gt_alpha: 0.0
+  gt_alpha: 0.7
+  gt_similarity_mode: pseudo
 
 experiment:
   gradient_clip_value: 5.0
