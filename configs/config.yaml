@@ -57,7 +57,7 @@ hyphc:
   min_loss_weight: 0.0
   loss_weight_interval: 0 # 0 equals to max_loss_weight all times
   temperature: 0.5  # Increased from 0.01 for softer gradients when using GT
-  sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'chami', 'probabilistic_coverage','random'
+  sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'chami', 'probabilistic_coverage','random','random_with_replace'
   fine_triplet_ratio: 0.5
   triplet_subsampling_size: 200
   num_nn: 100
@@ -75,6 +75,7 @@ hyphc:
   s_fine: 0.9  # Weight for same class
   s_coarse: 0.5  # Weight for same superclass, different class
   s_diff: 0.1  # Weight for completely different classes
+  similarity_pruning_threshold: 0.0 # Threshold below which similarities are ignored to sparsify the similarity matrix
 
 ## Model architecture
 architecture:

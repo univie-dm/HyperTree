@@ -72,6 +72,7 @@ class HyperbolicHCModel(AbstractModel):
         s_fine: float = 1.0,  # Weight for same class
         s_coarse: float = 0.4,  # Weight for same superclass, different class
         s_diff: float = 0.05,  # Weight for completely different classes
+        similarity_pruning_threshold: float = 0.0,  # Threshold below which similarities are ignored
     ):
         super().__init__(
             model_type=ae_model.model_type,
@@ -112,6 +113,7 @@ class HyperbolicHCModel(AbstractModel):
         self.s_fine = s_fine
         self.s_coarse = s_coarse
         self.s_diff = s_diff
+        self.similarity_pruning_threshold = similarity_pruning_threshold
         self.normalized_hyphc_loss = normalized_hyphc_loss
         self.distances_type = distances_type
         self.hyphc_dist_sum_loss = hyphc_dist_sum_loss
@@ -380,6 +382,12 @@ class HyperbolicHCModel(AbstractModel):
             np_sampled_triplet_indices = (
                 torch.combinations(sampled_indices, r=3).cpu().numpy()
             )
+        elif self.hyphc_sampling_strategy == "random_with_replace":
+            random_indices = torch.randint(0, num_pts*(num_pts-1)*(num_pts-2)-1, 
+                                           (min(self.hyphc_triplet_subsampling_size, num_pts),), device=device)
+            sampled_triplet_indices = self.decode_triplet_indices_new(random_indices)
+            np_sampled_triplet_indices = sampled_triplet_indices.cpu().numpy()
+            sampled_indices = torch.unique(sampled_triplet_indices)
         elif self.hyphc_sampling_strategy == "chami":
             sampled_indices = torch.randperm(num_pts, device=device)[
                 : min(self.hyphc_triplet_subsampling_size, num_pts)
@@ -456,6 +464,25 @@ class HyperbolicHCModel(AbstractModel):
                 f"Invalid sampling strategy: {self.hyphc_sampling_strategy}"
             )
         return sampled_indices, np_sampled_triplet_indices
+    
+    def decode_triplet_indices_new(self, indices):
+        # Indices: Tensor of shape (m,) with integer IDs in [0, n*(n-1)*(n-2)-1]
+        # Decode the triplets (i, j, k) from the integer IDs
+        ## Decode the first index 'i' from n options
+        batch_n = int(self.trainer.datamodule.batch_size)
+        i = indices % batch_n
+        temp = indices // batch_n
+        ## Decode the second index 'j' from (n-1) options
+        j = temp % (batch_n - 1)
+        ## Decode the third index 'k' from (n-2) options
+        k = temp // (batch_n - 1) % (batch_n - 2)
+        # Adjust j to avoid collision with i (i == j)
+        j = j + (j >= i).long()
+        # Adjust k to avoid collisions with i and j
+        low = torch.min(i, j)
+        high = torch.max(i, j)
+        k = k + (k >= low).long() + (k >= high - 1).long()
+        return torch.stack([i, j, k], dim=1)
 
     def compute_lca_depth_chami(
         self, points: torch.Tensor, batch_size: int = 1_000
@@ -564,12 +591,16 @@ class HyperbolicHCModel(AbstractModel):
         )
         # Compute the pairwise distances
         if self.distances_type == "geodesic":
+            pts = embeddings[sampled_indices]
+            if pts.dim() > 2:
+                pts = pts.squeeze(-1)
             distances = compute_pairwise_distances(
-                embeddings[sampled_indices],
+                pts,
                 self.manifold,
                 version=self.distances_version,
-            ).clamp(min=1e-2)
+            )
             dist_similarities = torch.reciprocal(1 + distances)
+            dist_similarities = torch.where(dist_similarities <= self.similarity_pruning_threshold, torch.zeros_like(dist_similarities), dist_similarities)
         elif self.distances_type == "cosine_similarity":
             embeddings_normalized = torch.nn.functional.normalize(
                 embeddings[sampled_indices], p=2, dim=-1
@@ -578,6 +609,7 @@ class HyperbolicHCModel(AbstractModel):
                 min=-1.0, max=1.0
             )
             dist_similarities = (1 - distances) / (1 + distances)
+            dist_similarities[dist_similarities <= self.similarity_pruning_threshold] = 0.0
         else:
             raise ValueError(f"Invalid distances type: {self.distances_type}")
         

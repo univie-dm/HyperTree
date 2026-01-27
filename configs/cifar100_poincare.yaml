@@ -2,10 +2,10 @@ architecture:
   latent_dim: 32
   cluster_dim: 32
   ae_type: resnet50
-  curvature_magnitude: 0.0
+  curvature_magnitude: 1.0
   spectral_normalization: false
   activation_function: swish
-  manifold_name: Euclidean
+  manifold_name: PoincareBall
   hyperbolic_encoding: HyperbolicLinearPP
   manifold_precision: float64
   precision: float64
@@ -24,7 +24,7 @@ pretraining:
     byol: false
 
 clustering:
-  epochs: 300
+  epochs: 200
   learning_rate: 1e-4
   weight_decay: 1e-5
   freeze_encoder: false
@@ -33,13 +33,13 @@ clustering:
     weight: 0.1
 
 hyphc:
-  max_loss_weight: 5.0
+  max_loss_weight: 1.0
   min_loss_weight: 1.0
   loss_weight_interval: 100
   normalized_loss: true
   dist_sum_loss: true
-  triplet_subsampling_size: 1e6
-  sampling_strategy: all_subsample_triplets
+  triplet_subsampling_size: 500
+  sampling_strategy: random_with_replace
   fine_triplet_ratio: 0.5
   lca_version: wang
   triplet_margin: 1.0
@@ -47,7 +47,8 @@ hyphc:
   hierarchy_margin: 0.1
   distances_type: geodesic
   gt_alpha: 0.7
-  gt_similarity_mode: pseudo
+  gt_similarity_mode: none
+  similarity_pruning_threshold: 0.1
 
 experiment:
   gradient_clip_value: 5.0

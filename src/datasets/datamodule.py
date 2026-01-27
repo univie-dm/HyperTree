@@ -130,6 +130,7 @@ class ColorDataModule(pl.LightningDataModule):
     ):
         super().__init__()
         self.hparams: argparse.Namespace
+        self.batch_size = batch_size
         self.save_hyperparameters()
         self.dataset_map = {
             "cifar10": datasets.CIFAR10,
@@ -500,6 +501,7 @@ class GrayScaleDataModule(pl.LightningDataModule):
         super().__init__()
         self.hparams: argparse.Namespace
         self.save_hyperparameters()
+        self.batch_size = batch_size
         self.dataset_map = {
             "mnist": datasets.MNIST,
             "fmnist": datasets.FashionMNIST,

@@ -63,6 +63,7 @@ def evaluation(
     """
     results = {}
     points_in_manifold = False
+    Y_clustering = Y_coarse if Y_coarse is not None else Y
     if metrics is None:
         return results
 
@@ -202,7 +203,7 @@ def evaluation(
         sample_size = min(sample_size, len(X))
 
         # Sample equal number of points from each class for visualization
-        pca_sample_indices = stratified_sample(Y, sample_size)
+        pca_sample_indices = stratified_sample(Y_clustering, sample_size)
         points_sampled = X[pca_sample_indices]
 
         if isinstance(manifold, Euclidean):
@@ -215,9 +216,9 @@ def evaluation(
             two_d_pts = torch.tensor(two_d_pts, dtype=X.dtype, device=X.device)
             points_in_manifold = True
             colormap = "tab10"
-            if len(np.unique(Y)) > 10:
+            if len(np.unique(Y_clustering)) > 10:
                 colormap = "tab20"
-            if len(np.unique(Y)) > 20:
+            if len(np.unique(Y_clustering)) > 20:
                 colormap = "hsv"
         else:
             # Use HoroPCA for non-Euclidean manifolds
@@ -313,7 +314,7 @@ def evaluation(
             results["dendrogram_purity_ward"] = dp_score_ward
     if metrics.get("agglomerative_clustering_single", False):
         # Compute agglomerative clustering metrics
-        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+        Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
         agglomerative_clustering_single = AgglomerativeClustering(
             n_clusters=len(np.unique(Y_numpy)), metric="precomputed", linkage="single"
         )
@@ -361,7 +362,7 @@ def evaluation(
 
         if metrics["visualization"] and points_in_manifold:
             # Map predicted labels to string labels if available
-            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+            Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
             str_labels_subset = (
                 np.asarray(str_labels)[pca_sample_indices]
                 if str_labels is not None
@@ -441,7 +442,7 @@ def evaluation(
                 plt.close(fig)
     if metrics.get("agglomerative_clustering_complete", False):
         # Compute agglomerative clustering metrics
-        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+        Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
         agglomerative_clustering_complete = AgglomerativeClustering(
             n_clusters=len(np.unique(Y_numpy)), metric="precomputed", linkage="complete"
         )
@@ -488,7 +489,7 @@ def evaluation(
 
         if metrics["visualization"] and points_in_manifold:
             # Map predicted labels to string labels if available
-            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+            Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
             str_labels_subset = (
                 np.asarray(str_labels)[pca_sample_indices]
                 if str_labels is not None
@@ -582,7 +583,7 @@ def evaluation(
                 plt.close(fig)
     if metrics.get("agglomerative_clustering_average", False):
         # Compute agglomerative clustering metrics
-        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+        Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
         agglomerative_clustering_average = AgglomerativeClustering(
             n_clusters=len(np.unique(Y_numpy)), metric="precomputed", linkage="average"
         )
@@ -629,7 +630,7 @@ def evaluation(
 
         if metrics["visualization"] and points_in_manifold:
             # Map predicted labels to string labels if available
-            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+            Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
             str_labels_subset = (
                 np.asarray(str_labels)[pca_sample_indices]
                 if str_labels is not None
@@ -727,7 +728,7 @@ def evaluation(
         pass
     if metrics.get("visualization", False) and points_in_manifold:
         # Create a figure with the points and labels
-        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+        Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
         if str_labels is not None:
             str_labels_array = np.asarray(str_labels)
             labels = str_labels_array[pca_sample_indices]
@@ -807,19 +808,19 @@ def evaluation(
 
     if metrics.get("nearest_neighbors_accuracy", False):
         # Compute nearest neighbors accuracy
-        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y, k=1)
+        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y_clustering, k=1)
         results["1_nearest_neighbors_accuracy"] = nn_accuracy
-        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y, k=5)
+        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y_clustering, k=5)
         results["5_nearest_neighbors_accuracy"] = nn_accuracy
-        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y, k=10)
+        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y_clustering, k=10)
         results["10_nearest_neighbors_accuracy"] = nn_accuracy
-        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y, k=100)
+        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y_clustering, k=100)
         results["100_nearest_neighbors_accuracy"] = nn_accuracy
-        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y, k=1000)
+        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y_clustering, k=1000)
         results["1000_nearest_neighbors_accuracy"] = nn_accuracy
 
     if metrics.get("spectral_clustering", False):
-        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+        Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
         affinity_matrix = distance_matrix.cpu().numpy()
         spectral_clustering = SpectralClustering(
             n_clusters=len(np.unique(Y_numpy)),
@@ -869,7 +870,7 @@ def evaluation(
 
         if metrics["visualization"] and points_in_manifold:
             # Map predicted labels to string labels if available
-            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+            Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
             str_labels_subset = (
                 np.asarray(str_labels)[pca_sample_indices]
                 if str_labels is not None
@@ -945,7 +946,7 @@ def evaluation(
                 plt.close(fig)
     if metrics.get("kmeans", False):
         # Compute k-means clustering metrics
-        Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+        Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
         kmeans = KMeans(
             n_clusters=len(np.unique(Y_numpy)),
             n_init="auto",
@@ -990,7 +991,7 @@ def evaluation(
 
         if metrics["visualization"] and points_in_manifold:
             # Map predicted labels to string labels if available
-            Y_numpy = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+            Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
             str_labels_subset = (
                 np.asarray(str_labels)[pca_sample_indices]
                 if str_labels is not None
@@ -1421,7 +1422,8 @@ def _load_cifar100_hierarchy(file_path):
     seen = set()
     for c in all_clusters:
         c_frozen = frozenset(c)
-        if c_frozen not in seen and len(c) > 0:
+        # Exclude the root cluster (all 100 classes) to avoid trivial matches
+        if c_frozen not in seen and len(c) > 0 and len(c) < 100:
             seen.add(c_frozen)
             unique_clusters.append(c)
             
