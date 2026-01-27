@@ -7,8 +7,8 @@ architecture:
   activation_function: swish
   manifold_name: PoincareBall
   hyperbolic_encoding: HyperbolicLinearPP
-  manifold_precision: float64
-  precision: float64
+  manifold_precision: float32
+  precision: float32
   use_seperate_heads: false
 
 pretraining:

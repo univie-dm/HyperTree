@@ -383,9 +383,9 @@ class HyperbolicHCModel(AbstractModel):
                 torch.combinations(sampled_indices, r=3).cpu().numpy()
             )
         elif self.hyphc_sampling_strategy == "random_with_replace":
-            random_indices = torch.randint(0, num_pts*(num_pts-1)*(num_pts-2)-1, 
+            random_indices = torch.randint(0, num_pts*(num_pts-1)*(num_pts-2), 
                                            (min(self.hyphc_triplet_subsampling_size, num_pts),), device=device)
-            sampled_triplet_indices = self.decode_triplet_indices_new(random_indices)
+            sampled_triplet_indices = self.decode_triplet_indices_new(random_indices, num_pts)
             np_sampled_triplet_indices = sampled_triplet_indices.cpu().numpy()
             sampled_indices = torch.unique(sampled_triplet_indices)
         elif self.hyphc_sampling_strategy == "chami":
@@ -465,11 +465,11 @@ class HyperbolicHCModel(AbstractModel):
             )
         return sampled_indices, np_sampled_triplet_indices
     
-    def decode_triplet_indices_new(self, indices):
+    def decode_triplet_indices_new(self, indices, n):
         # Indices: Tensor of shape (m,) with integer IDs in [0, n*(n-1)*(n-2)-1]
         # Decode the triplets (i, j, k) from the integer IDs
         ## Decode the first index 'i' from n options
-        batch_n = int(self.trainer.datamodule.batch_size)
+        batch_n = n
         i = indices % batch_n
         temp = indices // batch_n
         ## Decode the second index 'j' from (n-1) options
