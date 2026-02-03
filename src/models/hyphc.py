@@ -67,7 +67,7 @@ class HyperbolicHCModel(AbstractModel):
         cluster_dim: int | None = None,
         hyphc_num_nn: int = 10,
         use_seperate_heads: bool = False,
-        gt_similarity_mode: str = "none",  # "none", "hierarchical", "hybrid", "pseudo"
+        gt_similarity_mode: str = "none",  # "none", "hierarchical", "hybrid"
         gt_alpha: float = 0.7,  # Influence of GT vs. Geometry for hybrid mode
         s_fine: float = 1.0,  # Weight for same class
         s_coarse: float = 0.4,  # Weight for same superclass, different class
@@ -614,7 +614,7 @@ class HyperbolicHCModel(AbstractModel):
             raise ValueError(f"Invalid distances type: {self.distances_type}")
         
         # Compute similarities based on GT labels
-        if (self.gt_similarity_mode == "hierarchical" or self.gt_similarity_mode == "pseudo") and labels is not None and coarse_labels is not None:
+        if (self.gt_similarity_mode == "hierarchical") and labels is not None and coarse_labels is not None:
             # Multi-level hierarchical similarity using both fine and coarse labels
             fine_match = (labels[sampled_indices].unsqueeze(0) == labels[sampled_indices].unsqueeze(1)).float()
             coarse_match = (coarse_labels[sampled_indices].unsqueeze(0) == coarse_labels[sampled_indices].unsqueeze(1)).float()
@@ -730,6 +730,7 @@ class HyperbolicHCModel(AbstractModel):
                 version=self.distances_version,
             )
             similarties = torch.reciprocal(1 + distances)
+            similarties = torch.where(similarties <= self.similarity_pruning_threshold, torch.zeros_like(similarties), similarties)
         elif self.distances_type == "cosine_similarity":
             embeddings_normalized = torch.nn.functional.normalize(
                 embeddings[sampled_indices], p=2, dim=-1
@@ -738,6 +739,7 @@ class HyperbolicHCModel(AbstractModel):
                 min=-1.0, max=1.0
             )
             similarties = (1 - distances) / (1 + distances)
+            similarties = torch.where(similarties <= self.similarity_pruning_threshold, torch.zeros_like(similarties), similarties)
         else:
             raise ValueError(f"Invalid distances type: {self.distances_type}")
         similarties_sum = similarties.sum()
@@ -853,120 +855,6 @@ class HyperbolicHCModel(AbstractModel):
                 x_recon = x_recon.view(-1, *shape)
         return x_recon
 
-    def on_train_epoch_start(self):
-        """
-        Hook to generate pseudo-labels at the start of each epoch if enabled.
-        This runs K-Means on the entire training set embeddings to generate
-        fine and coarse pseudo-labels.
-        """
-        if self.gt_similarity_mode != "pseudo":
-            return
-
-        # We need to gather embeddings for the entire training set
-        # Using the trainer's dataloader
-        try:
-            # Access the train dataloader from the datamodule if available, or trainer
-            if hasattr(self.trainer, "datamodule") and self.trainer.datamodule is not None:
-                dataloader = self.trainer.datamodule.train_dataloader()
-            else:
-                dataloader = self.trainer.train_dataloader
-
-            # Store original mode
-            training_mode = self.training
-            self.eval()
-
-            all_embeddings = []
-            device = self.device
-            
-            # Note: dealing with DDP would require gathering embeddings across ranks.
-            # Here we assume single process or that dataloader provides full data (e.g. valid for typical Hydra configs here)
-            # Create a simplified loader to iterate all data without shuffling if possible
-            # But reusing dataloader instance is safer for now
-            
-            with torch.no_grad():
-                # We iterate the existing dataloader. 
-                # Ideally we want to avoid shuffling to keep order? 
-                # Actually order doesn't matter for clustering itself, but updating labels does.
-                # If we update dataset.labels, we need to know which index corresponds to which sample.
-                # If the dataset is indexed by integer, we assume order is preserved or we need indices.
-                # Most standard datasets (CIFAR) are indexed 0..N.
-                # If dataloader shuffles, the order we get embeddings is shuffled.
-                # We can't just list all embeddings and cluster them, because we don't know which label to update.
-                # Wait! We need to assign labels back to the dataset.
-                # If we don't know the indices, we can't assign back.
-                # We need the batch to contain indices?
-                pass
-            
-            # Since I can't guarantee indices are in the batch, I should construct a DataLoader with shuffle=False
-            dataset = dataloader.dataset
-            temp_loader = torch.utils.data.DataLoader(
-                dataset, 
-                batch_size=dataloader.batch_size, 
-                shuffle=False, 
-                num_workers=dataloader.num_workers,
-                collate_fn=dataloader.collate_fn,
-                pin_memory=dataloader.pin_memory
-            )
-            
-            for batch in temp_loader:
-                # Generic batch unpacking - assuming (images, ..., ...)
-                if isinstance(batch, (list, tuple)):
-                    x = batch[0]
-                elif isinstance(batch, dict):
-                        # Try common keys
-                        x = batch.get("image") or batch.get("x") or batch.get("data")
-                else:
-                    x = batch
-                
-                x = x.to(device)
-                z = self.encode(x)[0] # self.encode returns (manifold_z, cluster_z)
-                all_embeddings.append(z.cpu())
-
-            all_embeddings = torch.cat(all_embeddings, dim=0).numpy()
-            
-            # Run K-Means
-            k_fine = 100
-            k_coarse = 20
-            
-            kmeans_fine = KMeans(n_clusters=k_fine, n_init=10, random_state=self.current_epoch)
-            labels_fine = kmeans_fine.fit_predict(all_embeddings)
-            
-            kmeans_coarse = KMeans(n_clusters=k_coarse, n_init=10, random_state=self.current_epoch)
-            labels_coarse = kmeans_coarse.fit_predict(all_embeddings)
-            
-            # Update Dataset
-            updated = False
-            if hasattr(dataset, "targets"):
-                if isinstance(dataset.targets, list):
-                     dataset.targets = labels_fine.tolist()
-                else:
-                     dataset.targets = torch.tensor(labels_fine)
-                     
-                if hasattr(dataset, "coarse_targets"):
-                     if isinstance(dataset.coarse_targets, list):
-                         dataset.coarse_targets = labels_coarse.tolist()
-                     else:
-                         dataset.coarse_targets = torch.tensor(labels_coarse)
-                elif hasattr(dataset, "targets_coarse"): # Check other naming
-                     dataset.targets_coarse = torch.tensor(labels_coarse)
-
-                updated = True
-            elif hasattr(dataset, "labels"):
-                # Handle numpy/tensor/list
-                dataset.labels = labels_fine
-                if hasattr(dataset, "coarse_labels"):
-                    dataset.coarse_labels = labels_coarse
-                updated = True
-            
-            if not updated:
-                 print("Warning: Could not update dataset labels (attribute not found).")
-
-            self.train(training_mode)
-            
-        except Exception as e:
-            print(f"Error in pseudo-label generation: {e}")
-            # Fallback or continue
-            pass
 
     def forward(
         self, x: torch.Tensor
@@ -1050,7 +938,7 @@ class HyperbolicHCModel(AbstractModel):
             )
             dist_to_center = self.manifold.dist_0(cluster_z_x, version=self.distances_version).mean()
 
-            # triplet_loss_val += dist_to_center * 0.01
+            triplet_loss_val += dist_to_center * 0.01
             self.metrics.setdefault("clustering/dist_to_center", []).append(
                 dist_to_center.detach().item()
             )

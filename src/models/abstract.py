@@ -356,6 +356,7 @@ class AbstractModel(pl.LightningModule):
                     distance_matrix = compute_pairwise_distances(
                         all_embeddings, self.manifold
                     )
+                    distance_matrix = distance_matrix.clamp_min(1e-15)
                 elif self.distances_type == "cosine_similarity":
                     all_embeddings_normalized = torch.nn.functional.normalize(
                         all_embeddings, p=2, dim=-1

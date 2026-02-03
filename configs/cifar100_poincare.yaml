@@ -12,7 +12,7 @@ architecture:
   use_seperate_heads: false
 
 pretraining:
-  epochs: 400
+  epochs: 800
   overwrite: false
   recon_weight: 0.0
   weight_decay: 1e-5
@@ -24,18 +24,18 @@ pretraining:
     byol: false
 
 clustering:
-  epochs: 200
+  epochs: 400
   learning_rate: 1e-4
   weight_decay: 1e-5
   freeze_encoder: false
   contrastive_loss:
-    enabled: true
+    enabled: False
     weight: 0.1
 
 hyphc:
   max_loss_weight: 1.0
   min_loss_weight: 1.0
-  loss_weight_interval: 100
+  loss_weight_interval: 200
   normalized_loss: true
   dist_sum_loss: true
   triplet_subsampling_size: 500

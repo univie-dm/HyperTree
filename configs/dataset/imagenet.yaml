@@ -1,6 +1,6 @@
 name: 'imagenet'
 subset: 'all'
-data_dir: '/mnt/nlp-data/home/users/share/imagenet'
+data_dir: 'data/imagenet'
 resize: 224  # Standard ImageNet size
 channels: 3
 selected_classes:
