@@ -184,6 +184,7 @@ def get_pretrain_model(
             output_size=cfg.dataset.resize,
             optimizer_name=cfg.experiment.optimizer,
             learning_rate=cfg.pretraining.learning_rate,
+            weight_decay=cfg.pretraining.weight_decay,
             log_interval=cfg.experiment.log_interval,
             evaluation_metrics=cfg.evaluation,
             activation_function=cfg.architecture.activation_function,
