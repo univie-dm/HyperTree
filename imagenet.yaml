@@ -51,7 +51,7 @@ parameters:
   architecture.precision: float32
   pretraining.contrastive_loss.temperature: 0.1
   experiment.seed: 1
-  architecture.ae_type: [resnet50]
+  architecture.model_type: [resnet50]
   pretraining.contrastive_loss.enabled: True
   pretraining.contrastive_loss.byol: True
   evaluation.visualization: True
