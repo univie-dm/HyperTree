@@ -137,7 +137,6 @@ class HyperbolicResNet(AbstractModel):
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         hidden = self.encoder(x)
         hidden = self.rms(hidden)
-        hidden = torch.nn.functional.tanh(hidden)
         if self.hparams.feature_scaling and not isinstance(self.manifold, Euclidean):
             hidden = self.feature_scaling_layer(hidden)
         manifold_z = self.hyperbolic_encoding_layer(hidden)

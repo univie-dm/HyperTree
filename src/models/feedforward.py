@@ -1,4 +1,3 @@
-from math import tanh
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -137,7 +136,6 @@ class HyperbolicAE(AbstractModel):
         x = x.view(x.size(0), -1)
         hidden = self.encoder(x)
         hidden = self.rms(hidden)
-        hidden = torch.nn.functional.tanh(hidden)
         if self.hparams.feature_scaling and not isinstance(self.manifold, Euclidean):
             hidden = self.feature_scaling_layer(hidden)
         manifold_z = self.hyperbolic_encoding_layer(hidden)
