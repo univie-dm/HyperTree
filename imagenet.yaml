@@ -14,61 +14,63 @@ max_concurrent: 8
 # - List values create a sweep (one job per combination)
 # - Single values override the base config.yaml
 parameters:
-  # Sweep over these latent dimensions
-  architecture.latent_dim: [32]
-  
-  # Parameters from test_run.sh
+  # Training parameters
+  experiment.seed: 1
+  experiment.num_workers: 30
+  experiment.batch_size: 300
+  experiment.log_interval: 25
+  experiment.optimizer: Adam
+  experiment.gradient_clip_value: 1.0
+
+  # Pretraining parameters (parameters from test_run.sh)
   dataset: imagenet
   pretraining.epochs: 1000
   pretraining.overwrite: False
-  pretraining.recon_weight: 0.0
-  clustering.epochs: 200
-  hyphc.max_loss_weight: 1.0
-  hyphc.min_loss_weight: 0.0
-  hyphc.loss_weight_interval: 50 # 0 equals to max_loss_weight all times
-  hyphc.normalized_loss: True
-  hyphc.dist_sum_loss: True
-  experiment.gradient_clip_value: 1.0
-  hyphc.triplet_subsampling_size: 150
-  experiment.optimizer: Adam
-  experiment.num_workers: 30
-  pretraining.weight_decay: 1e-5
-  clustering.weight_decay: 1e-5
-  architecture.curvature_magnitude: 0.1 #[0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.5, 5.0, 7.5, 10.0]
-  hyphc.distances_type: geodesic
-  clustering.lr_scheduler.type: warmup_cosine
-  pretraining.trainable_curvature: False
-  clustering.lr_scheduler.interval: 20
-  clustering.learning_rate: 1e-3
-  experiment.batch_size: 300
   pretraining.learning_rate: 3e-3
-  architecture.spectral_normalization: False
-  architecture.activation_function: swish
-  experiment.log_interval: 25
-  architecture.manifold_name: PoincareBall
-  architecture.hyperbolic_encoding: HyperbolicLinearPP
-  architecture.manifold_precision: float32
-  architecture.precision: float32
-  pretraining.contrastive_loss.temperature: 0.1
-  experiment.seed: 1
-  architecture.model_type: [resnet50]
+  pretraining.weight_decay: 1e-5
+  pretraining.reconstruction_loss.weight: 0.0
   pretraining.contrastive_loss.enabled: True
-  pretraining.contrastive_loss.byol: True
-  evaluation.visualization: True
-  evaluation.spectral_clustering: True
-  evaluation.kmeans: True
+  pretraining.contrastive_loss.temperature: 0.1
+
+  # Clustering parameters
+  clustering.epochs: 200
+  clustering.learning_rate: 1e-3
+  clustering.weight_decay: 1e-5
+  clustering.lr_scheduler.type: warmup_cosine
+  clustering.lr_scheduler.interval: 20
+  clustering.hyperbolic_loss.start_weight: 0.0
+  clustering.hyperbolic_loss.end_weight: 1.0
+  clustering.hyperbolic_loss.weight_interval: 50 # 0 equals to max_loss_weight all times
+  clustering.hyperbolic_loss.triplet_sample_size: 150
+  clustering.hyperbolic_loss.loss_version: 'normalized'
+  clustering.contrastive_loss.enabled: True
+
+  # Model architecture
+  architecture.model_type: [resnet50]
+  architecture.latent_dim: [32] # Sweep over these latent dimensions
+  architecture.precision: float32
+  architecture.manifold_precision: float32
+  architecture.manifold_name: PoincareBall
+  architecture.curvature_magnitude: 0.1 #[0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.5, 5.0, 7.5, 10.0]
+  architecture.hyperbolic_encoding: HyperbolicLinearPP
+  architecture.activation_function: swish
+
+  # Evaluation Metrics
+  evaluation_metrics.dendrogram_purity_single: True
+  evaluation_metrics.dendrogram_purity_complete: True
+  evaluation_metrics.dendrogram_purity_average: True
+  evaluation_metrics.dendrogram_purity_ward: True
+  evaluation_metrics.agglomerative_clustering_single: True
+  evaluation_metrics.agglomerative_clustering_complete: True
+  evaluation_metrics.agglomerative_clustering_average: True
+  evaluation_metrics.agglomerative_clustering_ward: True
+  evaluation_metrics.nearest_neighbors_accuracy: True
+  evaluation_metrics.spectral_clustering: True
+  evaluation_metrics.visualization: True
+  evaluation_metrics.kmeans: True
+  evaluation_metrics.visualization_sample_size: 1000
+  evaluation_metrics.test_sample_size: 1000
+
+  # Wandb
   wandb.tags: ['cifar100','poincare','float32','test5']
   wandb.enabled: True
-  evaluation.dendrogram_purity_single: True
-  evaluation.dendrogram_purity_complete: True
-  evaluation.dendrogram_purity_average: True
-  evaluation.dendrogram_purity_ward: True
-  evaluation.agglomerative_clustering_single: True
-  evaluation.agglomerative_clustering_complete: True
-  evaluation.agglomerative_clustering_average: True
-  evaluation.agglomerative_clustering_ward: True
-  evaluation.nearest_neighbors_accuracy: True
-  evaluation.visualization_sample_size: 1000
-  evaluation.test_sample_size: 1000
-  clustering.freeze_encoder: True
-  clustering.contrastive_loss.enabled: True

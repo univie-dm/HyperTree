@@ -120,7 +120,7 @@ class HyperbolicResNet(AbstractModel):
         self.hyperbolic_encoding_layer = get_hyperbolic_encoding_layer_by_name(
             layer_name=self.hparams.hyperbolic_encoding,
             manifold=self.manifold,
-            input_dim=self.hparams.current_dim,
+            input_dim=current_dim,
             output_dim=self.hparams.latent_dim,
             params_dtype=self.hparams.params_dtype,
             clamping_factor=self.hparams.clamping_factor,
@@ -131,7 +131,7 @@ class HyperbolicResNet(AbstractModel):
 
         # Contrastive projection head (separate from encoder, following SimCLR)
         # This head is only used for contrastive learning and discarded after pretraining
-        if self.contrastive_loss_enabled:
+        if self.hparams.contrastive_loss_enabled:
             print("Adding contrastive projection head for SimCLR-style learning.", flush=True)
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:

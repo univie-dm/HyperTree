@@ -314,7 +314,7 @@ class HyperbolicHCModel(AbstractModel):
             raise ValueError(f"Invalid loss version: {self.hparams.loss_version}")
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        if self.model_type == "feedforward":
+        if self.hparams.model_type == "feedforward":
             x = x.view(x.size(0), -1)
         hidden = self.encoder(x)  # type: ignore
         hidden = self.rms(hidden)

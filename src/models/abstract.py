@@ -45,7 +45,7 @@ class AbstractModel(pl.LightningModule):
         FHCNN_normalize: bool = False,
     ):
         super().__init__()
-        self.save_hyperparameters(ignore=["manifold_precision"])
+        self.save_hyperparameters(ignore=["manifold_precision", "model"])
 
         if activation_function == "relu":
             self.activation_function = torch.nn.ReLU()

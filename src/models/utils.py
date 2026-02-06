@@ -54,6 +54,17 @@ class HyperboloidTangent2DecoderInput(torch.nn.Module):
             return x
 
 
+class DtypeConversion(torch.nn.Module):
+    """Convert tensor dtype."""
+
+    def __init__(self, target_dtype: torch.dtype):
+        super().__init__()
+        self.target_dtype = target_dtype
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x.to(dtype=self.target_dtype)
+
+
 def get_hyperbolic_encoding_layer_by_name(
     layer_name: str,
     manifold: Manifold,
@@ -143,6 +154,7 @@ def get_hyperbolic_decoding_layer_by_name(
         layer = nn.Sequential(
             Logmap_0(manifold=manifold),
             HyperboloidTangent2DecoderInput(manifold=manifold),
+            DtypeConversion(target_dtype=get_dtype_from_precision(params_dtype)),
             nn.Linear(input_dim, output_dim),
             nn.BatchNorm1d(output_dim),
             activation_function,
@@ -160,6 +172,7 @@ def get_hyperbolic_decoding_layer_by_name(
             ),
             Logmap_0(manifold=manifold),
             HyperboloidTangent2DecoderInput(manifold=manifold),
+            DtypeConversion(target_dtype=get_dtype_from_precision(params_dtype)),
             nn.BatchNorm1d(output_dim),
             activation_function,
         )
@@ -176,6 +189,7 @@ def get_hyperbolic_decoding_layer_by_name(
             ),
             Logmap_0(manifold=manifold),
             HyperboloidTangent2DecoderInput(manifold=manifold),
+            DtypeConversion(target_dtype=get_dtype_from_precision(params_dtype)),
             nn.BatchNorm1d(output_dim),
             activation_function,
         )
@@ -192,6 +206,7 @@ def get_hyperbolic_decoding_layer_by_name(
                 smoothing_factor=smoothing_factor,
             ),
             Logmap_0(manifold=manifold),
+            DtypeConversion(target_dtype=get_dtype_from_precision(params_dtype)),
             nn.BatchNorm1d(output_dim),
             activation_function,
         )

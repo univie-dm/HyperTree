@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from lightning.pytorch.utilities import grad_norm
 
-from typing import List, Tuple
+from typing import List
 from src.models.abstract import AbstractModel, FeatureScaling
 from src.models.utils import (
     get_dtype_from_precision,
@@ -145,10 +145,8 @@ class HyperbolicAE(AbstractModel):
         if self.decoder is None:
             raise ValueError("No decoder was provided.")
         x_recon = self.hyperbolic_decoding_layer(manifold_z)  # type: ignore
-        # Cast back from the manifold precision to the model's precision
-        x_recon = x_recon.to(dtype=get_dtype_from_precision(self.hparams.params_dtype))
         x_recon = self.decoder(x_recon)  # type: ignore
-        x_recon = x_recon.view(-1, *self.hparams.input_dim)
+        x_recon = x_recon.view(-1, *self.original_input_shape)
         return x_recon
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
