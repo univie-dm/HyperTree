@@ -3,11 +3,11 @@ import torch.nn.functional as F
 import numpy as np
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
-from typing import Any, Tuple
+from typing import Any, Tuple, cast
 from lightning.pytorch.utilities import grad_norm
 
 from src.hyperbolic_math.src.manifolds import Euclidean
-from src.models.abstract import AbstractModel
+from src.models.abstract import AbstractModel, HParams
 from src.models.utils import get_dtype_from_precision, get_hyperbolic_encoding_layer_by_name
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 
@@ -77,6 +77,9 @@ class HyperbolicHCModel(AbstractModel):
         )
         # Save hyperparameters while ignoring non-serializable model
         self.save_hyperparameters(ignore=["model"])
+        
+        # Cast hparams to the proper type for type checking
+        self.hparams: HParams = cast(HParams, self.hparams)
 
         # Load encoding modules with their weights and ensure weights are copied by loading state dict
         self.encoder = model.encoder  # type: ignore
@@ -86,9 +89,9 @@ class HyperbolicHCModel(AbstractModel):
 
         # Load decoding modules if decoding is used
         if self.hparams.recon_weight != 0.0 and model.decoder is not None:
-            self.decoder = model.decoder  # type: ignore
-            self.hyperbolic_decoding_layer.load_state_dict(model.hyperbolic_decoding_layer.state_dict())  # type: ignore
+            self.decoder = model.decoder  # type: ignore  # type: ignore
             self.hyperbolic_decoding_layer = model.hyperbolic_decoding_layer  # type: ignore
+            self.hyperbolic_decoding_layer.load_state_dict(model.hyperbolic_decoding_layer.state_dict()) # type: ignore
             self.decoder.load_state_dict(model.decoder.state_dict())  # type: ignore
         else:
             self.decoder = None
@@ -114,7 +117,7 @@ class HyperbolicHCModel(AbstractModel):
         print(f'Cluster head dim: {self.hparams.latent_dim}, Encoder output dim: {self.encoder[-1].out_features}')  # type: ignore
         if self.hparams.latent_dim == self.encoder[-1].out_features: # type: ignore
             print("Initializing cluster head with AE hyperbolic encoding weights.")
-            self.cluster_head.load_state_dict(model.hyperbolic_encoding_layer.state_dict())
+            self.cluster_head.load_state_dict(model.hyperbolic_encoding_layer.state_dict())  # type: ignore
 
         # Hyperbolic loss scheduler
         if hyperbolic_loss_end_weight < 0 or hyperbolic_loss_start_weight < 0:
@@ -184,15 +187,18 @@ class HyperbolicHCModel(AbstractModel):
             else:
                 raise ValueError(f"Invalid triplet sampling strategy for auto sample size: {self.hparams.triplet_sampling_strategy}")
         elif self.hparams.triplet_sampling_strategy == "all_subsample_triplets":
-            sampled_indices = torch.randperm(num_pts, device=device)[:min(self.hparams.triplet_sample_size, num_pts)].sort().values
+            sample_size: int = self.hparams.triplet_sample_size if isinstance(self.hparams.triplet_sample_size, int) else 256  # type: ignore
+            sampled_indices = torch.randperm(num_pts, device=device)[:min(sample_size, num_pts)].sort().values
             sampled_triplet_indices = torch.combinations(sampled_indices, r=3)
         elif self.hparams.triplet_sampling_strategy == "random_with_replacement":
+            sample_size: int = self.hparams.triplet_sample_size if isinstance(self.hparams.triplet_sample_size, int) else 256  # type: ignore
             random_indices = torch.randint(0, num_pts*(num_pts-1)*(num_pts-2), 
-                                           (min(self.hparams.triplet_sample_size, num_pts),), device=device)
+                                           (min(sample_size, num_pts),), device=device)
             sampled_triplet_indices = self.decode_triplet_indices_from_flattened_indices(random_indices, num_pts)
             sampled_indices = torch.unique(sampled_triplet_indices)
         elif self.hparams.triplet_sampling_strategy == "chami":
-            sampled_indices = torch.randperm(num_pts, device=device)[:min(self.hparams.triplet_sample_size, num_pts)]
+            sample_size: int = self.hparams.triplet_sample_size if isinstance(self.hparams.triplet_sample_size, int) else 256  # type: ignore
+            sampled_indices = torch.randperm(num_pts, device=device)[:min(sample_size, num_pts)]
             sampled_pair_indices = torch.combinations(sampled_indices, r=2)
             # Append a third random point to the torch tensor of 2-tuples
             random_indices = torch.randint(0, num_pts, (sampled_pair_indices.shape[0], 1), device=device)
@@ -234,11 +240,12 @@ class HyperbolicHCModel(AbstractModel):
             min_sim = similarties[upper_triu_mask].min()
             max_sim = similarties[upper_triu_mask].max()
             # Sample triplets
-            sampled_indices, sampled_triplet_indices = self.sample_triplets(n, device, sim_bounds=(min_sim, max_sim))
+            sampled_indices, sampled_triplet_indices = self.sample_triplets(n, device, sim_bounds=(min_sim.item(), max_sim.item()))  # type: ignore
             # Extract similarities for sampled indices
-            similarities = similarities[sampled_indices][:, sampled_indices]
+            similarities = similarties[sampled_indices][:, sampled_indices]
         else:
             # Sample triplets
+            sample_size: int = self.hparams.triplet_sample_size if isinstance(self.hparams.triplet_sample_size, int) else 256  # type: ignore
             sampled_indices, sampled_triplet_indices = self.sample_triplets(n, device)
             # Compute the (smoothed) pairwise distances
             distances = compute_pairwise_distances(embeddings[sampled_indices], self.manifold)
@@ -312,9 +319,9 @@ class HyperbolicHCModel(AbstractModel):
         if self.hparams.model_type == "feedforward":
             x = x.view(x.size(0), -1)
         hidden = self.encoder(x)  # type: ignore
-        hidden = self.rms(hidden)
+        hidden = self.rms(hidden)  # type: ignore
         if self.hparams.feature_scaling and not isinstance(self.manifold, Euclidean):
-            hidden = self.feature_scaling_layer(hidden)
+            hidden = self.feature_scaling_layer(hidden)  # type: ignore
         manifold_z = self.hyperbolic_encoding_layer(hidden)  # type: ignore
         return manifold_z
 
@@ -350,7 +357,7 @@ class HyperbolicHCModel(AbstractModel):
         if self.hparams.hyperbolic_loss_weight_interval > 0:
             hyperbolic_loss_weight = self.hparams.hyperbolic_loss_start_weight + (
                 self.hparams.hyperbolic_loss_end_weight - self.hparams.hyperbolic_loss_start_weight
-            ) * min(self.hparams.current_epoch / self.hparams.hyperbolic_loss_weight_interval, 1.0)
+            ) * min(self.current_epoch / self.hparams.hyperbolic_loss_weight_interval, 1.0)
         else:
             hyperbolic_loss_weight = self.hparams.hyperbolic_loss_end_weight
         self.metrics["clustering/hyperbolic_loss_weight"] = hyperbolic_loss_weight
@@ -380,12 +387,14 @@ class HyperbolicHCModel(AbstractModel):
         # Prevent boundary collapse by penalizing the mean embedding distance to the origin
         if self.hparams.regularize_to_origin_enabled:
             mean_dist_to_origin = self.manifold.dist_0(manifold_z).mean()
-            total_loss += mean_dist_to_origin * self.hparams.regularizer_weight
+            regularizer_weight: float = getattr(self.hparams, 'regularizer_weight', 0.05)  # type: ignore
+            total_loss += mean_dist_to_origin * regularizer_weight
 
         # Logging - DETACH tensors to prevent memory leaks
         self.metrics.setdefault("clustering/total_loss", []).append(total_loss.detach().item())
         # Manifold curvature
-        self.metrics.setdefault("clustering/c", []).append(self.manifold.c.item())
+        c: torch.Tensor = self.manifold.c  # type: ignore
+        self.metrics.setdefault("clustering/c", []).append(c.item())
         # Latent space statistics
         self.metrics.setdefault("latent_space/min", []).append(manifold_z.min().detach().item())
         self.metrics.setdefault("latent_space/max", []).append(manifold_z.max().detach().item())

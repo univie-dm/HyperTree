@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 import wandb
 
-from typing import Tuple, Any
+from typing import Tuple, Any, cast, Protocol
 from pytorch_lightning.loggers import WandbLogger
 
 from src.evaluation import evaluation
@@ -13,6 +13,55 @@ from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.hyperbolic_math.src.utils.math_utils import atanh
 from src.utils.wordnet_hierarchy import get_wordnet_labels_for_cifar100
 from src.utils.imagenet_hierarchy import get_wordnet_labels_for_imagenet
+
+
+class HParams(Protocol):
+    """Type definition for model hyperparameters (structural typing)."""
+    # Architecture
+    model_type: str | None
+    params_dtype: str
+    activation_function: str
+    feature_scaling: bool
+    hyperbolic_encoding: str | None
+    latent_dim: int
+    manifold_name: str
+    manifold_precision: str | torch.dtype
+    curvature_magnitude: float | torch.Tensor
+    hyperbolic_decoding: str | None
+    # Optimizer
+    optimizer_name: str
+    learning_rate: float
+    weight_decay: float
+    lr_scheduler_params: dict | None
+    # Evaluation & Logging
+    stage: str
+    global_epoch: int
+    log_interval: int
+    evaluation_metrics: dict[str, Any]
+    # Layer specific parameters
+    clamping_factor: float
+    smoothing_factor: float
+    hyperboloid_layer_learnable_scale: bool
+    FHCNN_normalize: bool
+    # ResNet specific parameters
+    projection_layer_dims: list[int]
+    input_size: int
+    contrastive_loss_enabled: bool
+    contrastive_weight: float
+    contrastive_temperature: float
+    # HyperbolicClustering specific parameters
+    recon_weight: float
+    triplet_sample_size: int | str
+    triplet_sampling_strategy: str
+    similarity_pruning_threshold: float
+    lca_version: str
+    hyperbolic_loss_temperature: float
+    loss_version: str
+    hyperbolic_loss_weight_interval: int
+    hyperbolic_loss_start_weight: float
+    hyperbolic_loss_end_weight: float
+    regularize_to_origin_enabled: bool
+    regularizer_weight: float
 
 
 class AbstractModel(pl.LightningModule):
@@ -47,6 +96,9 @@ class AbstractModel(pl.LightningModule):
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["manifold_precision", "model"])
+        
+        # Cast hparams to the proper type for type checking
+        self.hparams: HParams = cast(HParams, self.hparams)
 
         if activation_function == "relu":
             self.activation_function = torch.nn.ReLU()
@@ -242,8 +294,8 @@ class AbstractModel(pl.LightningModule):
                     try:
                         # Get dataset name from datamodule
                         dataset_name = None
-                        if hasattr(self.trainer, 'datamodule') and self.trainer.datamodule is not None:
-                            datamodule_hparams = getattr(self.trainer.datamodule, 'hparams', None)
+                        if hasattr(self.trainer, 'datamodule') and self.trainer.datamodule is not None:  # type: ignore
+                            datamodule_hparams = getattr(self.trainer.datamodule, 'hparams', None)  # type: ignore
                             if datamodule_hparams and hasattr(datamodule_hparams, 'dataset_name'):
                                 dataset_name = datamodule_hparams.dataset_name
                         
@@ -266,11 +318,11 @@ class AbstractModel(pl.LightningModule):
                             coarse_labels_array = wordnet_labels
                             
                         elif dataset_name == "imagenet":
-                            imagenet_hierarchy_path = self.evaluation_metrics.get(
+                            imagenet_hierarchy_path = self.hparams.evaluation_metrics.get(
                                 "imagenet_hierarchy_path", 
                                 "./data/imagenet_wordnet_hierarchy.txt"
                             )
-                            setup_if_missing = self.evaluation_metrics.get(
+                            setup_if_missing = self.hparams.evaluation_metrics.get(
                                 "wordnet_download_if_missing", 
                                 True
                             )
@@ -372,6 +424,10 @@ class AbstractModel(pl.LightningModule):
         device = points.device
         lcas = torch.zeros((points.shape[0], points.shape[0]), dtype=points.dtype).to(device)
         indices = torch.triu_indices(points.shape[0], points.shape[0], 1).to(device)
+        
+        # Type hints to suppress manifold.c type ambiguity
+        c: torch.Tensor = self.manifold.c  # type: ignore
+        
         while indices.shape[1] > 0:
             x = points[indices[0, :batch_size], :]
             y = points[indices[1, :batch_size], :]
@@ -379,25 +435,25 @@ class AbstractModel(pl.LightningModule):
 
             if isinstance(self.manifold, Hyperboloid):
                 # Compute the orthogonal geodesic projection(s) onto the Minkowski subspace
-                sqrt_c = self.manifold.c.sqrt()
+                sqrt_c = c.sqrt()
                 x0 = x.narrow(-1, 0, 1)
                 y0 = y.narrow(-1, 0, 1)
                 xy_mink = self.manifold._minkowski_inner(x, y)
-                denom = 1 - (self.manifold.c * xy_mink).pow(2).clamp(min=1e-15)
-                alpha = (sqrt_c * (x0 + self.manifold.c * xy_mink * y0)) / denom
-                beta = (sqrt_c * (y0 + self.manifold.c * xy_mink * x0)) / denom
+                denom = 1 - (c * xy_mink).pow(2).clamp(min=1e-15)
+                alpha = (sqrt_c * (x0 + c * xy_mink * y0)) / denom
+                beta = (sqrt_c * (y0 + c * xy_mink * x0)) / denom
                 z = alpha * x + beta * y
                 # Rescale the vector to lie on the Hyperboloid
                 z_mink = self.manifold._minkowski_inner(z, z)
-                lca = z / (-self.manifold.c * z_mink).clamp(min=1e-15).sqrt()
+                lca = z / (-c * z_mink).clamp(min=1e-15).sqrt()
             elif isinstance(self.manifold, PoincareBall):
                 # Compute the center of geodesic circle Gamma through x and y
                 x2 = x.pow(2).sum(dim=-1, keepdim=True)
                 y2 = y.pow(2).sum(dim=-1, keepdim=True)
 
-                denom = (2 * self.manifold.c * (x2 * y2 - xy**2)).clamp(min=1e-15)
-                alpha = ((1 + self.manifold.c * x2) * y2 - (1 + self.manifold.c * y2) * xy) / denom
-                beta = ((1 + self.manifold.c * y2) * x2 - (1 + self.manifold.c * x2) * xy) / denom
+                denom = (2 * c * (x2 * y2 - xy**2)).clamp(min=1e-15)
+                alpha = ((1 + c * x2) * y2 - (1 + c * y2) * xy) / denom
+                beta = ((1 + c * y2) * x2 - (1 + c * x2) * xy) / denom
                 z = alpha * x + beta * y
 
                 # Compute the lca and its distance to the origin w.r.t. the full geodesic
@@ -405,8 +461,8 @@ class AbstractModel(pl.LightningModule):
                 z_norm = z.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-15)
 
                 # Computation via conjugation to avoid numerical issues
-                sqrt_term = (z2 - 1 / self.manifold.c).clamp(min=1e-15).sqrt()
-                denom = self.manifold.c * z_norm * (z_norm + sqrt_term).clamp(min=1e-15)
+                sqrt_term = (z2 - 1 / c).clamp(min=1e-15).sqrt()
+                denom = c * z_norm * (z_norm + sqrt_term).clamp(min=1e-15)
                 lca = z / denom
             else:
                 raise ValueError(f"Unsupported manifold: {self.manifold}")
@@ -451,8 +507,9 @@ class FeatureScaling(torch.nn.Module):
         self.register_buffer('max_scale', max_scale)
         self.scale = torch.nn.Linear(self.dim, 1)
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x / np.sqrt(x.shape[-1])
-        normalized_scale = torch.nn.functional.sigmoid(self.scale(x)) * self.max_scale
+        max_scale: torch.Tensor = self.max_scale  # type: ignore
+        normalized_scale = torch.nn.functional.sigmoid(self.scale(x)) * max_scale
         x = normalized_scale * x
         return x

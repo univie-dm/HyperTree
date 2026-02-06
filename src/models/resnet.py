@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 
 from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
-from typing import Tuple
-from src.models.abstract import AbstractModel, FeatureScaling
+from typing import Tuple, cast
+from src.models.abstract import AbstractModel, FeatureScaling, HParams
 from src.models.utils import get_hyperbolic_encoding_layer_by_name
 from src.hyperbolic_math.src.manifolds import Euclidean
 
@@ -73,6 +73,9 @@ class HyperbolicResNet(AbstractModel):
             FHCNN_normalize=FHCNN_normalize,
         )
         self.save_hyperparameters()
+        
+        # Cast hparams to the proper type for type checking
+        self.hparams: HParams = cast(HParams, self.hparams)
 
         # Encoder
         if self.hparams.model_type == "resnet18":
@@ -95,7 +98,7 @@ class HyperbolicResNet(AbstractModel):
             print("Modifying ResNet encoder for CIFAR-10/100 (32x32 images).", flush=True)
             # Overwrite the first convolutional layer and maxpooling layer
             self.encoder.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-            self.encoder.maxpool = nn.Identity()
+            self.encoder.maxpool = nn.Identity()  # type: ignore
 
         # Build projection head layers progressively
         current_dim = 1000
@@ -113,12 +116,13 @@ class HyperbolicResNet(AbstractModel):
         self.encoder = nn.Sequential(self.encoder, *projection_layers[:-2])
         self.rms = nn.RMSNorm(current_dim, elementwise_affine=False)
         if self.hparams.feature_scaling and not isinstance(self.manifold, Euclidean):
-            self.feature_scaling_layer = FeatureScaling(current_dim, self.manifold.c, dtype=self.manifold.dtype)
+            c: torch.Tensor = self.manifold.c  # type: ignore
+            self.feature_scaling_layer = FeatureScaling(current_dim, c, dtype=self.manifold.dtype)
 
         # Add hyperbolic encoding layer(s)
         # Note: Euclidean manifold will default to nn.Linear
         self.hyperbolic_encoding_layer = get_hyperbolic_encoding_layer_by_name(
-            layer_name=self.hparams.hyperbolic_encoding,
+            layer_name=self.hparams.hyperbolic_encoding or "linear",
             manifold=self.manifold,
             input_dim=current_dim,
             output_dim=self.hparams.latent_dim,
@@ -139,27 +143,25 @@ class HyperbolicResNet(AbstractModel):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         manifold_z = self.encode(x)
-        return None, manifold_z
+        return manifold_z, manifold_z  # Return embedding twice (no reconstruction)
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug_1, _, x, _ = batch
         loss = 0.0
 
-        # Contrastive loss (if enabled)
-        if self.hparams.contrastive_loss_enabled:
-            z_x = self.encode(x)
-            z_aug_2 = self.encode(x_aug_1)
+        z_x = self.encode(x)
+        z_aug_1 = self.encode(x_aug_1)
 
-            if not torch.isfinite(z_x).all() or not torch.isfinite(z_aug_2).all():
-                raise ValueError("Non-finite values encountered in contrastive embeddings.")
+        if not torch.isfinite(z_x).all() or not torch.isfinite(z_aug_1).all():
+            raise ValueError("Non-finite values encountered in contrastive embeddings.")
 
-            contrastive_loss = self.compute_contrastive_loss(z_x, z_aug_2, temperature=self.hparams.contrastive_temperature)
-            loss = self.hparams.contrastive_weight * contrastive_loss
+        contrastive_loss = self.compute_contrastive_loss(z_x, z_aug_1, temperature=self.hparams.contrastive_temperature)
+        loss = self.hparams.contrastive_weight * contrastive_loss
 
-            # Contrastive-specific metrics
-            self.metrics.setdefault("pretrain/contrastive_loss", []).append(contrastive_loss.detach().item())
-            dist_to_center = self.manifold.dist_0(z_x).mean()
-            self.metrics.setdefault("pretrain/dist_to_center", []).append(dist_to_center.detach().item())
+        # Contrastive-specific metrics
+        self.metrics.setdefault("pretrain/contrastive_loss", []).append(contrastive_loss.detach().item())
+        dist_to_center = self.manifold.dist_0(z_x).mean()
+        self.metrics.setdefault("pretrain/dist_to_center", []).append(dist_to_center.detach().item())
 
         # Logging
         self.metrics.setdefault("pretrain/total_loss", []).append(loss.detach().item())  # type: ignore
