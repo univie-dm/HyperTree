@@ -164,8 +164,9 @@ class HyperbolicHCModel(AbstractModel):
         else:
             return optimizer
 
-    def sample_triplets(self, num_pts: int, device: torch.device, sim_bounds: Tuple[float, float] | None = None) -> Tuple[torch.Tensor, np.ndarray]:
+    def sample_triplets(self, num_pts: int, device: torch.device, sim_bounds: Tuple[float, float] | None = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """Sample triplets for the Hyperbolic loss."""
+        # Note: sampled_indices need to be sorted for tensor lookup in compute_hyperbolic_loss (torch.unique sorts by default)
         if self.hparams.triplet_sample_size == 'auto':
             # TODO: Calculate the minimum sampling size based on Theorem
             minimum_sample_size = 1000 # placeholder
@@ -174,24 +175,21 @@ class HyperbolicHCModel(AbstractModel):
                 random_indices = torch.randint(0, num_pts*(num_pts-1)*(num_pts-2),
                                                (min(minimum_sample_size, num_pts),), device=device) ## TODO: needs adjustment
                 sampled_triplet_indices = self.decode_triplet_indices_from_flattened_indices(random_indices, num_pts)
-                np_sampled_triplet_indices = sampled_triplet_indices.cpu().numpy()
                 sampled_indices = torch.unique(sampled_triplet_indices)
             elif self.hparams.triplet_sampling_strategy == "random_with_replacement":
                 random_indices = torch.randint(0, num_pts*(num_pts-1)*(num_pts-2),
                                                (min(minimum_sample_size, num_pts),), device=device)
                 sampled_triplet_indices = self.decode_triplet_indices_from_flattened_indices(random_indices, num_pts)
-                np_sampled_triplet_indices = sampled_triplet_indices.cpu().numpy()
                 sampled_indices = torch.unique(sampled_triplet_indices)
             else:
                 raise ValueError(f"Invalid triplet sampling strategy for auto sample size: {self.hparams.triplet_sampling_strategy}")
         elif self.hparams.triplet_sampling_strategy == "all_subsample_triplets":
-            sampled_indices = torch.randperm(num_pts, device=device)[:min(self.hparams.triplet_sample_size, num_pts)]
-            np_sampled_triplet_indices = (torch.combinations(sampled_indices, r=3).cpu().numpy())
+            sampled_indices = torch.randperm(num_pts, device=device)[:min(self.hparams.triplet_sample_size, num_pts)].sort().values
+            sampled_triplet_indices = torch.combinations(sampled_indices, r=3)
         elif self.hparams.triplet_sampling_strategy == "random_with_replacement":
             random_indices = torch.randint(0, num_pts*(num_pts-1)*(num_pts-2), 
                                            (min(self.hparams.triplet_sample_size, num_pts),), device=device)
             sampled_triplet_indices = self.decode_triplet_indices_from_flattened_indices(random_indices, num_pts)
-            np_sampled_triplet_indices = sampled_triplet_indices.cpu().numpy()
             sampled_indices = torch.unique(sampled_triplet_indices)
         elif self.hparams.triplet_sampling_strategy == "chami":
             sampled_indices = torch.randperm(num_pts, device=device)[:min(self.hparams.triplet_sample_size, num_pts)]
@@ -199,11 +197,10 @@ class HyperbolicHCModel(AbstractModel):
             # Append a third random point to the torch tensor of 2-tuples
             random_indices = torch.randint(0, num_pts, (sampled_pair_indices.shape[0], 1), device=device)
             sampled_triplet_indices = torch.cat([sampled_pair_indices, random_indices], dim=1)
-            np_sampled_triplet_indices = sampled_triplet_indices.cpu().numpy()
             sampled_indices = torch.unique(sampled_triplet_indices)
         else:
             raise ValueError(f"Invalid triplet sampling strategy: {self.hparams.triplet_sampling_strategy}")
-        return sampled_indices, np_sampled_triplet_indices
+        return sampled_indices, sampled_triplet_indices
 
     def decode_triplet_indices_from_flattened_indices(self, indices, n):
         # Indices: Tensor of shape (m,) with integer IDs in [0, n*(n-1)*(n-2)-1]
@@ -237,12 +234,12 @@ class HyperbolicHCModel(AbstractModel):
             min_sim = similarties[upper_triu_mask].min()
             max_sim = similarties[upper_triu_mask].max()
             # Sample triplets
-            sampled_indices, np_sampled_triplet_indices = self.sample_triplets(n, device, sim_bounds=(min_sim, max_sim))
+            sampled_indices, sampled_triplet_indices = self.sample_triplets(n, device, sim_bounds=(min_sim, max_sim))
             # Extract similarities for sampled indices
             similarities = similarities[sampled_indices][:, sampled_indices]
         else:
             # Sample triplets
-            sampled_indices, np_sampled_triplet_indices = self.sample_triplets(n, device)
+            sampled_indices, sampled_triplet_indices = self.sample_triplets(n, device)
             # Compute the (smoothed) pairwise distances
             distances = compute_pairwise_distances(embeddings[sampled_indices], self.manifold)
             similarties = torch.reciprocal(1 + distances)
@@ -254,12 +251,10 @@ class HyperbolicHCModel(AbstractModel):
             raise ValueError(f"Invalid LCA version: {self.hparams.lca_version}")
         lcas = self.compute_lca_depth(embeddings[sampled_indices], version=self.hparams.lca_version)
 
-        # Keep track of the storage of triplets
-        lookup_table = {idx: pos for pos, idx in enumerate(sampled_indices.cpu().numpy())}
-        _i, _j, _k = np_sampled_triplet_indices.T
-        i = np.vectorize(lookup_table.get)(_i)
-        j = np.vectorize(lookup_table.get)(_j)
-        k = np.vectorize(lookup_table.get)(_k)
+        # Keep track of the storage of triplet indices in embeddings[sampled_indices]
+        # Note: sampled_indices need to be sorted for efficient indexing (torch.unique sorts by default)
+        positions = torch.searchsorted(sampled_indices, sampled_triplet_indices.reshape(-1)).reshape(-1, 3)
+        i, j, k = positions.t()  # positions[:, 0], positions[:, 1], positions[:, 2]
 
         # Compute the scaled safe softmax of the lcas
         lca_stack = torch.stack((lcas[i, j], lcas[i, k], lcas[j, k]), dim=1)
@@ -269,7 +264,7 @@ class HyperbolicHCModel(AbstractModel):
 
         # Compute the triplet cost based on the sampled triplets
         sim_stack = torch.stack((similarties[i, j], similarties[i, k], similarties[j, k]), dim=1)
-        triplet_cost = torch.sum(sim_stack * (1 - scaled_softmax))
+        triplet_cost = torch.sum(sim_stack * (1 - softmax_stack))
 
         # Compute the maximum and minimum triplet cost
         pairwise_sim_stack = torch.stack(
