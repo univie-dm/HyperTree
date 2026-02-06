@@ -121,10 +121,11 @@ evaluation:
   dasgupta_cost: False
   visualization_sample_size: 5000
   test_sample_size: 0 # if 0 all datapoints are used
-  # WordNet hierarchy for CIFAR-100 evaluation
-  use_wordnet_labels: False  # Use WordNet hierarchy instead of standard coarse labels for CIFAR-100
-  wordnet_hierarchy_path: './data/cifar100_wordnet_hierarchy.txt'  # Path to parent-child hierarchy file
-  wordnet_download_if_missing: True  # Automatically download hierarchy file if not found
+  # WordNet hierarchy for hierarchical evaluation (CIFAR-100 and ImageNet)
+  use_wordnet_labels: False  # Use WordNet hierarchy for hierarchical DP evaluation
+  wordnet_hierarchy_path: './data/cifar100_wordnet_hierarchy.txt'  # CIFAR-100 hierarchy file
+  imagenet_hierarchy_path: './data/imagenet_wordnet_hierarchy.txt'  # ImageNet hierarchy file (auto-downloaded from cvjena/semantic-embeddings)
+  wordnet_download_if_missing: True  # Automatically download/setup hierarchy files if not found
 
 ## Logging
 wandb:

@@ -14,6 +14,7 @@ from src.hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBa
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.hyperbolic_math.src.utils.math_utils import atanh
 from src.utils.wordnet_hierarchy import get_wordnet_labels_for_cifar100
+from src.utils.imagenet_hierarchy import get_wordnet_labels_for_imagenet
 
 
 class AbstractModel(pl.LightningModule):
@@ -313,7 +314,7 @@ class AbstractModel(pl.LightningModule):
                 all_embeddings = torch.cat(embeddings, dim=0)
                 all_labels = torch.cat(labels, dim=0)
                 
-                # Override with WordNet labels if configured for CIFAR-100
+                # Override with WordNet labels if configured for CIFAR-100 or ImageNet
                 use_wordnet = self.evaluation_metrics.get("use_wordnet_labels", False)
                 if use_wordnet:
                     try:
@@ -324,7 +325,7 @@ class AbstractModel(pl.LightningModule):
                             if datamodule_hparams and hasattr(datamodule_hparams, 'dataset_name'):
                                 dataset_name = datamodule_hparams.dataset_name
                         
-                        # Only apply WordNet labels for CIFAR-100
+                        # Apply WordNet labels based on dataset
                         if dataset_name == "cifar100":
                             wordnet_path = self.evaluation_metrics.get(
                                 "wordnet_hierarchy_path", 
@@ -347,6 +348,30 @@ class AbstractModel(pl.LightningModule):
                                 download_if_missing=download_if_missing
                             )
                             coarse_labels_array = wordnet_labels
+                            
+                        elif dataset_name == "imagenet":
+                            imagenet_hierarchy_path = self.evaluation_metrics.get(
+                                "imagenet_hierarchy_path", 
+                                "./data/imagenet_wordnet_hierarchy.txt"
+                            )
+                            setup_if_missing = self.evaluation_metrics.get(
+                                "wordnet_download_if_missing", 
+                                True
+                            )
+                            
+                            # Ensure types are correct
+                            if not isinstance(imagenet_hierarchy_path, str):
+                                imagenet_hierarchy_path = str(imagenet_hierarchy_path)
+                            if not isinstance(setup_if_missing, bool):
+                                setup_if_missing = bool(setup_if_missing)
+
+                            wordnet_labels, _ = get_wordnet_labels_for_imagenet(
+                                all_labels.cpu().numpy(),
+                                hierarchy_file=imagenet_hierarchy_path,
+                                setup_if_missing=setup_if_missing
+                            )
+                            coarse_labels_array = wordnet_labels
+                            
                     except Exception as e:
                         print(f"Warning: Failed to load WordNet labels: {e}")
                         print("Falling back to standard coarse labels (if available)")

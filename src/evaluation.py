@@ -20,6 +20,7 @@ from scipy.sparse.linalg import eigsh
 from sklearn.neighbors import kneighbors_graph
 from scipy.sparse import csgraph, identity
 from collections import Counter
+from pathlib import Path
 
 from src.hyperbolic_math.src.manifolds.euclidean import Euclidean
 from src.hyperbolic_math.src.manifolds import PoincareBall, Manifold
@@ -97,7 +98,7 @@ def evaluation(
         ax.set_aspect("equal", adjustable="box")
 
     def create_confusion_matrix_plot(
-        y_true, y_pred, title="Confusion Matrix", str_labels=None
+        y_true, y_pred, title="Confusion Matrix", str_labels=None, hierarchy_file=None
     ):
         """Create a confusion matrix visualization.
 
@@ -111,14 +112,56 @@ def evaluation(
             Title for the plot
         str_labels : array-like, optional
             String labels for the classes
+        hierarchy_file : str, optional
+            Path to hierarchy file for aggregating labels (e.g., ImageNet WordNet hierarchy)
 
         Returns
         -------
         matplotlib.figure.Figure
             The confusion matrix figure
         """
+        # For large number of classes (e.g., ImageNet), aggregate to hierarchy level
+        max_display_classes = 50
+        unique_true = np.unique(y_true)
+        n_true_classes = len(unique_true)
+        
+        y_true_display = y_true
+        y_pred_display = y_pred
+        aggregated = False
+        
+        if n_true_classes > max_display_classes:
+            # Try to use hierarchy to aggregate labels
+            hierarchy_path = hierarchy_file or "./data/imagenet_wordnet_hierarchy.txt"
+            if Path(hierarchy_path).exists():
+                try:
+                    from src.utils.imagenet_hierarchy import (
+                        load_imagenet_hierarchy,
+                        get_labels_at_hierarchy_level
+                    )
+                    parent_child = load_imagenet_hierarchy(hierarchy_path, exclude_root=True)
+                    
+                    # Aggregate true labels to hierarchy level
+                    y_true_display, _ = get_labels_at_hierarchy_level(
+                        np.asarray(y_true), parent_child, target_num_classes=max_display_classes
+                    )
+                    
+                    # For predictions: map each prediction cluster to the most common 
+                    # aggregated true label in that cluster
+                    pred_to_agg = {}
+                    for pred_label in np.unique(y_pred):
+                        mask = y_pred == pred_label
+                        agg_labels_in_cluster = y_true_display[mask]
+                        most_common = Counter(agg_labels_in_cluster).most_common(1)[0][0]
+                        pred_to_agg[pred_label] = most_common
+                    
+                    y_pred_display = np.array([pred_to_agg[p] for p in y_pred])
+                    aggregated = True
+                    title = f"{title} (aggregated to ~{len(np.unique(y_true_display))} categories)"
+                except Exception as e:
+                    warning(f"Could not aggregate labels using hierarchy: {e}")
+        
         # Compute confusion matrix
-        cm = confusion_matrix(y_true, y_pred)
+        cm = confusion_matrix(y_true_display, y_pred_display)
 
         # Normalize by row (true label)
         cm_normalized = cm.astype("float") / cm.sum(axis=1)[:, np.newaxis]
@@ -128,30 +171,36 @@ def evaluation(
         im = ax.imshow(cm_normalized, interpolation="nearest", cmap=plt.cm.Blues)
         ax.figure.colorbar(im, ax=ax)
 
-        # Set labels
-        if str_labels is not None:
-            unique_true = np.unique(y_true)
-            unique_pred = np.unique(y_pred)
-            # Map true labels to string labels
+        # Set labels - get unique values that match confusion matrix dimensions
+        unique_true_display = np.unique(y_true_display)
+        unique_pred_display = np.unique(y_pred_display)
+        n_true_display = len(unique_true_display)
+        n_pred_display = len(unique_pred_display)
+        
+        if str_labels is not None and not aggregated:
+            # Map true labels to string labels (only if not aggregated)
             true_label_names = [
                 str(str_labels[np.where(y_true == label)[0][0]])
-                for label in unique_true
+                for label in unique_true_display
             ]
-            predicted_label_names = [
-                str(str_labels[np.where(y_true == label)[0][0]])
-                for label in unique_pred
-            ]
-            tick_marks_true = np.arange(len(unique_true))
-            tick_marks_pred = np.arange(len(unique_pred))
-            ax.set_yticks(tick_marks_true)
-            ax.set_yticklabels(true_label_names, fontsize=8)
-            ax.set_xticks(tick_marks_pred)
-            ax.set_xticklabels(predicted_label_names, fontsize=8)
+            predicted_label_names = []
+            for label in unique_pred_display:
+                if label in y_true:
+                    predicted_label_names.append(str(str_labels[np.where(y_true == label)[0][0]]))
+                else:
+                    predicted_label_names.append(str(label))
         else:
-            ax.set_yticks(np.arange(cm.shape[0]))
-            ax.set_yticklabels(np.unique(y_true), fontsize=8)
-            ax.set_xticks(np.arange(cm.shape[1]))
-            ax.set_xticklabels(np.unique(y_pred), fontsize=8)
+            true_label_names = [str(t) for t in unique_true_display]
+            predicted_label_names = [str(p) for p in unique_pred_display]
+        
+        # Set y-axis (true labels)
+        ax.set_yticks(np.arange(n_true_display))
+        fontsize = 8 if n_true_display <= 50 else 6
+        ax.set_yticklabels(true_label_names, fontsize=fontsize)
+        
+        # Set x-axis (predicted clusters)
+        ax.set_xticks(np.arange(n_pred_display))
+        ax.set_xticklabels(predicted_label_names, fontsize=fontsize)
 
         ax.set_ylabel("True Label", fontsize=10)
         ax.set_xlabel("Predicted Cluster", fontsize=10)

@@ -220,10 +220,17 @@ class ColorDataModule(pl.LightningDataModule):
                 transform=temp_transform,
                 download=True,
             )
-        temp_loader = DataLoader(
-            temp_dataset, batch_size=1000, num_workers=self.hparams.num_workers
-        )
-        normalize_fn = self.get_normalize_fn(next(iter(temp_loader))[0])
+
+        # Use standard ImageNet normalization stats to avoid slow data loading
+        if self.hparams.dataset_name == "imagenet":
+            normalize_fn = transforms.Normalize(
+                mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+            )
+        else:
+            temp_loader = DataLoader(
+                temp_dataset, batch_size=1000, num_workers=self.hparams.num_workers
+            )
+            normalize_fn = self.get_normalize_fn(next(iter(temp_loader))[0])
 
         # --- Transforms ---
         transform_list = []

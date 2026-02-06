@@ -167,6 +167,7 @@ class HyperbolicResNet(AbstractModel):
             self.encoder = resnet152(weights=None)
         else:
             raise ValueError(f"Invalid model type: {self.model_type}")
+        
 
         # Modify encoder for CIFAR-10/100 (32x32 images)
         if self.output_size == 32:
@@ -177,13 +178,10 @@ class HyperbolicResNet(AbstractModel):
                 3, 64, kernel_size=3, stride=1, padding=1, bias=False
             )
             self.encoder.maxpool = nn.Identity()
-
-        in_features = self.encoder.fc.in_features
-
-        self.encoder.fc = nn.Identity()
+        
 
         # Build projection head layers progressively
-        projection_layers: list[nn.Module] = [nn.Linear(in_features, 1000)]
+        projection_layers: list[nn.Module] = []
         current_dim = 1000
         for dim in self.projection_layer_dims:
             projection_layers.extend(
@@ -197,6 +195,8 @@ class HyperbolicResNet(AbstractModel):
 
         if self.euclidean_latentspace:
             self.manifold = Euclidean()
+
+        
 
         self.encoder = nn.Sequential(self.encoder, *projection_layers[:-2])
         self.rms = nn.RMSNorm(current_dim, elementwise_affine=False)
@@ -293,6 +293,7 @@ class HyperbolicResNet(AbstractModel):
             )
             self.decoder = None
             self.hyperbolic_decoding_layer = None
+        
 
     def _make_decoder_layer(
         self, planes: int, blocks: int, scale: float = 1
