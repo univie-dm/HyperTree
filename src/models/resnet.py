@@ -73,9 +73,6 @@ class HyperbolicResNet(AbstractModel):
             FHCNN_normalize=FHCNN_normalize,
         )
         self.save_hyperparameters()
-        
-        # Cast hparams to the proper type for type checking
-        self.hparams: HParams = cast(HParams, self.hparams)
 
         # Encoder
         if self.hparams.model_type == "resnet18":

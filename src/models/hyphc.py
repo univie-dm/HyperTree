@@ -3,7 +3,7 @@ import torch.nn.functional as F
 import numpy as np
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
-from typing import Any, Tuple, cast
+from typing import Any, Tuple
 from lightning.pytorch.utilities import grad_norm
 
 from src.hyperbolic_math.src.manifolds import Euclidean
@@ -77,9 +77,6 @@ class HyperbolicHCModel(AbstractModel):
         )
         # Save hyperparameters while ignoring non-serializable model
         self.save_hyperparameters(ignore=["model"])
-        
-        # Cast hparams to the proper type for type checking
-        self.hparams: HParams = cast(HParams, self.hparams)
 
         # Load encoding modules with their weights and ensure weights are copied by loading state dict
         self.encoder = model.encoder  # type: ignore

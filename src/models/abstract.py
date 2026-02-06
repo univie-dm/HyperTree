@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 import wandb
 
-from typing import Tuple, Any, cast, Protocol
+from typing import Tuple, Any, Protocol
 from pytorch_lightning.loggers import WandbLogger
 
 from src.evaluation import evaluation
@@ -13,55 +13,6 @@ from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.hyperbolic_math.src.utils.math_utils import atanh
 from src.utils.wordnet_hierarchy import get_wordnet_labels_for_cifar100
 from src.utils.imagenet_hierarchy import get_wordnet_labels_for_imagenet
-
-
-class HParams(Protocol):
-    """Type definition for model hyperparameters (structural typing)."""
-    # Architecture
-    model_type: str | None
-    params_dtype: str
-    activation_function: str
-    feature_scaling: bool
-    hyperbolic_encoding: str | None
-    latent_dim: int
-    manifold_name: str
-    manifold_precision: str | torch.dtype
-    curvature_magnitude: float | torch.Tensor
-    hyperbolic_decoding: str | None
-    # Optimizer
-    optimizer_name: str
-    learning_rate: float
-    weight_decay: float
-    lr_scheduler_params: dict | None
-    # Evaluation & Logging
-    stage: str
-    global_epoch: int
-    log_interval: int
-    evaluation_metrics: dict[str, Any]
-    # Layer specific parameters
-    clamping_factor: float
-    smoothing_factor: float
-    hyperboloid_layer_learnable_scale: bool
-    FHCNN_normalize: bool
-    # ResNet specific parameters
-    projection_layer_dims: list[int]
-    input_size: int
-    contrastive_loss_enabled: bool
-    contrastive_weight: float
-    contrastive_temperature: float
-    # HyperbolicClustering specific parameters
-    recon_weight: float
-    triplet_sample_size: int | str
-    triplet_sampling_strategy: str
-    similarity_pruning_threshold: float
-    lca_version: str
-    hyperbolic_loss_temperature: float
-    loss_version: str
-    hyperbolic_loss_weight_interval: int
-    hyperbolic_loss_start_weight: float
-    hyperbolic_loss_end_weight: float
-    regularize_to_origin_enabled: bool
-    regularizer_weight: float
 
 
 class AbstractModel(pl.LightningModule):
@@ -96,9 +47,6 @@ class AbstractModel(pl.LightningModule):
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["manifold_precision", "model"])
-        
-        # Cast hparams to the proper type for type checking
-        self.hparams: HParams = cast(HParams, self.hparams)
 
         if activation_function == "relu":
             self.activation_function = torch.nn.ReLU()
