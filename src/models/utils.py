@@ -3,17 +3,13 @@ import torch
 import torch.nn as nn
 
 from typing import Dict, Union
-from src.hyperbolic_math.src.manifolds import Manifold, Hyperboloid, PoincareBall
+from src.hyperbolic_math.src.manifolds import Manifold, Euclidean, Hyperboloid, PoincareBall
 from src.hyperbolic_math.src.nn_layers import (
     HyperbolicLinearPoincarePP,
-    HyperbolicLinearHyperboloid,
     HyperbolicLinearHyperboloidFHNN,
     HyperbolicLinearHyperboloidFHCNN,
-    HyperbolicRegressionPoincare,
-    HyperbolicRegressionPoincarePP,
-    HyperbolicRegressionHyperboloid,
     Expmap_0,
-    Logmap_0,
+    Logmap_0
 )
 
 
@@ -58,6 +54,17 @@ class HyperboloidTangent2DecoderInput(torch.nn.Module):
             return x
 
 
+class DtypeConversion(torch.nn.Module):
+    """Convert tensor dtype."""
+
+    def __init__(self, target_dtype: torch.dtype):
+        super().__init__()
+        self.target_dtype = target_dtype
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x.to(dtype=self.target_dtype)
+
+
 def get_hyperbolic_encoding_layer_by_name(
     layer_name: str,
     manifold: Manifold,
@@ -69,27 +76,16 @@ def get_hyperbolic_encoding_layer_by_name(
     learnable_scale: bool = False,
     FHCNN_normalize: bool = True,
 ) -> Union[nn.Sequential, HyperbolicLinearPoincarePP]:
-    if layer_name == "EuclideanLinear_Exp":
+    if isinstance(manifold, Euclidean):
+        layer = nn.Linear(input_dim, output_dim)
+    elif layer_name == "EuclideanLinear_Exp" and not isinstance(manifold, Euclidean):
         layer = nn.Sequential(
             nn.Linear(input_dim, output_dim),
             HyperboloidEncoder2TangentInput(manifold=manifold),
             Expmap_0(manifold=manifold),
         )
     # Hyperboloid layers
-    elif layer_name == "HyperbolicLinear" and isinstance(manifold, Hyperboloid):
-        layer = nn.Sequential(
-            HyperboloidEncoder2TangentInput(manifold=manifold),
-            HyperbolicLinearHyperboloid(
-                manifold=manifold,
-                input_dim=input_dim + 1,
-                output_dim=output_dim + 1,
-                params_dtype=params_dtype,
-                input_space="tangent",
-            ),
-        )
-    elif layer_name == "HyperbolicLinearHyperboloidFHNN" and isinstance(
-        manifold, Hyperboloid
-    ):
+    elif layer_name == "HyperbolicLinearHyperboloidFHNN" and isinstance(manifold, Hyperboloid):
         layer = nn.Sequential(
             HyperboloidEncoder2TangentInput(manifold=manifold),
             HyperbolicLinearHyperboloidFHNN(
@@ -101,9 +97,7 @@ def get_hyperbolic_encoding_layer_by_name(
                 learnable_scale=learnable_scale,
             ),
         )
-    elif layer_name == "HyperbolicLinearHyperboloidFHCNN" and isinstance(
-        manifold, Hyperboloid
-    ):
+    elif layer_name == "HyperbolicLinearHyperboloidFHCNN" and isinstance(manifold, Hyperboloid):
         layer = nn.Sequential(
             HyperboloidEncoder2TangentInput(manifold=manifold),
             HyperbolicLinearHyperboloidFHCNN(
@@ -127,9 +121,8 @@ def get_hyperbolic_encoding_layer_by_name(
             clamping_factor=clamping_factor,
             smoothing_factor=smoothing_factor,
         )
-        weight = torch.randn((output_dim, input_dim), dtype=layer.params_dtype)
-        weight = nn.init.normal_(weight, mean=0.0, std=(1.0/np.sqrt(weight.size(1))))
-        layer.weight = torch.nn.Parameter(weight, requires_grad=True)
+        # Scale the already initialized standard normal weights
+        layer.weight.data *= (1.0 / np.sqrt(input_dim))
     else:
         raise ValueError(
             f"Unknown hyperbolic layer name: {layer_name}. "
@@ -147,36 +140,27 @@ def get_hyperbolic_decoding_layer_by_name(
     params_dtype: str = "float32",
     clamping_factor: float = 1.0,
     smoothing_factor: float = 50.0,
-    activation_function: nn.Module = nn.ReLU(),
+    activation_function: nn.Module = nn.SiLU(),
     learnable_scale: bool = False,
     FHCNN_normalize: bool = True,
 ) -> nn.Sequential:
-    if layer_name == "Log_EuclideanLinear":
+    if isinstance(manifold, Euclidean):
+        layer = nn.Sequential(
+            nn.Linear(input_dim, output_dim),
+            nn.BatchNorm1d(output_dim),
+            activation_function,
+        )
+    elif layer_name == "Log_EuclideanLinear" and not isinstance(manifold, Euclidean):
         layer = nn.Sequential(
             Logmap_0(manifold=manifold),
             HyperboloidTangent2DecoderInput(manifold=manifold),
+            DtypeConversion(target_dtype=get_dtype_from_precision(params_dtype)),
             nn.Linear(input_dim, output_dim),
             nn.BatchNorm1d(output_dim),
             activation_function,
         )
     # Hyperboloid layers
-    elif layer_name == "HyperbolicLinear_Log" and isinstance(manifold, Hyperboloid):
-        layer = nn.Sequential(
-            HyperbolicLinearHyperboloid(
-                manifold=manifold,
-                input_dim=input_dim + 1,
-                output_dim=output_dim + 1,
-                params_dtype=params_dtype,
-                input_space="manifold",
-            ),
-            Logmap_0(manifold=manifold),
-            HyperboloidTangent2DecoderInput(manifold=manifold),
-            nn.BatchNorm1d(output_dim),
-            activation_function,
-        )
-    elif layer_name == "HyperbolicLinearHyperboloidFHNN_Log" and isinstance(
-        manifold, Hyperboloid
-    ):
+    elif layer_name == "HyperbolicLinearHyperboloidFHNN_Log" and isinstance(manifold, Hyperboloid):
         layer = nn.Sequential(
             HyperbolicLinearHyperboloidFHNN(
                 manifold=manifold,
@@ -188,12 +172,11 @@ def get_hyperbolic_decoding_layer_by_name(
             ),
             Logmap_0(manifold=manifold),
             HyperboloidTangent2DecoderInput(manifold=manifold),
+            DtypeConversion(target_dtype=get_dtype_from_precision(params_dtype)),
             nn.BatchNorm1d(output_dim),
             activation_function,
         )
-    elif layer_name == "HyperbolicLinearHyperboloidFHCNN_Log" and isinstance(
-        manifold, Hyperboloid
-    ):
+    elif layer_name == "HyperbolicLinearHyperboloidFHCNN_Log" and isinstance(manifold, Hyperboloid):
         layer = nn.Sequential(
             HyperbolicLinearHyperboloidFHCNN(
                 manifold=manifold,
@@ -206,20 +189,7 @@ def get_hyperbolic_decoding_layer_by_name(
             ),
             Logmap_0(manifold=manifold),
             HyperboloidTangent2DecoderInput(manifold=manifold),
-            nn.BatchNorm1d(output_dim),
-            activation_function,
-        )
-    elif layer_name == "HyperbolicRegression" and isinstance(manifold, Hyperboloid):
-        layer = nn.Sequential(
-            HyperbolicRegressionHyperboloid(
-                manifold=manifold,
-                input_dim=input_dim + 1,
-                output_dim=output_dim,
-                params_dtype=params_dtype,
-                input_space="manifold",
-                clamping_factor=clamping_factor,
-                smoothing_factor=smoothing_factor,
-            ),
+            DtypeConversion(target_dtype=get_dtype_from_precision(params_dtype)),
             nn.BatchNorm1d(output_dim),
             activation_function,
         )
@@ -236,42 +206,16 @@ def get_hyperbolic_decoding_layer_by_name(
                 smoothing_factor=smoothing_factor,
             ),
             Logmap_0(manifold=manifold),
+            DtypeConversion(target_dtype=get_dtype_from_precision(params_dtype)),
             nn.BatchNorm1d(output_dim),
             activation_function,
         )
-    elif layer_name == "HyperbolicRegression" and isinstance(manifold, PoincareBall):
-        layer = nn.Sequential(
-            HyperbolicRegressionPoincare(
-                manifold=manifold,
-                input_dim=input_dim,
-                output_dim=output_dim,
-                params_dtype=params_dtype,
-                input_space="manifold",
-                clamping_factor=clamping_factor,
-                smoothing_factor=smoothing_factor,
-            ),
-            nn.BatchNorm1d(output_dim),
-            activation_function,
-        )
-    elif layer_name == "HyperbolicRegressionPP" and isinstance(manifold, PoincareBall):
-        layer = nn.Sequential(
-            HyperbolicRegressionPoincarePP(
-                manifold=manifold,
-                input_dim=input_dim,
-                output_dim=output_dim,
-                params_dtype=params_dtype,
-                input_space="manifold",
-                clamping_factor=clamping_factor,
-                smoothing_factor=smoothing_factor,
-            ),
-            nn.BatchNorm1d(output_dim),
-            activation_function,
-        )
+        layer[0].weight.data *= (1.0 / np.sqrt(input_dim))
     else:
         raise ValueError(
             f"Unknown hyperbolic layer name: {layer_name}. "
             "Available options are: 'Log_EuclideanLinear', "
             "'HyperbolicLinearHyperboloidFHNN_Log', 'HyperbolicLinearHyperboloidFHCNN_Log', "
-            "'HyperbolicLinearPP_Log', 'HyperbolicRegression', 'HyperbolicRegressionPP'."
+            "'HyperbolicLinearPP_Log'."
         )
     return layer

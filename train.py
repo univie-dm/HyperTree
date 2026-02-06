@@ -66,17 +66,13 @@ def main(cfg: DictConfig) -> None:
         datamodule, input_dim, _ = get_datamodule(cfg, stage="pretrain")
         pretrain_model = get_pretrain_model(cfg, input_dim)
 
-        if (
-            not os.path.exists(f"data/models/{get_model_path(cfg)}.pt")
-            or cfg.pretraining.overwrite
-        ):
+        if (not os.path.exists(f"data/models/{get_model_path(cfg)}.pt")
+            or cfg.pretraining.overwrite):
             print("Starting pretraining", flush=True)
             trainer.fit(pretrain_model, datamodule)
             torch.save(pretrain_model, f"data/models/{get_model_path(cfg)}.pt")
         else:
-            pretrain_model = torch.load(
-                f"data/models/{get_model_path(cfg)}.pt", weights_only=False
-            )
+            pretrain_model = torch.load(f"data/models/{get_model_path(cfg)}.pt", weights_only=False)
 
         print("Finished pretraining", flush=True)
         if cfg.experiment.seed >= 0:
@@ -86,20 +82,15 @@ def main(cfg: DictConfig) -> None:
 
         accumulate_grad_batches = max(
             1,
-            min(
-                cfg.clustering.accumulate_gradients, len(datamodule.train_dataloader())
-            ),
-        )
+            min(cfg.clustering.accumulate_gradients, len(datamodule.train_dataloader())))
 
         # Determine checkpoint directory for clustering
         clustering_checkpoint_dir = None
         if cfg.clustering.get("enable_checkpointing", False):
             clustering_checkpoint_dir = f"./data/checkpoints/clustering_{cfg.dataset.name}_{get_model_path(cfg)}"
             os.makedirs(clustering_checkpoint_dir, exist_ok=True)
-            print(
-                f"Checkpointing enabled for clustering. Checkpoints will be saved to: {clustering_checkpoint_dir}",
-                flush=True,
-            )
+            print(f"Checkpointing enabled for clustering. Checkpoints will be saved to: {clustering_checkpoint_dir}",
+                  flush=True)
 
         clustering_model = get_clustering_model(cfg, pretrain_model)
         trainer = pl.Trainer(

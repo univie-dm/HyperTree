@@ -15,7 +15,6 @@ from src.models import (
     HyperbolicAE,
     HyperbolicHCModel,
     HyperbolicResNet,
-    HyperbolicConvAE,
 )
 
 
@@ -25,35 +24,21 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "seed": cfg.experiment.seed,
         "batch_size": cfg.experiment.batch_size,
         "optimizer": cfg.experiment.optimizer,
+        "gradient_clip_value": cfg.experiment.gradient_clip_value,
         # Pretraining attributes
         "pretrain_epochs": cfg.pretraining.epochs,
         "learning_rate": cfg.pretraining.learning_rate,
-        "pretrain_trainable_curvature": cfg.pretraining.trainable_curvature,
-        # Model attributes
-        "ae_type": cfg.architecture.ae_type,
-        "hidden_dims": cfg.architecture.hidden_dims,
-        "latent_dim": cfg.architecture.latent_dim,
-        "hyperbolic_encoding": cfg.architecture.hyperbolic_encoding,
-        "hyperbolic_decoding": cfg.architecture.hyperbolic_decoding,
-        "precision": cfg.architecture.precision,
-        "manifold_name": cfg.architecture.manifold_name,
-        "manifold_precision": cfg.architecture.manifold_precision,
-        "curvature_magnitude": cfg.architecture.curvature_magnitude,
-        "activation_function": cfg.architecture.activation_function,
-        "hyperbolic_clamping": cfg.architecture.hyperbolic_clamping,
-        "hyperbolic_smoothing": cfg.architecture.hyperbolic_smoothing,
-        "learnable_scale": cfg.architecture.learnable_scale,
-        "FHCNN_normalize": cfg.architecture.FHCNN_normalize,
-        "spectral_normalization": cfg.architecture.get("spectral_normalization", False),
+        "weight_decay": cfg.pretraining.weight_decay,
+        "use_contrastive_loss_pretrain": cfg.pretraining.contrastive_loss.enabled,
+        "contrastive_weight_pretrain": cfg.pretraining.contrastive_loss.weight,
+        "contrastive_temperature_pretrain": cfg.pretraining.contrastive_loss.temperature,
         "lr_scheduler_pretrain": cfg.pretraining.get("lr_scheduler", None),
-        # Dataset specific attributes
+        # Model attributes
+        "architecture": cfg.architecture,
+        # Dataset attributes
         "dataset_name": cfg.dataset.name,
         "selected_classes": cfg.dataset.get("selected_classes", None),
         "dataset_subset": cfg.dataset.get("subset", None),
-        "use_contrastive_loss_pretrain": cfg.pretraining.contrastive_loss.enabled,
-        "use_byol_pretrain": cfg.pretraining.contrastive_loss.byol,
-        "feature_scaling": cfg.architecture.feature_scaling,
-        "euclidean_latentspace": cfg.pretraining.euclidean_latentspace,
     }
     return md5(str(attr).encode()).hexdigest()
 
@@ -103,162 +88,117 @@ def get_datamodule(
     return datamodule, input_dim, is_image
 
 
-def get_pretrain_model(
-    cfg: omegaconf.DictConfig, input_dim: int
-) -> Union[HyperbolicAE, HyperbolicResNet, HyperbolicConvAE]:
-    if (
-        os.path.exists(f"data/models/{get_model_path(cfg)}.pt")
-        and not cfg.pretraining.overwrite
-    ):
+def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[HyperbolicAE, HyperbolicResNet]:
+    if (os.path.exists(f"data/models/{get_model_path(cfg)}.pt") and not cfg.pretraining.overwrite):
         model = torch.load(f"data/models/{get_model_path(cfg)}.pt", weights_only=False)
         print("Loaded model from {}".format(f"data/models/{get_model_path(cfg)}.pt"))
-    elif cfg.architecture.ae_type == "feedforward":
+    elif cfg.architecture.model_type == "feedforward":
         model = HyperbolicAE(
+            # Architecture
             input_dim=input_dim,
-            hidden_dims=cfg.architecture.hidden_dims,
-            hyperbolic_encoding=cfg.architecture.hyperbolic_encoding,
+            hidden_dims=cfg.architecture.feedforward_hidden_dims,
             params_dtype=cfg.architecture.precision,
-            latent_dim=cfg.architecture.latent_dim,
-            manifold_name=cfg.architecture.manifold_name,
-            manifold_precision=cfg.architecture.manifold_precision,
-            curvature_magnitude=cfg.architecture.curvature_magnitude,
-            trainable_curvature=cfg.pretraining.trainable_curvature,
-            hyperbolic_decoding=cfg.architecture.hyperbolic_decoding,
-            optimizer_name=cfg.experiment.optimizer,
-            learning_rate=cfg.pretraining.learning_rate,
-            log_interval=cfg.experiment.log_interval,
-            distances_type=cfg.hyphc.distances_type,
-            stage="pretrain",
-            global_epoch=0,
-            evaluation_metrics=cfg.evaluation,
             activation_function=cfg.architecture.activation_function,
-            clamping_factor=cfg.architecture.hyperbolic_clamping,
-            smoothing_factor=cfg.architecture.hyperbolic_smoothing,
-            learnable_scale=cfg.architecture.learnable_scale,
-            FHCNN_normalize=cfg.architecture.FHCNN_normalize,
-            spectral_normalization=cfg.architecture.spectral_normalization,
-            lr_scheduler_params=cfg.pretraining.get("lr_scheduler", None),
             feature_scaling=cfg.architecture.feature_scaling,
-        )
-    elif cfg.architecture.ae_type == "convolutional":
-        model = HyperbolicConvAE(
-            image_size=cfg.dataset.resize,
-            input_channels=cfg.dataset.channels,
             hyperbolic_encoding=cfg.architecture.hyperbolic_encoding,
-            params_dtype=cfg.architecture.precision,
-            manifold_name=cfg.architecture.manifold_name,
-            manifold_precision=cfg.architecture.manifold_precision,
-            curvature_magnitude=cfg.architecture.curvature_magnitude,
-            trainable_curvature=cfg.pretraining.trainable_curvature,
-            hyperbolic_decoding=cfg.architecture.hyperbolic_decoding,
-            optimizer_name=cfg.experiment.optimizer,
-            learning_rate=cfg.pretraining.learning_rate,
-            log_interval=cfg.experiment.log_interval,
-            latent_dim=cfg.architecture.latent_dim,
-            stage="pretrain",
-            global_epoch=0,
-            evaluation_metrics=cfg.evaluation,
-            clamping_factor=cfg.architecture.hyperbolic_clamping,
-            smoothing_factor=cfg.architecture.hyperbolic_smoothing,
-            learnable_scale=cfg.architecture.learnable_scale,
-            FHCNN_normalize=cfg.architecture.FHCNN_normalize,
-            lr_scheduler_params=cfg.pretraining.get("lr_scheduler", None),
-        )
-    elif cfg.architecture.ae_type in [
-        "resnet18",
-        "resnet34",
-        "resnet50",
-        "resnet101",
-        "resnet152",
-    ]:
-        model = HyperbolicResNet(
-            model_type=cfg.architecture.ae_type,
-            hyperbolic_encoding=cfg.architecture.hyperbolic_encoding,
-            params_dtype=cfg.architecture.precision,
             latent_dim=cfg.architecture.latent_dim,
             manifold_name=cfg.architecture.manifold_name,
             manifold_precision=cfg.architecture.manifold_precision,
             curvature_magnitude=cfg.architecture.curvature_magnitude,
-            trainable_curvature=cfg.pretraining.trainable_curvature,
             hyperbolic_decoding=cfg.architecture.hyperbolic_decoding,
-            output_size=cfg.dataset.resize,
+            # Optimizer
             optimizer_name=cfg.experiment.optimizer,
             learning_rate=cfg.pretraining.learning_rate,
             weight_decay=cfg.pretraining.weight_decay,
+            lr_scheduler_params=cfg.pretraining.get("lr_scheduler", None),
+            # Evaluation & Logging
+            stage="pretrain",
+            global_epoch=0,
             log_interval=cfg.experiment.log_interval,
-            evaluation_metrics=cfg.evaluation,
-            activation_function=cfg.architecture.activation_function,
+            evaluation_metrics=cfg.evaluation_metrics,
+            # (Hyperbolic-) Layer specific parameters
             clamping_factor=cfg.architecture.hyperbolic_clamping,
             smoothing_factor=cfg.architecture.hyperbolic_smoothing,
-            distances_type=cfg.hyphc.distances_type,
-            learnable_scale=cfg.architecture.learnable_scale,
-            normalize=cfg.architecture.FHCNN_normalize,
-            contrastive_enabled=cfg.pretraining.contrastive_loss.enabled,
+            hyperboloid_layer_learnable_scale=cfg.architecture.hyperboloid_layer_learnable_scale,
+            FHCNN_normalize=cfg.architecture.FHCNN_normalize,
+        )
+    elif cfg.architecture.model_type in ["resnet18", "resnet34", "resnet50", "resnet101", "resnet152"]:
+        model = HyperbolicResNet(
+            # Architecture
+            model_type=cfg.architecture.model_type,
+            params_dtype=cfg.architecture.precision,
+            activation_function=cfg.architecture.activation_function,
+            feature_scaling=cfg.architecture.feature_scaling,
+            hyperbolic_encoding=cfg.architecture.hyperbolic_encoding,
+            latent_dim=cfg.architecture.latent_dim,
+            manifold_name=cfg.architecture.manifold_name,
+            manifold_precision=cfg.architecture.manifold_precision,
+            curvature_magnitude=cfg.architecture.curvature_magnitude,
+            hyperbolic_decoding=cfg.architecture.hyperbolic_decoding,
+            # Optimizer
+            optimizer_name=cfg.experiment.optimizer,
+            learning_rate=cfg.pretraining.learning_rate,
+            weight_decay=cfg.pretraining.weight_decay,
+            lr_scheduler_params=cfg.pretraining.get("lr_scheduler", None),
+            # Evaluation & Logging
+            stage="pretrain",
+            global_epoch=0,
+            log_interval=cfg.experiment.log_interval,
+            evaluation_metrics=cfg.evaluation_metrics,
+            # (Hyperbolic-) Layer specific parameters
+            clamping_factor=cfg.architecture.hyperbolic_clamping,
+            smoothing_factor=cfg.architecture.hyperbolic_smoothing,
+            hyperboloid_layer_learnable_scale=cfg.architecture.hyperboloid_layer_learnable_scale,
+            FHCNN_normalize=cfg.architecture.FHCNN_normalize,
+            # ResNet specific parameters
+            projection_layer_dims=cfg.architecture.projection_layer_dims,
+            input_size=cfg.dataset.resize,
+            contrastive_loss_enabled=cfg.pretraining.contrastive_loss.enabled,
             contrastive_weight=cfg.pretraining.contrastive_loss.weight,
             contrastive_temperature=cfg.pretraining.contrastive_loss.temperature,
-            lr_scheduler_params=cfg.pretraining.get("lr_scheduler", None),
-            byol=cfg.pretraining.contrastive_loss.byol,
-            recon_weight=cfg.pretraining.recon_weight,
-            projection_layer_dims=cfg.architecture.projection_head,
-            feature_scaling=cfg.architecture.feature_scaling,
-            euclidean_latentspace=cfg.pretraining.euclidean_latentspace,
         )
     else:
-        raise ValueError("Invalid autoencoder type")
+        raise ValueError("Invalid model type")
     return model
 
 
-def get_clustering_model(
-    cfg: omegaconf.DictConfig,
-    pretrain_model: Union[HyperbolicAE, HyperbolicResNet, HyperbolicConvAE],
-) -> HyperbolicHCModel:
-    if cfg.pretraining.recon_weight == 0.0 and cfg.clustering.recon_weight > 0.0:
-        print(
-            "Warning: Pretraining was done without reconstruction loss, "
-            "but clustering is using a non-zero reconstruction weight. Will be set to 0.0 during clustering."
-        )
-        cfg.clustering.recon_weight = 0.0
+def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[HyperbolicAE, HyperbolicResNet]) -> HyperbolicHCModel:
+    if cfg.pretraining.reconstruction_loss.weight == 0.0 and cfg.clustering.reconstruction_loss.weight > 0.0:
+        print("Warning: Pretraining was done without reconstruction loss, "
+              "but clustering is using a non-zero reconstruction weight. Will be set to 0.0 during clustering.")
+        cfg.clustering.reconstruction_loss.weight = 0.0
     model = HyperbolicHCModel(
-        ae_model=pretrain_model,
-        trainable_curvature=cfg.clustering.trainable_curvature,
+        model=pretrain_model,
+        # Optimizer
         learning_rate=cfg.clustering.learning_rate,
         weight_decay=cfg.clustering.weight_decay,
-        log_interval=cfg.experiment.log_interval,
-        stage="clustering",
-        global_epoch=cfg.pretraining.epochs,
         lr_scheduler_params=cfg.clustering.lr_scheduler
         if hasattr(cfg.clustering, "lr_scheduler")
         else None,
-        hyphc_start_weight=cfg.hyphc.min_loss_weight,
-        hyphc_end_weight=cfg.hyphc.max_loss_weight,
-        hyphc_weight_interval=cfg.hyphc.loss_weight_interval,
-        hyphc_temperature=cfg.hyphc.temperature,
-        hyphc_sampling_strategy=cfg.hyphc.sampling_strategy,
-        hyphc_fine_triplet_ratio=cfg.hyphc.fine_triplet_ratio,
-        hyphc_triplet_subsampling_size=cfg.hyphc.triplet_subsampling_size,
-        hyphc_triplet_subsampling_delta=cfg.hyphc.triplet_subsampling_delta,
-        lca_version=cfg.hyphc.lca_version,
-        normalized_hyphc_loss=cfg.hyphc.normalized_loss,
-        distances_type=cfg.hyphc.distances_type,
-        hyphc_dist_sum_loss=cfg.hyphc.dist_sum_loss,
-        evaluation_metrics=cfg.evaluation,
-        freeze_encoder=cfg.clustering.freeze_encoder,
-        contrastive_enabled=cfg.clustering.contrastive_loss.enabled,
-        contrastive_weight=cfg.clustering.contrastive_loss.weight,
+        # Evaluation & Logging
+        stage="clustering",
+        global_epoch=cfg.pretraining.epochs,
+        log_interval=cfg.experiment.log_interval,
+        evaluation_metrics=cfg.evaluation_metrics,
+        # Hyperbolic Loss parameters
+        hyperbolic_loss_start_weight=cfg.clustering.hyperbolic_loss.start_weight,
+        hyperbolic_loss_end_weight=cfg.clustering.hyperbolic_loss.end_weight,
+        hyperbolic_loss_weight_interval=cfg.clustering.hyperbolic_loss.weight_interval,
+        hyperbolic_loss_temperature=cfg.clustering.hyperbolic_loss.temperature,
+        triplet_sampling_strategy=cfg.clustering.hyperbolic_loss.triplet_sampling_strategy,
+        triplet_sample_size=cfg.clustering.hyperbolic_loss.triplet_sample_size,
+        lca_version=cfg.clustering.hyperbolic_loss.lca_version,
+        loss_version=cfg.clustering.hyperbolic_loss.loss_version,
+        similarity_pruning_threshold=cfg.clustering.hyperbolic_loss.similarity_pruning_threshold,
+        # Contrastive Loss parameters
+        contrastive_loss_enabled=cfg.clustering.contrastive_loss.enabled,
         contrastive_temperature=cfg.clustering.contrastive_loss.temperature,
-        byol=cfg.clustering.contrastive_loss.byol,
-        recon_weight=cfg.clustering.recon_weight,
-        cluster_dim=cfg.architecture.cluster_dim,
-        hierarchy_weight=cfg.hyphc.hierarchy_weight,
-        hierarchy_margin=cfg.hyphc.hierarchy_margin,
-        triplet_margin=cfg.hyphc.triplet_margin,
-        hyphc_num_nn=cfg.hyphc.num_nn,
-        use_seperate_heads=cfg.architecture.use_seperate_heads,
-        gt_similarity_mode=cfg.hyphc.gt_similarity_mode,
-        gt_alpha=cfg.hyphc.gt_alpha,
-        s_fine=cfg.hyphc.s_fine,
-        s_coarse=cfg.hyphc.s_coarse,
-        s_diff=cfg.hyphc.s_diff,
+        contrastive_weight=cfg.clustering.contrastive_loss.weight,
+        # Reconstruction Loss parameters
+        recon_weight=cfg.clustering.reconstruction_loss.weight,
+        # Regularizer parameters
+        regularize_to_origin_enabled=cfg.clustering.regularizer.enabled,
+        regularizer_weight=cfg.clustering.regularizer.weight,
     )
     return model
 
@@ -270,9 +210,7 @@ def get_logger(cfg: omegaconf.DictConfig) -> Union[WandbLogger, CSVLogger]:
             entity=cfg.wandb.entity,
             save_dir=cfg.wandb.save_dir,
             dir=cfg.wandb.save_dir,
-            config=omegaconf.OmegaConf.to_container(
-                cfg, resolve=True, throw_on_missing=True
-            ),
+            config=omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
             tags=cfg.wandb.tags,
             log_model=False,
         )

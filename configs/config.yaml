@@ -1,110 +1,100 @@
 ## Training parameters
 experiment:
-  seed: 400
-  num_workers: 8
+  seed: 1
+  num_workers: 20
   batch_size: 512
   log_interval: 10
   optimizer: 'Adam' # 'Adam', 'SGD'
-  gradient_clip_value: 100.0 # None, Float
+  gradient_clip_value: 5.0 # None, Float
+
 
 ## Pretraining parameters
 pretraining:
-  epochs: 10
-  learning_rate: 3e-3
-  trainable_curvature: False
+  epochs: 800
   overwrite: False
-  weight_decay: 0.0
-  recon_weight: 0.0
-  euclidean_latentspace: False
+  learning_rate: 0.003
+  weight_decay: 1e-5
   enable_checkpointing: False  # Enable for long training runs (e.g., ImageNet)
-  # Contrastive learning parameters
+  # Reconstruction loss parameters
+  reconstruction_loss:
+    weight: 0.0
+  # Contrastive loss parameters
   contrastive_loss:
-    enabled: False
+    enabled: True
     weight: 1.0
     temperature: 0.5
-    byol: False
+  # Learning rate scheduler
   lr_scheduler:
     type: # 'warmup_cosine', 'ReduceLROnPlateau'
     interval: 40  # Number of epochs for warmup phase
     cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
     patience: 20 # Number of epochs
 
+
 ## Clustering parameters
 clustering:
-  epochs: 20
-  trainable_curvature: False
-  accumulate_gradients: 1
-  learning_rate: 1e-3
-  weight_decay: 0.0
+  epochs: 600
+  learning_rate: 1e-4
+  weight_decay: 1e-5
   enable_checkpointing: False  # Enable for long training runs
+  accumulate_gradients: 1
   # Learning rate scheduler
   lr_scheduler:
     type: # 'warmup_cosine'
     interval: 40  # Number of epochs for warmup phase
     cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
     patience: 20 # Number of epochs
-  freeze_encoder: False
+  # Hyperbolic loss parameters
+  hyperbolic_loss:
+    start_weight: 1.0
+    end_weight: 1.0
+    weight_interval: 0 # 0 equals to max_loss_weight all times
+    temperature: 0.2
+    triplet_sampling_strategy: 'random_with_replacement' # 'all_subsample_triplets', 'random_with_replacement', 'chami', 'importance_sampling'
+    triplet_sample_size: 10000 # integer or 'auto' (for minimum sample size)
+    lca_version: 'ours' # 'ours', 'chami'
+    loss_version: 'wang' # 'chami', 'normalized', 'wang'
+    similarity_pruning_threshold: 0.1
+  # Contrastive loss parameters
   contrastive_loss:
     enabled: False
-    weight: 1.0
     temperature: 0.5
-    byol: False
-  recon_weight: 0.0
+    weight: 0.1
+  # Reconstruction loss parameters
+  reconstruction_loss:
+    weight: 0.0
+  # Regularizer parameters (regularization to the origin)
+  regularizer:
+    enabled: False
+    weight: 0.05
 
-## HypHC parameters
-hyphc:
-  max_loss_weight: 1.0
-  min_loss_weight: 0.0
-  loss_weight_interval: 0 # 0 equals to max_loss_weight all times
-  temperature: 0.5  # Increased from 0.01 for softer gradients when using GT
-  sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'chami', 'probabilistic_coverage','random','random_with_replace'
-  fine_triplet_ratio: 0.5
-  triplet_subsampling_size: 200
-  num_nn: 100
-  triplet_subsampling_delta: 0.1 # The probability of missing a pair
-  lca_version: 'ours' # 'ours', 'chami', 'contrastive_lca', 'wang'
-  normalized_loss: True
-  distances_type: 'geodesic' # 'geodesic', 'cosine_similarity'
-  dist_sum_loss: True
-  hierarchy_weight: 0.2
-  hierarchy_margin: 0.2
-  triplet_margin: 8.0
-  # GT-based similarity parameters
-  gt_similarity_mode: 'none'  # 'none', 'hierarchical', 'hybrid'
-  gt_alpha: 0.0  # Influence of GT vs. Geometry (for hybrid mode)
-  s_fine: 0.9  # Weight for same class
-  s_coarse: 0.5  # Weight for same superclass, different class
-  s_diff: 0.1  # Weight for completely different classes
-  similarity_pruning_threshold: 0.0 # Threshold below which similarities are ignored to sparsify the similarity matrix
 
 ## Model architecture
 architecture:
-  ae_type: 'feedforward' # 'feedforward', 'convolutional', 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152'
-  hidden_dims: [512, 256, 128]
-  projection_head: [512, 256, 128]
-  use_seperate_heads: True
-  cluster_dim: 4
+  model_type: 'resnet50' # 'feedforward', 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152'
   feature_scaling: True
-  latent_dim: 10 # Hyperboloid automatically uses latent_dim + 1, i.e. latent_dim actually refers to the dimension of the hyperbolic manifold
+  feedforward_hidden_dims: [512, 256, 128] # only used if model_type is 'feedforward'
+  projection_layer_dims: [512, 256, 128] # contrastive projection head layers after encoder
+  latent_dim: 32 # Hyperboloid automatically uses latent_dim+1 (latent_dim refers to the dimension of the hyperbolic manifold)
+  precision: 'float32' # 'float32', 'float64'
+  manifold_precision: 'float64' # 'float32', 'float64'
+  manifold_name: 'PoincareBall' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
+  curvature_magnitude: 1.0
   hyperbolic_encoding: 'HyperbolicLinearPP' # 'EuclideanLinear_Exp'
-                                            #  Hyperboloid: 'HyperbolicLinear', 'HyperbolicLinearHyperboloidFHNN', 'HyperbolicLinearHyperboloidFHCNN'
+                                            #  Hyperboloid: 'HyperbolicLinearHyperboloidFHNN', 'HyperbolicLinearHyperboloidFHCNN'
                                             #  Poincare: 'HyperbolicLinearPP'
   hyperbolic_decoding: 'Log_EuclideanLinear' # 'Log_EuclideanLinear'
-                                             # Hyperboloid: 'HyperbolicLinear_Log', 'HyperbolicLinearHyperboloidFHNN_Log', 'HyperbolicLinearHyperboloidFHCNN_Log', 'HyperbolicRegression'
-                                             # Poincare: 'HyperbolicLinearPP_Log', 'HyperbolicRegression', 'HyperbolicRegressionPP'
-  precision: 'float64' # 'float32', 'float64'
-  manifold_name: 'PoincareBall' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
-  manifold_precision: 'float64' # 'float32', 'float64'
-  curvature_magnitude: 1.0
-  activation_function: 'relu' #'relu', 'swish'
+                                             # Hyperboloid: 'HyperbolicLinearHyperboloidFHNN_Log', 'HyperbolicLinearHyperboloidFHCNN_Log'
+                                             # Poincare: 'HyperbolicLinearPP_Log'
+  activation_function: 'swish' # 'swish', 'relu'
   hyperbolic_clamping: 1.0
   hyperbolic_smoothing: 50.0
-  learnable_scale: False # only used if hyperbolic_encoding is 'HyperbolicLinearHyperboloidFHNN', 'HyperbolicLinearHyperboloidFHCNN'
-  FHCNN_normalize: True # only used if hyperbolic_encoding is 'HyperbolicLinearHyperboloidFHCNN'
-  spectral_normalization: False # True, False
+  hyperboloid_layer_learnable_scale: False # only used in Hyperboloid layers
+  FHCNN_normalize: False # only used if hyperbolic_encoding is 'HyperbolicLinearHyperboloidFHCNN'
+
 
 ## Evaluation Metrics to be used and logged
-evaluation:
+evaluation_metrics:
   delta_hyperbolicity: False
   dendrogram_purity_single: False
   dendrogram_purity_complete: True
@@ -115,7 +105,7 @@ evaluation:
   agglomerative_clustering_average: False
   agglomerative_clustering_ward: True
   nearest_neighbors_accuracy: True
-  spectral_clustering: False
+  spectral_clustering: True
   visualization: True
   kmeans: False
   dasgupta_cost: False
@@ -127,6 +117,7 @@ evaluation:
   imagenet_hierarchy_path: './data/imagenet_wordnet_hierarchy.txt'  # ImageNet hierarchy file (auto-downloaded from cvjena/semantic-embeddings)
   wordnet_download_if_missing: True  # Automatically download/setup hierarchy files if not found
 
+
 ## Logging
 wandb:
   enabled: True
@@ -134,6 +125,7 @@ wandb:
   entity: 'kevin-sidak-team'
   save_dir: './logs'
   tags: []
+
 
 ## Hydra specifics
 hydra:
