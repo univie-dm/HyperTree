@@ -256,6 +256,7 @@ class HyperbolicHCModel(AbstractModel):
         # Keep track of the storage of triplet indices in embeddings[sampled_indices]
         # Note: sampled_indices need to be sorted for efficient indexing (torch.unique sorts by default)
         positions = torch.searchsorted(sampled_indices, sampled_triplet_indices.reshape(-1)).reshape(-1, 3)
+        self.metrics.setdefault("clustering/evaluated_triplets", []).append(positions.shape[0])  # type: ignore
         i, j, k = positions.t()  # positions[:, 0], positions[:, 1], positions[:, 2]
 
         # Compute the scaled safe softmax of the lcas
@@ -391,11 +392,10 @@ class HyperbolicHCModel(AbstractModel):
         c: torch.Tensor = self.manifold.c  # type: ignore
         self.metrics.setdefault("clustering/c", []).append(c.item())
         # Latent space statistics
-        self.metrics.setdefault("latent_space/min", []).append(manifold_z.min().detach().item())
-        self.metrics.setdefault("latent_space/max", []).append(manifold_z.max().detach().item())
-        self.metrics.setdefault("latent_space/mean", []).append(manifold_z.mean().detach().item())
-        self.metrics.setdefault("latent_space/std", []).append(manifold_z.std().detach().item())
+        self.metrics.setdefault("latent_space/norm_min", []).append(manifold_z.norm(p=2, dim=-1).min().detach().item())
+        self.metrics.setdefault("latent_space/norm_max", []).append(manifold_z.norm(p=2, dim=-1).max().detach().item())
         self.metrics.setdefault("latent_space/norm_mean", []).append(manifold_z.norm(p=2, dim=-1).mean().detach().item())
+        self.metrics.setdefault("latent_space/norm_std", []).append(manifold_z.norm(p=2, dim=-1).std().detach().item())
 
         for key, value in grad_norm(self, norm_type=2).items():
             if key == "grad_2.0_norm_total":

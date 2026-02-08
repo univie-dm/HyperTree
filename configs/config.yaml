@@ -50,7 +50,7 @@ clustering:
     end_weight: 1.0
     weight_interval: 0 # 0 equals to max_loss_weight all times
     temperature: 0.2
-    triplet_sampling_strategy: 'random_with_replacement' # 'all_subsample_triplets', 'random_with_replacement', 'chami', 'importance_sampling'
+    triplet_sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'random_with_replacement', 'chami', 'importance_sampling'
     triplet_sample_size: 10000 # integer or 'auto' (for minimum sample size)
     lca_version: 'ours' # 'ours', 'chami'
     loss_version: 'wang' # 'chami', 'normalized', 'wang'
