@@ -182,8 +182,8 @@ class AbstractModel(pl.LightningModule):
                 labels_map = self.trainer.datamodule.get_class_names()  # type: ignore
 
                 for batch_idx, (_, _, x, y) in enumerate(test_loader):
-                    z = self(x.to(self.device))
-                    embeddings.append(z[-1])
+                    _, z = self(x.to(self.device))
+                    embeddings.append(z)
                     labels.append(y)
                     if labels_map is not None:
                         batch_str_labels = []
@@ -246,7 +246,7 @@ class AbstractModel(pl.LightningModule):
                             datamodule_hparams = getattr(self.trainer.datamodule, 'hparams', None)  # type: ignore
                             if datamodule_hparams and hasattr(datamodule_hparams, 'dataset_name'):
                                 dataset_name = datamodule_hparams.dataset_name
-                        
+
                         # Apply WordNet labels based on dataset
                         if dataset_name == "cifar100":
                             wordnet_path = self.hparams.evaluation_metrics.get("wordnet_hierarchy_path", "./data/cifar100_wordnet_hierarchy.txt")
@@ -264,17 +264,11 @@ class AbstractModel(pl.LightningModule):
                                 download_if_missing=download_if_missing
                             )
                             coarse_labels_array = wordnet_labels
-                            
+
                         elif dataset_name == "imagenet":
-                            imagenet_hierarchy_path = self.hparams.evaluation_metrics.get(
-                                "imagenet_hierarchy_path", 
-                                "./data/imagenet_wordnet_hierarchy.txt"
-                            )
-                            setup_if_missing = self.hparams.evaluation_metrics.get(
-                                "wordnet_download_if_missing", 
-                                True
-                            )
-                            
+                            imagenet_hierarchy_path = self.hparams.evaluation_metrics.get("imagenet_hierarchy_path", "./data/imagenet_wordnet_hierarchy.txt")
+                            setup_if_missing = self.hparams.evaluation_metrics.get("wordnet_download_if_missing", True)
+
                             # Ensure types are correct
                             if not isinstance(imagenet_hierarchy_path, str):
                                 imagenet_hierarchy_path = str(imagenet_hierarchy_path)

@@ -86,9 +86,9 @@ class HyperbolicHCModel(AbstractModel):
         # Load decoding modules if decoding is used
         if self.hparams.recon_weight != 0.0 and model.decoder is not None:
             self.decoder = model.decoder  # type: ignore  # type: ignore
+            self.decoder.load_state_dict(model.decoder.state_dict())  # type: ignore
             self.hyperbolic_decoding_layer = model.hyperbolic_decoding_layer  # type: ignore
             self.hyperbolic_decoding_layer.load_state_dict(model.hyperbolic_decoding_layer.state_dict()) # type: ignore
-            self.decoder.load_state_dict(model.decoder.state_dict())  # type: ignore
         else:
             self.decoder = None
             self.hyperbolic_decoding_layer = None
@@ -187,13 +187,12 @@ class HyperbolicHCModel(AbstractModel):
             sampled_indices = torch.randperm(num_pts, device=device)[:min(sample_size, num_pts)].sort().values
             sampled_triplet_indices = torch.combinations(sampled_indices, r=3)
         elif self.hparams.triplet_sampling_strategy == "random_with_replacement":
-            sample_size: int = self.hparams.triplet_sample_size if isinstance(self.hparams.triplet_sample_size, int) else 256  # type: ignore
-            random_indices = torch.randint(0, num_pts*(num_pts-1)*(num_pts-2), 
-                                           (min(sample_size, num_pts),), device=device)
+            sample_size: int = self.hparams.triplet_sample_size if isinstance(self.hparams.triplet_sample_size, int) else num_pts**2  # type: ignore
+            random_indices = torch.randint(0, num_pts*(num_pts-1)*(num_pts-2), (min(sample_size, num_pts),), device=device)
             sampled_triplet_indices = self.decode_triplet_indices_from_flattened_indices(random_indices, num_pts)
             sampled_indices = torch.unique(sampled_triplet_indices)
         elif self.hparams.triplet_sampling_strategy == "chami":
-            sample_size: int = self.hparams.triplet_sample_size if isinstance(self.hparams.triplet_sample_size, int) else 256  # type: ignore
+            sample_size: int = self.hparams.triplet_sample_size if isinstance(self.hparams.triplet_sample_size, int) else num_pts  # type: ignore
             sampled_indices = torch.randperm(num_pts, device=device)[:min(sample_size, num_pts)]
             sampled_pair_indices = torch.combinations(sampled_indices, r=2)
             # Append a third random point to the torch tensor of 2-tuples

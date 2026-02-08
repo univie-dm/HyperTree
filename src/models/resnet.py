@@ -138,14 +138,12 @@ class HyperbolicResNet(AbstractModel):
         manifold_z = self.hyperbolic_encoding_layer(hidden)
         return manifold_z
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> Tuple[None, torch.Tensor]:
         manifold_z = self.encode(x)
-        return manifold_z, manifold_z  # Return embedding twice (no reconstruction)
+        return None, manifold_z
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug_1, _, x, _ = batch
-        loss = 0.0
-
         z_x = self.encode(x)
         z_aug_1 = self.encode(x_aug_1)
 
