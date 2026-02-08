@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 
 from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
-from typing import Tuple, cast
-from src.models.abstract import AbstractModel, FeatureScaling, HParams
+from typing import Tuple
+from src.models.abstract import AbstractModel, FeatureScaling
 from src.models.utils import get_hyperbolic_encoding_layer_by_name
 from src.hyperbolic_math.src.manifolds import Euclidean
 
@@ -119,7 +119,7 @@ class HyperbolicResNet(AbstractModel):
         # Add hyperbolic encoding layer(s)
         # Note: Euclidean manifold will default to nn.Linear
         self.hyperbolic_encoding_layer = get_hyperbolic_encoding_layer_by_name(
-            layer_name=self.hparams.hyperbolic_encoding or "linear",
+            layer_name=self.hparams.hyperbolic_encoding,
             manifold=self.manifold,
             input_dim=current_dim,
             output_dim=self.hparams.latent_dim,

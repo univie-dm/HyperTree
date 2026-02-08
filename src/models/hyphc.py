@@ -1,13 +1,12 @@
 import torch
 import torch.nn.functional as F
-import numpy as np
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
 from typing import Any, Tuple
 from lightning.pytorch.utilities import grad_norm
 
 from src.hyperbolic_math.src.manifolds import Euclidean
-from src.models.abstract import AbstractModel, HParams
+from src.models.abstract import AbstractModel
 from src.models.utils import get_dtype_from_precision, get_hyperbolic_encoding_layer_by_name
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 
@@ -231,24 +230,23 @@ class HyperbolicHCModel(AbstractModel):
         if self.hparams.triplet_sample_size == 'auto':
             # Calculate the minimum sampling size based on the min-/max-pairwise similarities
             distances = compute_pairwise_distances(embeddings, self.manifold)
-            similarties = torch.reciprocal(1 + distances)
-            similarties = torch.where(similarties <= self.hparams.similarity_pruning_threshold, torch.zeros_like(similarties), similarties)
-            upper_triu_mask = torch.triu(torch.ones_like(similarties), diagonal=1).bool()
-            min_sim = similarties[upper_triu_mask].min()
-            max_sim = similarties[upper_triu_mask].max()
+            similarities = torch.reciprocal(1 + distances)
+            similarities = torch.where(similarities <= self.hparams.similarity_pruning_threshold, torch.zeros_like(similarities), similarities)
+            upper_triu_mask = torch.triu(torch.ones_like(similarities), diagonal=1).bool()
+            min_sim = similarities[upper_triu_mask].min()
+            max_sim = similarities[upper_triu_mask].max()
             # Sample triplets
             sampled_indices, sampled_triplet_indices = self.sample_triplets(n, device, sim_bounds=(min_sim.item(), max_sim.item()))  # type: ignore
             # Extract similarities for sampled indices
-            similarities = similarties[sampled_indices][:, sampled_indices]
+            similarities = similarities[sampled_indices][:, sampled_indices]
         else:
             # Sample triplets
-            sample_size: int = self.hparams.triplet_sample_size if isinstance(self.hparams.triplet_sample_size, int) else 256  # type: ignore
             sampled_indices, sampled_triplet_indices = self.sample_triplets(n, device)
             # Compute the (smoothed) pairwise distances
             distances = compute_pairwise_distances(embeddings[sampled_indices], self.manifold)
-            similarties = torch.reciprocal(1 + distances)
+            similarities = torch.reciprocal(1 + distances)
             # Prune low similarities
-            similarties = torch.where(similarties <= self.hparams.similarity_pruning_threshold, torch.zeros_like(similarties), similarties)
+            similarities = torch.where(similarities <= self.hparams.similarity_pruning_threshold, torch.zeros_like(similarities), similarities)
 
         # Compute the pairwise lcas
         if not self.hparams.lca_version in ["ours", "chami"]:
@@ -267,14 +265,14 @@ class HyperbolicHCModel(AbstractModel):
         softmax_stack = scaled_softmax / scaled_softmax.sum(dim=1, keepdim=True)
 
         # Compute the triplet cost based on the sampled triplets
-        sim_stack = torch.stack((similarties[i, j], similarties[i, k], similarties[j, k]), dim=1)
+        sim_stack = torch.stack((similarities[i, j], similarities[i, k], similarities[j, k]), dim=1)
         triplet_cost = torch.sum(sim_stack * (1 - softmax_stack))
 
         # Compute the maximum and minimum triplet cost
         pairwise_sim_stack = torch.stack(
-            (similarties[i, j] + similarties[i, k],
-             similarties[i, j] + similarties[j, k],
-             similarties[i, k] + similarties[j, k]),
+            (similarities[i, j] + similarities[i, k],
+             similarities[i, j] + similarities[j, k],
+             similarities[i, k] + similarities[j, k]),
             dim=1,
         )
         pairwise_sim_stack_min, _ = torch.min(pairwise_sim_stack, dim=1, keepdim=False)
@@ -282,9 +280,9 @@ class HyperbolicHCModel(AbstractModel):
         triplet_cost_min = pairwise_sim_stack_min.sum()
         triplet_cost_max = pairwise_sim_stack_max.sum()
 
-        # Compute the pairwise similarties sum (only used in chami loss)
+        # Compute the pairwise similarities sum (only used in chami loss)
         # Note: this term needs adjustment based on the triplet sampling strategy employed
-        similarities_sum = similarties.sum() - similarties.shape[0] # sum of all pairwise similarities + main diagonal twice
+        similarities_sum = similarities.sum() - similarities.shape[0] # sum of all pairwise similarities + main diagonal twice
 
         # Compute different versions of the loss
         chami_cost = triplet_cost + similarities_sum

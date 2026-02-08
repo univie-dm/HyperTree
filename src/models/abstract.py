@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 import wandb
 
-from typing import Tuple, Any, Protocol
+from typing import Tuple, Any
 from pytorch_lightning.loggers import WandbLogger
 
 from src.evaluation import evaluation
@@ -366,19 +366,29 @@ class AbstractModel(pl.LightningModule):
         self.metrics = {}
         self.train()
 
-    def compute_lca_depth(self, points: torch.Tensor, batch_size: int = 1_000, version: str = 'ours') -> torch.Tensor:
+    def compute_lca_depth(self, points: torch.Tensor, batch_size: int = 1_000_000, version: str = 'ours') -> torch.Tensor:
         """Generalized, corrected, and numerically stabilized implementation of
         Chami et al.'s (2020) LCA depth computation using inverse geometry."""
         device = points.device
-        lcas = torch.zeros((points.shape[0], points.shape[0]), dtype=points.dtype).to(device)
-        indices = torch.triu_indices(points.shape[0], points.shape[0], 1).to(device)
-        
-        # Type hints to suppress manifold.c type ambiguity
+        n = points.shape[0]
         c: torch.Tensor = self.manifold.c  # type: ignore
-        
-        while indices.shape[1] > 0:
-            x = points[indices[0, :batch_size], :]
-            y = points[indices[1, :batch_size], :]
+        lcas = torch.zeros((n, n), dtype=points.dtype, device=device)
+
+        # Pre-compute point norms version=='ours'
+        if version == 'ours':
+            point_norms = points.norm(p=2, dim=-1, keepdim=True)
+            point_dists_0 = self.manifold.dist_0(points)
+
+        # Get the upper triangular indices and process in batches
+        row_idx, col_idx = torch.triu_indices(n, n, 1, device=device)
+        total_pairs = row_idx.shape[0]
+        for start_idx in range(0, total_pairs, batch_size):
+            end_idx = min(start_idx + batch_size, total_pairs)
+            batch_row = row_idx[start_idx:end_idx]
+            batch_col = col_idx[start_idx:end_idx]
+
+            x = points[batch_row]
+            y = points[batch_col]
             xy = (x * y).sum(dim=-1, keepdim=True)
 
             if isinstance(self.manifold, Hyperboloid):
@@ -391,6 +401,7 @@ class AbstractModel(pl.LightningModule):
                 alpha = (sqrt_c * (x0 + c * xy_mink * y0)) / denom
                 beta = (sqrt_c * (y0 + c * xy_mink * x0)) / denom
                 z = alpha * x + beta * y
+
                 # Rescale the vector to lie on the Hyperboloid
                 z_mink = self.manifold._minkowski_inner(z, z)
                 lca = z / (-c * z_mink).clamp(min=1e-15).sqrt()
@@ -399,7 +410,7 @@ class AbstractModel(pl.LightningModule):
                 x2 = x.pow(2).sum(dim=-1, keepdim=True)
                 y2 = y.pow(2).sum(dim=-1, keepdim=True)
 
-                denom = (2 * c * (x2 * y2 - xy**2)).clamp(min=1e-15)
+                denom = (2 * c * (x2 * y2 - xy.pow(2))).clamp(min=1e-15)
                 alpha = ((1 + c * x2) * y2 - (1 + c * y2) * xy) / denom
                 beta = ((1 + c * y2) * x2 - (1 + c * x2) * xy) / denom
                 z = alpha * x + beta * y
@@ -419,26 +430,28 @@ class AbstractModel(pl.LightningModule):
 
             # Apply LCA correction
             if version == 'ours':
+                # Use pre-computed norms
+                x_norm = point_norms[batch_row]
+                y_norm = point_norms[batch_col]
+
                 # Compute the cosine of the angles at the origin in the triangles {x, origin, c}, {y, origin, c}  {x, origin, y}
                 xlca = (x * lca).sum(dim=-1, keepdim=True)
                 ylca = (y * lca).sum(dim=-1, keepdim=True)
                 lca_norm = lca.norm(p=2, dim=-1, keepdim=True)
 
-                x_norm = x.norm(p=2, dim=-1, keepdim=True)
-                y_norm = y.norm(p=2, dim=-1, keepdim=True)
-                cos_x0c = (xlca / (x_norm * lca_norm).clamp(min=1e-15)).clamp(min=-1.0, max=1.0)
-                cos_y0c = (ylca / (y_norm * lca_norm).clamp(min=1e-15)).clamp(min=-1.0, max=1.0)
-                cos_x0y = (xy / (x_norm * y_norm).clamp(min=1e-15)).clamp(min=-1.0, max=1.0)
+                cos_x0c = (xlca / (x_norm * lca_norm).clamp(min=1e-15)).clamp(-1.0, 1.0)
+                cos_y0c = (ylca / (y_norm * lca_norm).clamp(min=1e-15)).clamp(-1.0, 1.0)
+                cos_x0y = (xy / (x_norm * y_norm).clamp(min=1e-15)).clamp(-1.0, 1.0)
 
                 # Get the lca depth w.r.t. the geodesic segment between x and y
-                condition = torch.logical_or(torch.logical_or(cos_x0y > cos_x0c, cos_x0y > cos_y0c), cos_x0y == 1)  # True iff the lca lies outside
-                lca_depth = torch.where(condition, torch.min(self.manifold.dist_0(x), self.manifold.dist_0(y)), lca_depth)
+                condition = (cos_x0y > cos_x0c) | (cos_x0y > cos_y0c) | (cos_x0y == 1)  # True iff lca lies outside
+                lca_depth = torch.where(condition, torch.min(point_dists_0[batch_row], point_dists_0[batch_col]), lca_depth)
                 lca_depth = torch.where(cos_x0y == -1, torch.zeros_like(lca_depth), lca_depth)  # Handle antipodal points
 
             lca_depth = lca_depth.reshape(-1)
-            lcas[indices[0, :batch_size], indices[1, :batch_size]] = lca_depth
-            lcas[indices[1, :batch_size], indices[0, :batch_size]] = lca_depth
-            indices = indices[:, batch_size:]
+            lcas[batch_row, batch_col] = lca_depth
+            lcas[batch_col, batch_row] = lca_depth
+
         return lcas
 
 class FeatureScaling(torch.nn.Module):
