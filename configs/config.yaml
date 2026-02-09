@@ -81,10 +81,10 @@ architecture:
   manifold_name: 'PoincareBall' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
   curvature_magnitude: 1.0
   hyperbolic_encoding: 'HyperbolicLinearPP' # 'EuclideanLinear_Exp'
-                                            #  Hyperboloid: 'HyperbolicLinearHyperboloidFHNN', 'HyperbolicLinearHyperboloidFHCNN'
+                                            #  Hyperboloid: 'HyperbolicLinearHyperboloidFHNN', 'HyperbolicLinearHyperboloidFHCNN', 'HyperbolicLinearPP'
                                             #  Poincare: 'HyperbolicLinearPP'
   hyperbolic_decoding: 'Log_EuclideanLinear' # 'Log_EuclideanLinear'
-                                             # Hyperboloid: 'HyperbolicLinearHyperboloidFHNN_Log', 'HyperbolicLinearHyperboloidFHCNN_Log'
+                                             # Hyperboloid: 'HyperbolicLinearHyperboloidFHNN_Log', 'HyperbolicLinearHyperboloidFHCNN_Log', 'HyperbolicLinearPP_Log'
                                              # Poincare: 'HyperbolicLinearPP_Log'
   activation_function: 'swish' # 'swish', 'relu'
   hyperbolic_clamping: 1.0
