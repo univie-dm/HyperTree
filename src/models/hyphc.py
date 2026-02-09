@@ -1,6 +1,5 @@
 import torch
 import torch.nn.functional as F
-import numpy as np
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
 from typing import Any, Tuple
@@ -87,9 +86,9 @@ class HyperbolicHCModel(AbstractModel):
         # Load decoding modules if decoding is used
         if self.hparams.recon_weight != 0.0 and model.decoder is not None:
             self.decoder = model.decoder  # type: ignore  # type: ignore
+            self.decoder.load_state_dict(model.decoder.state_dict())  # type: ignore
             self.hyperbolic_decoding_layer = model.hyperbolic_decoding_layer  # type: ignore
             self.hyperbolic_decoding_layer.load_state_dict(model.hyperbolic_decoding_layer.state_dict()) # type: ignore
-            self.decoder.load_state_dict(model.decoder.state_dict())  # type: ignore
         else:
             self.decoder = None
             self.hyperbolic_decoding_layer = None
@@ -171,13 +170,12 @@ class HyperbolicHCModel(AbstractModel):
             sampled_indices = torch.randperm(num_pts, device=device)[:min(sample_size, num_pts)].sort().values
             sampled_triplet_indices = torch.combinations(sampled_indices, r=3)
         elif self.hparams.triplet_sampling_strategy == "random_with_replacement":
-            sample_size: int = self.hparams.triplet_sample_size if isinstance(self.hparams.triplet_sample_size, int) else 256  # type: ignore
-            random_indices = torch.randint(0, num_pts*(num_pts-1)*(num_pts-2), 
-                                           (min(sample_size, num_pts),), device=device)
+            sample_size: int = self.hparams.triplet_sample_size if isinstance(self.hparams.triplet_sample_size, int) else num_pts**2  # type: ignore
+            random_indices = torch.randint(0, num_pts*(num_pts-1)*(num_pts-2), (min(sample_size, num_pts),), device=device)
             sampled_triplet_indices = self.decode_triplet_indices_from_flattened_indices(random_indices, num_pts)
             sampled_indices = torch.unique(sampled_triplet_indices)
         elif self.hparams.triplet_sampling_strategy == "chami":
-            sample_size: int = self.hparams.triplet_sample_size if isinstance(self.hparams.triplet_sample_size, int) else 256  # type: ignore
+            sample_size: int = self.hparams.triplet_sample_size if isinstance(self.hparams.triplet_sample_size, int) else num_pts  # type: ignore
             sampled_indices = torch.randperm(num_pts, device=device)[:min(sample_size, num_pts)]
             sampled_pair_indices = torch.combinations(sampled_indices, r=2)
             # Append a third random point to the torch tensor of 2-tuples
@@ -214,24 +212,23 @@ class HyperbolicHCModel(AbstractModel):
         if self.hparams.triplet_sample_size == 'auto':
             # Calculate the minimum sampling size based on the min-/max-pairwise similarities
             distances = compute_pairwise_distances(embeddings, self.manifold)
-            similarties = torch.reciprocal(1 + distances)
-            similarties = torch.where(similarties <= self.hparams.similarity_pruning_threshold, torch.zeros_like(similarties), similarties)
-            upper_triu_mask = torch.triu(torch.ones_like(similarties), diagonal=1).bool()
-            min_sim = similarties[upper_triu_mask].min()
-            max_sim = similarties[upper_triu_mask].max()
+            similarities = torch.reciprocal(1 + distances)
+            similarities = torch.where(similarities <= self.hparams.similarity_pruning_threshold, torch.zeros_like(similarities), similarities)
+            upper_triu_mask = torch.triu(torch.ones_like(similarities), diagonal=1).bool()
+            min_sim = similarities[upper_triu_mask].min()
+            max_sim = similarities[upper_triu_mask].max()
             # Sample triplets
             sampled_indices, sampled_triplet_indices = self.sample_triplets(n, device, sim_bounds=(min_sim.item(), max_sim.item()))  # type: ignore
             # Extract similarities for sampled indices
-            similarities = similarties[sampled_indices][:, sampled_indices]
+            similarities = similarities[sampled_indices][:, sampled_indices]
         else:
             # Sample triplets
-            sample_size: int = self.hparams.triplet_sample_size if isinstance(self.hparams.triplet_sample_size, int) else 256  # type: ignore
             sampled_indices, sampled_triplet_indices = self.sample_triplets(n, device)
             # Compute the (smoothed) pairwise distances
             distances = compute_pairwise_distances(embeddings[sampled_indices], self.manifold)
-            similarties = torch.reciprocal(1 + distances)
+            similarities = torch.reciprocal(1 + distances)
             # Prune low similarities
-            similarties = torch.where(similarties <= self.hparams.similarity_pruning_threshold, torch.zeros_like(similarties), similarties)
+            similarities = torch.where(similarities <= self.hparams.similarity_pruning_threshold, torch.zeros_like(similarities), similarities)
 
         # Compute the pairwise lcas
         if not self.hparams.lca_version in ["ours", "chami"]:
@@ -241,6 +238,7 @@ class HyperbolicHCModel(AbstractModel):
         # Keep track of the storage of triplet indices in embeddings[sampled_indices]
         # Note: sampled_indices need to be sorted for efficient indexing (torch.unique sorts by default)
         positions = torch.searchsorted(sampled_indices, sampled_triplet_indices.reshape(-1)).reshape(-1, 3)
+        self.metrics.setdefault("clustering/evaluated_triplets", []).append(positions.shape[0])  # type: ignore
         i, j, k = positions.t()  # positions[:, 0], positions[:, 1], positions[:, 2]
 
         # Compute the scaled safe softmax of the lcas
@@ -250,14 +248,14 @@ class HyperbolicHCModel(AbstractModel):
         softmax_stack = scaled_softmax / scaled_softmax.sum(dim=1, keepdim=True)
 
         # Compute the triplet cost based on the sampled triplets
-        sim_stack = torch.stack((similarties[i, j], similarties[i, k], similarties[j, k]), dim=1)
+        sim_stack = torch.stack((similarities[i, j], similarities[i, k], similarities[j, k]), dim=1)
         triplet_cost = torch.sum(sim_stack * (1 - softmax_stack))
 
         # Compute the maximum and minimum triplet cost
         pairwise_sim_stack = torch.stack(
-            (similarties[i, j] + similarties[i, k],
-             similarties[i, j] + similarties[j, k],
-             similarties[i, k] + similarties[j, k]),
+            (similarities[i, j] + similarities[i, k],
+             similarities[i, j] + similarities[j, k],
+             similarities[i, k] + similarities[j, k]),
             dim=1,
         )
         pairwise_sim_stack_min, _ = torch.min(pairwise_sim_stack, dim=1, keepdim=False)
@@ -265,9 +263,9 @@ class HyperbolicHCModel(AbstractModel):
         triplet_cost_min = pairwise_sim_stack_min.sum()
         triplet_cost_max = pairwise_sim_stack_max.sum()
 
-        # Compute the pairwise similarties sum (only used in chami loss)
+        # Compute the pairwise similarities sum (only used in chami loss)
         # Note: this term needs adjustment based on the triplet sampling strategy employed
-        similarities_sum = similarties.sum() - similarties.shape[0] # sum of all pairwise similarities + main diagonal twice
+        similarities_sum = similarities.sum() - similarities.shape[0] # sum of all pairwise similarities + main diagonal twice
 
         # Compute different versions of the loss
         chami_cost = triplet_cost + similarities_sum
@@ -376,11 +374,10 @@ class HyperbolicHCModel(AbstractModel):
         c: torch.Tensor = self.manifold.c  # type: ignore
         self.metrics.setdefault("clustering/c", []).append(c.item())
         # Latent space statistics
-        self.metrics.setdefault("latent_space/min", []).append(manifold_z.min().detach().item())
-        self.metrics.setdefault("latent_space/max", []).append(manifold_z.max().detach().item())
-        self.metrics.setdefault("latent_space/mean", []).append(manifold_z.mean().detach().item())
-        self.metrics.setdefault("latent_space/std", []).append(manifold_z.std().detach().item())
+        self.metrics.setdefault("latent_space/norm_min", []).append(manifold_z.norm(p=2, dim=-1).min().detach().item())
+        self.metrics.setdefault("latent_space/norm_max", []).append(manifold_z.norm(p=2, dim=-1).max().detach().item())
         self.metrics.setdefault("latent_space/norm_mean", []).append(manifold_z.norm(p=2, dim=-1).mean().detach().item())
+        self.metrics.setdefault("latent_space/norm_std", []).append(manifold_z.norm(p=2, dim=-1).std().detach().item())
 
         for key, value in grad_norm(self, norm_type=2).items():
             if key == "grad_2.0_norm_total":
