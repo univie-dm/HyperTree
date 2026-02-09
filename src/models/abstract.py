@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 import wandb
 
-from typing import Tuple, Any, Protocol
+from typing import Tuple, Any
 from pytorch_lightning.loggers import WandbLogger
 
 from src.evaluation import evaluation

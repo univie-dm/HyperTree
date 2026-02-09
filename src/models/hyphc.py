@@ -7,7 +7,7 @@ from typing import Any, Tuple
 from lightning.pytorch.utilities import grad_norm
 
 from src.hyperbolic_math.src.manifolds import Euclidean
-from src.models.abstract import AbstractModel, HParams
+from src.models.abstract import AbstractModel
 from src.models.utils import get_dtype_from_precision, get_hyperbolic_encoding_layer_by_name
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 
@@ -98,23 +98,6 @@ class HyperbolicHCModel(AbstractModel):
         if hasattr(model, "feature_scaling_layer"):
             self.feature_scaling_layer = model.feature_scaling_layer  # type: ignore
         self.rms = model.rms  # type: ignore
-
-        # Cluster head
-        self.cluster_head = get_hyperbolic_encoding_layer_by_name(
-            layer_name=str(self.hparams.hyperbolic_encoding),
-            manifold=self.manifold,
-            input_dim=self.encoder[-1].out_features,  # type: ignore
-            output_dim=self.hparams.latent_dim,
-            params_dtype=self.hparams.params_dtype,
-            clamping_factor=self.hparams.clamping_factor,
-            smoothing_factor=self.hparams.smoothing_factor,
-            learnable_scale=self.hparams.hyperboloid_layer_learnable_scale,
-            FHCNN_normalize=self.hparams.FHCNN_normalize,
-        )
-        print(f'Cluster head dim: {self.hparams.latent_dim}, Encoder output dim: {self.encoder[-1].out_features}')  # type: ignore
-        if self.hparams.latent_dim == self.encoder[-1].out_features: # type: ignore
-            print("Initializing cluster head with AE hyperbolic encoding weights.")
-            self.cluster_head.load_state_dict(model.hyperbolic_encoding_layer.state_dict())  # type: ignore
 
         # Hyperbolic loss scheduler
         if hyperbolic_loss_end_weight < 0 or hyperbolic_loss_start_weight < 0:
@@ -317,6 +300,7 @@ class HyperbolicHCModel(AbstractModel):
             x = x.view(x.size(0), -1)
         hidden = self.encoder(x)  # type: ignore
         hidden = self.rms(hidden)  # type: ignore
+
         if self.hparams.feature_scaling and not isinstance(self.manifold, Euclidean):
             hidden = self.feature_scaling_layer(hidden)  # type: ignore
         manifold_z = self.hyperbolic_encoding_layer(hidden)  # type: ignore
@@ -340,9 +324,8 @@ class HyperbolicHCModel(AbstractModel):
         return x_recon, manifold_z
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
-        x_aug_1, x_aug_2, x, _ = batch
+        x_aug_1, _, x, _ = batch
         x_aug_1 = x_aug_1.to(dtype=get_dtype_from_precision(self.hparams.params_dtype))
-        x_aug_2 = x_aug_2.to(dtype=get_dtype_from_precision(self.hparams.params_dtype))
         x = x.to(dtype=get_dtype_from_precision(self.hparams.params_dtype))
 
         # Hyperbolic loss

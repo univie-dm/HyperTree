@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 
 from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
-from typing import Tuple, cast
-from src.models.abstract import AbstractModel, FeatureScaling, HParams
+from typing import Tuple
+from src.models.abstract import AbstractModel, FeatureScaling
 from src.models.utils import get_hyperbolic_encoding_layer_by_name
 from src.hyperbolic_math.src.manifolds import Euclidean
 
