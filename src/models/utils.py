@@ -8,6 +8,7 @@ from src.hyperbolic_math.src.nn_layers import (
     HyperbolicLinearPoincarePP,
     HyperbolicLinearHyperboloidFHNN,
     HyperbolicLinearHyperboloidFHCNN,
+    HyperbolicLinearHyperboloidPP,
     Expmap_0,
     Logmap_0
 )
@@ -110,6 +111,17 @@ def get_hyperbolic_encoding_layer_by_name(
                 normalize=FHCNN_normalize,
             ),
         )
+    elif layer_name == "HyperbolicLinearPP" and isinstance(manifold, Hyperboloid):
+        layer = nn.Sequential(
+            HyperboloidEncoder2TangentInput(manifold=manifold),
+            HyperbolicLinearHyperboloidPP(
+                manifold=manifold,
+                input_dim=input_dim + 1,
+                output_dim=output_dim + 1,
+                params_dtype=params_dtype,
+                input_space="tangent",
+            ),
+        )
     # PoincareBall layers
     elif layer_name == "HyperbolicLinearPP" and isinstance(manifold, PoincareBall):
         layer = HyperbolicLinearPoincarePP(
@@ -186,6 +198,21 @@ def get_hyperbolic_decoding_layer_by_name(
                 input_space="manifold",
                 learnable_scale=learnable_scale,
                 normalize=FHCNN_normalize,
+            ),
+            Logmap_0(manifold=manifold),
+            HyperboloidTangent2DecoderInput(manifold=manifold),
+            DtypeConversion(target_dtype=get_dtype_from_precision(params_dtype)),
+            nn.BatchNorm1d(output_dim),
+            activation_function,
+        )
+    elif layer_name == "HyperbolicLinearPP_Log" and isinstance(manifold, Hyperboloid):
+        layer = nn.Sequential(
+            HyperbolicLinearHyperboloidPP(
+                manifold=manifold,
+                input_dim=input_dim + 1,
+                output_dim=output_dim + 1,
+                params_dtype=params_dtype,
+                input_space="manifold",
             ),
             Logmap_0(manifold=manifold),
             HyperboloidTangent2DecoderInput(manifold=manifold),
