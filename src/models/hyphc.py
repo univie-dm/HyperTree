@@ -33,7 +33,10 @@ class HyperbolicHCModel(AbstractModel):
         triplet_sample_size: str | int = 'auto',
         lca_version: str = "ours",
         loss_version: str = "wang",
-        similarity_pruning_threshold: float = 0.1,
+        similarity_pruning_version: str = "percentile_pruning",
+        similarity_pruning_threshold: float = 0.01,
+        similarity_pruning_quantile: float = 0.2,
+        similarity_pruning_nearest_neighbors: float = 10,
         # Contrastive Loss parameters
         contrastive_loss_enabled: bool = False,
         contrastive_temperature: float = 0.5,
@@ -205,11 +208,39 @@ class HyperbolicHCModel(AbstractModel):
         k = k + (k >= low).long() + (k >= high - 1).long()
         return torch.stack([i, j, k], dim=1)
 
+    def symmetric_percentile_pruning(self, similarities, percentile):
+        """Prunes a symmetric matrix by calculating the quantile on unique off-diagonal edges."""
+        n = similarities.size(0)
+        indices = torch.triu_indices(n, n, offset=1, device=similarities.device)
+        unique_edges = similarities[indices[0], indices[1]]
+        threshold = torch.quantile(unique_edges, percentile)
+        condition = similarities < threshold
+        similarities = torch.where(condition, torch.zeros_like(similarities), similarities)
+        # Log how many edges are pruned and the density of the remaining graph
+        self.metrics.setdefault("clustering/pruned_edge_percent", []).append(condition.float().mean().item()*100)  # type: ignore
+        self.metrics.setdefault("clustering/pruning_threshold", []).append(threshold.item())  # type: ignore
+        return similarities
+
+    def symmetric_knn_pruning(self, similarities, k):
+        """Prunes a symmetric matrix by only keeping edges to the top-k neighbors."""
+        n = similarities.size(0)
+        device = similarities.device
+        # Extract the top k+1 NN (include self loops)
+        k_plus_self = min(int(k) + 1, n)
+        topk_values, topk_indices = torch.topk(similarities, k_plus_self, dim=1)
+        pruned_matrix = torch.zeros_like(similarities)
+        row_indices = torch.arange(n, device=device).unsqueeze(1).expand(-1, k_plus_self)
+        pruned_matrix[row_indices, topk_indices] = topk_values
+        # Reinforce symmetry
+        pruned_matrix = torch.max(pruned_matrix, pruned_matrix.T)
+        return pruned_matrix
+
     def compute_hyperbolic_loss(self, embeddings: torch.Tensor) -> torch.Tensor:
         n = embeddings.size(0)
         device = embeddings.device
 
         if self.hparams.triplet_sample_size == 'auto':
+            # TODO: needs adjustment for pruning etc.
             # Calculate the minimum sampling size based on the min-/max-pairwise similarities
             distances = compute_pairwise_distances(embeddings, self.manifold)
             similarities = torch.reciprocal(1 + distances)
@@ -228,7 +259,14 @@ class HyperbolicHCModel(AbstractModel):
             distances = compute_pairwise_distances(embeddings[sampled_indices], self.manifold)
             similarities = torch.reciprocal(1 + distances)
             # Prune low similarities
-            similarities = torch.where(similarities <= self.hparams.similarity_pruning_threshold, torch.zeros_like(similarities), similarities)
+            if self.hparams.similarity_pruning_version == "percentile_pruning":
+                similarities = self.symmetric_percentile_pruning(similarities, percentile=self.hparams.similarity_pruning_quantile)
+            elif self.hparams.similarity_pruning_version == "knn_pruning":
+                similarities = self.symmetric_knn_pruning(similarities, k=self.hparams.similarity_pruning_nearest_neighbors)
+            elif self.hparams.similarity_pruning_version == "threshold_pruning":
+                similarities = torch.where(similarities <= self.hparams.similarity_pruning_threshold, torch.zeros_like(similarities), similarities)
+            else:
+                raise ValueError(f"Invalid similarity pruning version: {self.hparams.similarity_pruning_version}")
 
         # Compute the pairwise lcas
         if not self.hparams.lca_version in ["ours", "chami"]:
@@ -239,7 +277,7 @@ class HyperbolicHCModel(AbstractModel):
         # Note: sampled_indices need to be sorted for efficient indexing (torch.unique sorts by default)
         positions = torch.searchsorted(sampled_indices, sampled_triplet_indices.reshape(-1)).reshape(-1, 3)
         self.metrics.setdefault("clustering/evaluated_triplets", []).append(positions.shape[0])  # type: ignore
-        i, j, k = positions.t()  # positions[:, 0], positions[:, 1], positions[:, 2]
+        i, j, k = positions.T  # positions[:, 0], positions[:, 1], positions[:, 2]
 
         # Compute the scaled safe softmax of the lcas
         lca_stack = torch.stack((lcas[i, j], lcas[i, k], lcas[j, k]), dim=1)

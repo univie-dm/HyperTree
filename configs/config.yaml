@@ -54,7 +54,10 @@ clustering:
     triplet_sample_size: 10000 # integer or 'auto' (for minimum sample size)
     lca_version: 'ours' # 'ours', 'chami'
     loss_version: 'wang' # 'chami', 'normalized', 'wang'
+    similarity_pruning_version: 'percentile_pruning' # 'percentile_pruning', 'knn_pruning', 'threshold_pruning'
     similarity_pruning_threshold: 0.01
+    similarity_pruning_quantile: 0.2
+    similarity_pruning_nearest_neighbors: 10
   # Contrastive loss parameters
   contrastive_loss:
     enabled: False
@@ -112,7 +115,7 @@ evaluation_metrics:
   visualization_sample_size: 5000
   test_sample_size: 0 # if 0 all datapoints are used
   # WordNet hierarchy for hierarchical evaluation (CIFAR-100 and ImageNet)
-  use_wordnet_labels: False  # Use WordNet hierarchy for hierarchical DP evaluation
+  use_wordnet_labels: True  # Use WordNet hierarchy for hierarchical DP evaluation
   wordnet_hierarchy_path: './data/cifar100_wordnet_hierarchy.txt'  # CIFAR-100 hierarchy file
   imagenet_hierarchy_path: './data/imagenet_wordnet_hierarchy.txt'  # ImageNet hierarchy file (auto-downloaded from cvjena/semantic-embeddings)
   wordnet_download_if_missing: True  # Automatically download/setup hierarchy files if not found

@@ -189,7 +189,10 @@ def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[Hyperb
         triplet_sample_size=cfg.clustering.hyperbolic_loss.triplet_sample_size,
         lca_version=cfg.clustering.hyperbolic_loss.lca_version,
         loss_version=cfg.clustering.hyperbolic_loss.loss_version,
+        similarity_pruning_version=cfg.clustering.hyperbolic_loss.similarity_pruning_version,
         similarity_pruning_threshold=cfg.clustering.hyperbolic_loss.similarity_pruning_threshold,
+        similarity_pruning_quantile=cfg.clustering.hyperbolic_loss.similarity_pruning_quantile,
+        similarity_pruning_nearest_neighbors=cfg.clustering.hyperbolic_loss.similarity_pruning_nearest_neighbors,
         # Contrastive Loss parameters
         contrastive_loss_enabled=cfg.clustering.contrastive_loss.enabled,
         contrastive_temperature=cfg.clustering.contrastive_loss.temperature,
