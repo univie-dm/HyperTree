@@ -120,6 +120,8 @@ def get_hyperbolic_encoding_layer_by_name(
                 output_dim=output_dim + 1,
                 params_dtype=params_dtype,
                 input_space="tangent",
+                clamping_factor=clamping_factor,
+                smoothing_factor=smoothing_factor,
             ),
         )
     # PoincareBall layers
@@ -213,6 +215,8 @@ def get_hyperbolic_decoding_layer_by_name(
                 output_dim=output_dim + 1,
                 params_dtype=params_dtype,
                 input_space="manifold",
+                clamping_factor=clamping_factor,
+                smoothing_factor=smoothing_factor,
             ),
             Logmap_0(manifold=manifold),
             HyperboloidTangent2DecoderInput(manifold=manifold),
