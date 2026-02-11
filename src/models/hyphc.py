@@ -57,9 +57,7 @@ class HyperbolicHCModel(AbstractModel):
             latent_dim=model.hparams.latent_dim,
             manifold_name=model.hparams.manifold_name,
             manifold_precision=model.hparams.manifold_precision,
-            curvature_magnitude=model.manifold.c
-            if isinstance(model.manifold.c, torch.Tensor)
-            else torch.tensor(model.manifold.c),
+            curvature_magnitude=model.hparams.curvature_magnitude,
             hyperbolic_decoding=model.hparams.hyperbolic_decoding,
             # Optimizer
             optimizer_name=model.hparams.optimizer_name,
