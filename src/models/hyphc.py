@@ -364,6 +364,11 @@ class HyperbolicHCModel(AbstractModel):
 
         # Hyperbolic loss
         manifold_z = self.encode(x)
+
+        if not torch.isfinite(manifold_z).all():
+            print("Warning: Non-finite values detected in manifold_z embeddings.")
+            exit()
+
         hyperbolic_loss = self.compute_hyperbolic_loss(manifold_z)
         # Log the hyperbolic loss
         self.metrics.setdefault("clustering/hyperbolic_loss", []).append(hyperbolic_loss.detach().item())  # type: ignore

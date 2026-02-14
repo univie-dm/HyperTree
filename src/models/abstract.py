@@ -391,7 +391,7 @@ class AbstractModel(pl.LightningModule):
                 x0 = x.narrow(-1, 0, 1)
                 y0 = y.narrow(-1, 0, 1)
                 xy_mink = self.manifold._minkowski_inner(x, y)
-                denom = 1 - (c * xy_mink).pow(2).clamp(min=1e-15)
+                denom = (1 - (c * xy_mink).pow(2)).clamp(max=-1e-15)
                 alpha = (sqrt_c * (x0 + c * xy_mink * y0)) / denom
                 beta = (sqrt_c * (y0 + c * xy_mink * x0)) / denom
                 z = alpha * x + beta * y
@@ -438,7 +438,7 @@ class AbstractModel(pl.LightningModule):
                 cos_x0y = (xy / (x_norm * y_norm).clamp(min=1e-15)).clamp(-1.0, 1.0)
 
                 # Get the lca depth w.r.t. the geodesic segment between x and y
-                condition = (cos_x0y > cos_x0c) | (cos_x0y > cos_y0c) | (cos_x0y == 1)  # True iff lca lies outside
+                condition = (cos_x0y > cos_x0c) | (cos_x0y > cos_y0c) | (cos_x0y > 1-1e-15)  # True iff lca lies outside
                 lca_depth = torch.where(condition, torch.min(point_dists_0[batch_row], point_dists_0[batch_col]), lca_depth)
                 lca_depth = torch.where(cos_x0y == -1, torch.zeros_like(lca_depth), lca_depth)  # Handle antipodal points
 
