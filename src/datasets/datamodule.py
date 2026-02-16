@@ -98,16 +98,17 @@ class MultiViewDataset(torch.utils.data.Dataset):
         )
         # Find all duplicate images in the dataset and remove them, keeping only the first occurrence
         # Work directly with the raw data (numpy array) instead of iterating over the dataset
-        seen = set()
-        unique_indices = []
-        for idx in range(len(self.dataset.data)):
-            img = self.dataset.data[idx]
-            img_tuple = tuple(img.flatten().tolist())
-            if img_tuple not in seen:
-                seen.add(img_tuple)
-                unique_indices.append(idx)
-        self.dataset.data = self.dataset.data[unique_indices]
-        self.dataset.targets = [self.dataset.targets[i] for i in unique_indices]
+        if hasattr(self.dataset, "data") and hasattr(self.dataset, "targets"):
+            seen = set()
+            unique_indices = []
+            for idx in range(len(self.dataset.data)):
+                img = self.dataset.data[idx]
+                img_tuple = tuple(img.flatten().tolist())
+                if img_tuple not in seen:
+                    seen.add(img_tuple)
+                    unique_indices.append(idx)
+            self.dataset.data = self.dataset.data[unique_indices]
+            self.dataset.targets = [self.dataset.targets[i] for i in unique_indices]
 
     def __getitem__(self, idx):
         img, label = self.dataset[idx]
