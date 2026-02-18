@@ -8,7 +8,7 @@ architecture:
   manifold_name: PoincareBall
   hyperbolic_encoding: HyperbolicLinearPP
   manifold_precision: float64
-  precision: float64
+  precision: float32
   use_seperate_heads: false
 
 pretraining:
@@ -53,7 +53,7 @@ hyphc:
 experiment:
   gradient_clip_value: 5.0
   optimizer: Adam
-  num_workers: 8
+  num_workers: 16
   batch_size: 512
   log_interval: 10
   seed: 1

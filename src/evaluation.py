@@ -225,6 +225,8 @@ def evaluation(
                 else np.asarray(Y_coarse)
             )
             Y_coarse = Y_coarse_np[sample_indices]
+        # Update Y_clustering to match the resampled data
+        Y_clustering = Y_coarse if Y_coarse is not None else Y
 
     if not isinstance(manifold.c, torch.Tensor):
         manifold.c = torch.tensor(manifold.c, device=X.device, dtype=X.dtype)
