@@ -180,6 +180,10 @@ class HyperbolicResNet(AbstractModel):
         self.metrics.setdefault("latent_space/min", []).append(z_x.min().detach().item())
         self.metrics.setdefault("latent_space/norm_mean", []).append(z_x.norm(p=2, dim=-1).mean().detach().item())
 
+        if self.hparams.hyperbolic_encoding in ["HyperbolicLinearHyperboloidFHCNN", "HyperbolicLinearHyperboloidFHNN"]:
+            scale = self.hyperbolic_encoding_layer[1].scale  # type: ignore
+            self.metrics.setdefault("hyperbolic_encoding_layer/scale", []).append(scale.detach().item())
+
         if not isinstance(loss, torch.Tensor):
             loss = torch.tensor(loss, device=x.device)
 
