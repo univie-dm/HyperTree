@@ -43,6 +43,7 @@ class HyperbolicResNet(AbstractModel):
         contrastive_loss_enabled: bool = False,
         contrastive_weight: float = 0.5,
         contrastive_temperature: float = 0.1,
+        load_supervised_weights: bool = False,
     ):
         super().__init__(
             # Architecture
@@ -74,17 +75,23 @@ class HyperbolicResNet(AbstractModel):
         )
         self.save_hyperparameters()
 
+        if self.hparams.load_supervised_weights:
+            print("Loading supervised weights", flush=True)
+            pretrained_weights = 'DEFAULT'
+        else:
+            pretrained_weights = None
+
         # Encoder
         if self.hparams.model_type == "resnet18":
-            self.encoder = resnet18(weights=None)
+            self.encoder = resnet18(weights=pretrained_weights)
         elif self.hparams.model_type == "resnet34":
-            self.encoder = resnet34(weights=None)
+            self.encoder = resnet34(weights=pretrained_weights)
         elif self.hparams.model_type == "resnet50":
-            self.encoder = resnet50(weights=None)
+            self.encoder = resnet50(weights=pretrained_weights)
         elif self.hparams.model_type == "resnet101":
-            self.encoder = resnet101(weights=None)
+            self.encoder = resnet101(weights=pretrained_weights)
         elif self.hparams.model_type == "resnet152":
-            self.encoder = resnet152(weights=None)
+            self.encoder = resnet152(weights=pretrained_weights)
         else:
             raise ValueError(f"Invalid model type: {self.hparams.model_type}")
         # Decoder
@@ -96,6 +103,10 @@ class HyperbolicResNet(AbstractModel):
             # Overwrite the first convolutional layer and maxpooling layer
             self.encoder.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
             self.encoder.maxpool = nn.Identity()  # type: ignore
+
+        if self.hparams.load_supervised_weights:
+            for param in self.encoder.parameters():
+                param.requires_grad = False
 
         # Build projection head layers progressively
         current_dim = 1000

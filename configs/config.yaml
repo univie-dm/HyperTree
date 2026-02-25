@@ -29,6 +29,7 @@ pretraining:
     interval: 40  # Number of epochs for warmup phase
     cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
     patience: 20 # Number of epochs
+  load_supervised_weights: False
 
 
 ## Clustering parameters

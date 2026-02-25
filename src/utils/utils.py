@@ -156,6 +156,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             contrastive_loss_enabled=cfg.pretraining.contrastive_loss.enabled,
             contrastive_weight=cfg.pretraining.contrastive_loss.weight,
             contrastive_temperature=cfg.pretraining.contrastive_loss.temperature,
+            load_supervised_weights=cfg.pretraining.load_supervised_weights,
         )
     else:
         raise ValueError("Invalid model type")
