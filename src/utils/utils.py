@@ -39,6 +39,7 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "dataset_name": cfg.dataset.name,
         "selected_classes": cfg.dataset.get("selected_classes", None),
         "dataset_subset": cfg.dataset.get("subset", None),
+        "load_supervised_weights": cfg.pretraining.load_supervised_weights,
     }
     return md5(str(attr).encode()).hexdigest()
 
