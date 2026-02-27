@@ -39,8 +39,9 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "dataset_name": cfg.dataset.name,
         "selected_classes": cfg.dataset.get("selected_classes", None),
         "dataset_subset": cfg.dataset.get("subset", None),
-        "load_supervised_weights": cfg.pretraining.load_supervised_weights,
     }
+    if cfg.pretraining.load_supervised_weights:
+        attr['supervised_weights_path'] = cfg.pretraining.supervised_weights_path
     return md5(str(attr).encode()).hexdigest()
 
 
@@ -187,14 +188,13 @@ def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[Hyperb
         hyperbolic_loss_end_weight=cfg.clustering.hyperbolic_loss.end_weight,
         hyperbolic_loss_weight_interval=cfg.clustering.hyperbolic_loss.weight_interval,
         hyperbolic_loss_temperature=cfg.clustering.hyperbolic_loss.temperature,
-        triplet_sampling_strategy=cfg.clustering.hyperbolic_loss.triplet_sampling_strategy,
-        triplet_sample_size=cfg.clustering.hyperbolic_loss.triplet_sample_size,
         lca_version=cfg.clustering.hyperbolic_loss.lca_version,
         loss_version=cfg.clustering.hyperbolic_loss.loss_version,
-        similarity_pruning_version=cfg.clustering.hyperbolic_loss.similarity_pruning_version,
-        similarity_pruning_threshold=cfg.clustering.hyperbolic_loss.similarity_pruning_threshold,
-        similarity_pruning_quantile=cfg.clustering.hyperbolic_loss.similarity_pruning_quantile,
-        similarity_pruning_nearest_neighbors=cfg.clustering.hyperbolic_loss.similarity_pruning_nearest_neighbors,
+        similarity_pruning=cfg.clustering.hyperbolic_loss.similarity_pruning,
+        use_importance_sampling=cfg.clustering.hyperbolic_loss.use_importance_sampling,
+        sampling_delta=cfg.clustering.hyperbolic_loss.sampling_delta,
+        sampling_eps=cfg.clustering.hyperbolic_loss.sampling_eps,
+        log_approximation_diff=cfg.clustering.hyperbolic_loss.log_approximation_diff,
         # Contrastive Loss parameters
         contrastive_loss_enabled=cfg.clustering.contrastive_loss.enabled,
         contrastive_temperature=cfg.clustering.contrastive_loss.temperature,
