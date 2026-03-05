@@ -43,7 +43,9 @@ class HyperbolicResNet(AbstractModel):
         contrastive_loss_enabled: bool = False,
         contrastive_weight: float = 0.5,
         contrastive_temperature: float = 0.1,
+        # Supervised learning parameters
         load_supervised_weights: bool = False,
+        supervised: bool = False,
     ):
         super().__init__(
             # Architecture
@@ -80,6 +82,9 @@ class HyperbolicResNet(AbstractModel):
             pretrained_weights = 'DEFAULT'
         else:
             pretrained_weights = None
+
+        if self.hparams.supervised:
+            print("Supervised learning enabled", flush=True)
 
         # Encoder
         if self.hparams.model_type == "resnet18":
@@ -141,6 +146,8 @@ class HyperbolicResNet(AbstractModel):
             FHCNN_normalize=self.hparams.FHCNN_normalize,
         )
 
+
+
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         hidden = self.encoder(x)
         hidden = self.rms(hidden)
@@ -154,20 +161,38 @@ class HyperbolicResNet(AbstractModel):
         return None, manifold_z
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
-        x_aug_1, _, x, _ = batch
-        z_x = self.encode(x)
-        z_aug_1 = self.encode(x_aug_1)
+        x_aug_1, _, x, y = batch
 
-        if not torch.isfinite(z_x).all() or not torch.isfinite(z_aug_1).all():
-            raise ValueError("Non-finite values encountered in contrastive embeddings.")
+        if self.hparams.supervised:
+            z_x = self.encode(x)
+            z_aug_1 = self.encode(x_aug_1)
 
-        contrastive_loss = self.compute_contrastive_loss(z_x, z_aug_1, temperature=self.hparams.contrastive_temperature)
-        loss = self.hparams.contrastive_weight * contrastive_loss
+            if not torch.isfinite(z_x).all() or not torch.isfinite(z_aug_1).all():
+                raise ValueError("Non-finite values encountered in supervised contrastive embeddings.")
 
-        # Contrastive-specific metrics
-        self.metrics.setdefault("pretrain/contrastive_loss", []).append(contrastive_loss.detach().item())
-        dist_to_center = self.manifold.dist_0(z_x).mean()
-        self.metrics.setdefault("pretrain/dist_to_center", []).append(dist_to_center.detach().item())
+            supcon_loss = self.compute_supervised_contrastive_loss(
+                z_x, z_aug_1, y, temperature=self.hparams.contrastive_temperature
+            )
+            loss = self.hparams.contrastive_weight * supcon_loss
+
+            # Supervised contrastive metrics
+            self.metrics.setdefault("pretrain/supcon_loss", []).append(supcon_loss.detach().item())
+            dist_to_center = self.manifold.dist_0(z_x).mean()
+            self.metrics.setdefault("pretrain/dist_to_center", []).append(dist_to_center.detach().item())
+        else:
+            z_x = self.encode(x)
+            z_aug_1 = self.encode(x_aug_1)
+
+            if not torch.isfinite(z_x).all() or not torch.isfinite(z_aug_1).all():
+                raise ValueError("Non-finite values encountered in contrastive embeddings.")
+
+            contrastive_loss = self.compute_contrastive_loss(z_x, z_aug_1, temperature=self.hparams.contrastive_temperature)
+            loss = self.hparams.contrastive_weight * contrastive_loss
+
+            # Contrastive-specific metrics
+            self.metrics.setdefault("pretrain/contrastive_loss", []).append(contrastive_loss.detach().item())
+            dist_to_center = self.manifold.dist_0(z_x).mean()
+            self.metrics.setdefault("pretrain/dist_to_center", []).append(dist_to_center.detach().item())
 
         # Logging
         self.metrics.setdefault("pretrain/total_loss", []).append(loss.detach().item())  # type: ignore
@@ -197,5 +222,10 @@ class HyperbolicResNet(AbstractModel):
 
         if not isinstance(loss, torch.Tensor):
             loss = torch.tensor(loss, device=x.device)
+
+        # Safety net: replace NaN/Inf with 0 while preserving the computation graph
+        if not torch.isfinite(loss):
+            print(f"Warning: Non-finite loss detected at epoch {self.current_epoch}, batch {batch_idx}. Replacing with 0.", flush=True)
+        loss = torch.nan_to_num(loss, nan=0.0, posinf=0.0, neginf=0.0)
 
         return loss

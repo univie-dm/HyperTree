@@ -30,6 +30,7 @@ pretraining:
     cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
     patience: 20 # Number of epochs
   load_supervised_weights: False
+  supervised: False
 
 
 ## Clustering parameters

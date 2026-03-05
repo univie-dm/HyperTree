@@ -41,9 +41,9 @@ def main(cfg: DictConfig) -> None:
         else:
             raise ValueError(f"Precision {cfg.architecture.precision} not supported")
 
-        if cfg.pretraining.load_supervised_weights and cfg.architecture.model_type not in ["resnet18", "resnet34", "resnet50", "resnet101", "resnet152"]:
-            raise ValueError("Supervised weights can only be loaded for ResNet models")
-            
+        if (cfg.pretraining.load_supervised_weights or cfg.pretraining.supervised) and \
+           cfg.architecture.model_type not in ["resnet18", "resnet34", "resnet50", "resnet101", "resnet152"]:
+            raise ValueError("Supervised and supervised weights can only be loaded for ResNet models")
 
         warnings.filterwarnings(
             "ignore", ".*is smaller than the logging interval Trainer.*"

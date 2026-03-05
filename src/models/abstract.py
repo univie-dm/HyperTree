@@ -124,6 +124,58 @@ class AbstractModel(pl.LightningModule):
         loss = torch.nn.functional.cross_entropy(similarity_matrix, labels)
         return loss
 
+    def compute_supervised_contrastive_loss(
+        self, z_i: torch.Tensor, z_j: torch.Tensor, labels: torch.Tensor, temperature: float = 0.1
+    ) -> torch.Tensor:
+        """
+        Compute Supervised Contrastive Loss (SupCon) using manifold distances.
+        All samples sharing the same class label are treated as positives.
+        Numerically stable implementation using logsumexp.
+
+        Args:
+            z_i: Embeddings from original images, shape (batch_size, latent_dim)
+            z_j: Embeddings from augmented images, shape (batch_size, latent_dim)
+            labels: Class labels, shape (batch_size,)
+            temperature: Temperature parameter for softmax
+
+        Returns:
+            Supervised contrastive loss value
+        """
+        batch_size = z_i.shape[0]
+        z_i = z_i.view(batch_size, -1)
+        z_j = z_j.view(batch_size, -1)
+        z = torch.cat([z_i, z_j], dim=0)  # (2*batch_size, latent_dim)
+        all_labels = torch.cat([labels, labels], dim=0)  # (2*batch_size,)
+
+        # Compute pairwise geodesic distances and convert to similarities
+        distance_matrix = compute_pairwise_distances(z, self.manifold)
+        similarity_matrix = -distance_matrix / temperature
+
+        # Mask out self-similarities
+        n = 2 * batch_size
+        self_mask = torch.eye(n, dtype=torch.bool, device=z.device)
+        similarity_matrix = similarity_matrix.masked_fill(self_mask, float("-inf"))
+
+        # Positive mask: same label, excluding self
+        positive_mask = (all_labels.unsqueeze(0) == all_labels.unsqueeze(1)) & ~self_mask  # (n, n)
+
+        # Numerically stable log-sum-exp denominator over all non-self entries
+        # Use torch.logsumexp with -inf for masked entries (they contribute 0 to the sum)
+        log_denom = torch.logsumexp(similarity_matrix, dim=1, keepdim=True)  # (n, 1)
+
+        # Log probabilities for positive pairs
+        log_prob = similarity_matrix - log_denom  # (n, n)
+
+        # Average log-prob over positive pairs per anchor
+        num_positives = positive_mask.sum(dim=1).clamp(min=1)  # (n,)
+        # Use masked_fill instead of multiplication to avoid 0 * (-inf) = NaN
+        # (self-mask entries have log_prob = -inf, and positive_mask = False there)
+        log_prob_pos = log_prob.masked_fill(~positive_mask, 0.0)
+        mean_log_prob_pos = log_prob_pos.sum(dim=1) / num_positives
+
+        loss = -mean_log_prob_pos.mean()
+        return loss
+
     def configure_optimizers(self) -> Any:
         if self.hparams.optimizer_name == "Adam":
             optimizer = torch.optim.Adam(
