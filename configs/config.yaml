@@ -52,14 +52,17 @@ clustering:
     end_weight: 1.0
     weight_interval: 0 # 0 equals to max_loss_weight all times
     temperature: 0.2
-    triplet_sampling_strategy: 'all_subsample_triplets' # 'all_subsample_triplets', 'random_with_replacement', 'chami', 'importance_sampling'
-    triplet_sample_size: 10000 # integer or 'auto' (for minimum sample size)
     lca_version: 'ours' # 'ours', 'chami'
-    loss_version: 'wang' # 'chami', 'normalized', 'wang'
-    similarity_pruning_version: 'percentile_pruning' # 'percentile_pruning', 'knn_pruning', 'threshold_pruning'
-    similarity_pruning_threshold: 0.01
-    similarity_pruning_quantile: 0.2
-    similarity_pruning_nearest_neighbors: 10
+    loss_version: 'wang' # 'wang', 'normalized', 'chami' (chami & wang requires use_importance_sampling=False)
+    use_importance_sampling: True
+    sampling_delta: 0.01 # confidence importance sampling
+    sampling_eps: 0.01 # accuracy importance sampling
+    log_approximation_diff: False # log the difference between the importance sampling estimate and the true loss
+    similarity_pruning: # similarity pruning is only enabled for the full cost computation (not importance sampling)
+      version: 'percentile_pruning' # 'percentile_pruning', 'knn_pruning', 'threshold_pruning', None (disables similarity pruning)
+      threshold: 0.01
+      quantile: 0.2
+      nearest_neighbors: 10
   # Contrastive loss parameters
   contrastive_loss:
     enabled: False
