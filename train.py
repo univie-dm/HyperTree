@@ -16,6 +16,7 @@ import torch
 import wandb
 import warnings
 import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 from icecream import install  # type: ignore
 
@@ -51,13 +52,22 @@ def main(cfg: DictConfig) -> None:
         torch.set_default_dtype(get_dtype_from_precision(cfg.architecture.precision))
         logger = get_logger(cfg)
 
+        pretrain_ckpt_dir = f"./data/checkpoints/pretrain_{get_model_path(cfg)}"
+        if cfg.dataset.name == 'imagenet':
+            os.makedirs(pretrain_ckpt_dir, exist_ok=True)
+            checkpoint_callback = ModelCheckpoint(
+                dirpath=pretrain_ckpt_dir,
+                save_last=True,
+                every_n_epochs=10,
+            )
+
         trainer = pl.Trainer(
             logger=logger,
             max_epochs=cfg.pretraining.epochs,
             devices="auto",
             accelerator="auto",
             deterministic=True if cfg.experiment.seed >= 0 else False,
-            enable_checkpointing=False,
+            enable_checkpointing=True if cfg.dataset.name == 'imagenet' else False,
             default_root_dir=None,
             gradient_clip_algorithm="value"
             if cfg.experiment.gradient_clip_value is not None
@@ -66,6 +76,7 @@ def main(cfg: DictConfig) -> None:
             if cfg.experiment.gradient_clip_value is not None
             else 1.0,
             log_every_n_steps=None,
+            callbacks=[checkpoint_callback] if cfg.dataset.name == 'imagenet' else None,
         )
         datamodule, input_dim, _ = get_datamodule(cfg, stage="pretrain")
         pretrain_model = get_pretrain_model(cfg, input_dim)
@@ -73,7 +84,13 @@ def main(cfg: DictConfig) -> None:
         if (not os.path.exists(f"data/models/{get_model_path(cfg)}.pt")
             or cfg.pretraining.overwrite):
             print("Starting pretraining", flush=True)
-            trainer.fit(pretrain_model, datamodule)
+            ckpt_path = None
+            if cfg.dataset.name == 'imagenet':
+                last_ckpt = os.path.join(pretrain_ckpt_dir, "last.ckpt")
+                if os.path.exists(last_ckpt):
+                    print(f"Resuming pretraining from checkpoint: {last_ckpt}", flush=True)
+                    ckpt_path = last_ckpt
+            trainer.fit(pretrain_model, datamodule, ckpt_path=ckpt_path)
             torch.save(pretrain_model, f"data/models/{get_model_path(cfg)}.pt")
         else:
             pretrain_model = torch.load(f"data/models/{get_model_path(cfg)}.pt", weights_only=False)
