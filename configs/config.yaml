@@ -49,23 +49,22 @@ clustering:
   # Hyperbolic loss parameters
   hyperbolic_loss:
     start_weight: 1.0
-    end_weight: 1.0
-    weight_interval: 0 # 0 equals to max_loss_weight all times
-    temperature: 0.2
+    end_weight: 3.0
+    weight_interval: 300 # 0 equals to end_weight all times
+    start_temperature: 0.2
+    end_temperature: 0.1
+    temperature_interval: 250 # 0 equals to end_temperature all times
     lca_version: 'ours' # 'ours', 'chami'
-    loss_version: 'wang' # 'wang', 'normalized', 'chami' (chami & wang requires use_importance_sampling=False)
-    use_importance_sampling: True
-    sampling_delta: 0.01 # confidence importance sampling
-    sampling_eps: 0.01 # accuracy importance sampling
-    log_approximation_diff: False # log the difference between the importance sampling estimate and the true loss
-    similarity_pruning: # similarity pruning is only enabled for the full cost computation (not importance sampling)
-      version: 'percentile_pruning' # 'percentile_pruning', 'knn_pruning', 'threshold_pruning', None (disables similarity pruning)
-      threshold: 0.01
-      quantile: 0.2
-      nearest_neighbors: 10
+    loss_version: 'normalized' # 'wang', 'normalized', 'chami' (chami & wang requires use_importance_sampling=False)
+    sampling_strategy: 'importance' # None/'None', 'uniform', 'importance', 'power_weighted'
+    sampling_eps: 0.001 # accuracy of sampling
+    sampling_delta: 0.01 # confidence of sampling
+    sampling_alpha: 0.5 # interpolation factor between uniform-importance sampling
+    uniform_sample_size: 1000
+    log_approximation_diff: False # log the approximation quality when using sampling
   # Contrastive loss parameters
   contrastive_loss:
-    enabled: False
+    enabled: True
     temperature: 0.5
     weight: 0.1
   # Reconstruction loss parameters
