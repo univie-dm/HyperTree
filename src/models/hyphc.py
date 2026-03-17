@@ -46,6 +46,10 @@ class HyperbolicHCModel(AbstractModel):
         # Regularizer parameters
         regularize_to_origin_enabled: bool = False,
         regularizer_weight: float = 0.05,
+        # Backbone kNN SNN similarity parameters
+        use_backbone_knn_similarities: bool = False,
+        snn_k: int = 10,
+        freeze_encoder: bool = False,
     ):
         super().__init__(
             # Architecture
@@ -106,6 +110,11 @@ class HyperbolicHCModel(AbstractModel):
             raise ValueError("hyperbolic_loss_weight_interval must be non-negative.")
         if hyperbolic_loss_start_weight > hyperbolic_loss_end_weight:
             raise ValueError("hyperbolic_loss_start_weight must be less than or equal to hyperbolic_loss_end_weight.")
+
+        # Freeze encoder backbone if requested (keeps SNN similarities stable across batches)
+        if freeze_encoder:
+            for param in self.encoder.parameters():  # type: ignore
+                param.requires_grad_(False)
 
         # Rejection sampling caches (re-estimated each training step)
         self.cached_acceptance_rate = 0.3
@@ -191,6 +200,33 @@ class HyperbolicHCModel(AbstractModel):
         pruned_matrix = torch.max(pruned_matrix, pruned_matrix.T)
         return pruned_matrix
 
+    def compute_snn_similarities(self, features: torch.Tensor, k: int) -> torch.Tensor:
+        """Compute Shared Nearest Neighbor (SNN) Jaccard similarity matrix in feature space.
+
+        SNN_sim(i,j) = |kNN(i) ∩ kNN(j)| / |kNN(i) ∪ kNN(j)|
+
+        Uses cosine similarity to find neighbors in the backbone feature space.
+        """
+        n = features.size(0)
+        k = min(k, n - 1)
+        with torch.no_grad():
+            # Normalize for cosine-based neighbor lookup
+            features_norm = F.normalize(features, p=2, dim=1)
+            cosine_sim = features_norm @ features_norm.T  # (n, n)
+            # Get k nearest neighbors (excluding self)
+            _, knn_indices = torch.topk(cosine_sim, k + 1, dim=1)  # (n, k+1)
+            knn_indices = knn_indices[:, 1:]  # drop self, (n, k)
+            # Build binary membership matrix: membership[i, j] = 1 if j ∈ kNN(i)
+            membership = torch.zeros(n, n, device=features.device, dtype=features.dtype)
+            row_idx = torch.arange(n, device=features.device).unsqueeze(1).expand(-1, k)
+            membership[row_idx, knn_indices] = 1.0
+            # |kNN(i) ∩ kNN(j)| via dot product of membership rows
+            intersection = membership @ membership.T  # (n, n)
+            # |kNN(i) ∪ kNN(j)| = k + k - intersection (each row has exactly k neighbors)
+            union = 2.0 * k - intersection
+            similarities = intersection / union.clamp(min=1.0)
+        return similarities
+
     def compute_full_loss(self, embeddings: torch.Tensor, similarities: torch.Tensor) -> dict[str, torch.Tensor]:
         """Compute the exact hyperbolic loss over all triplets."""
         n = embeddings.size(0)
@@ -256,7 +292,7 @@ class HyperbolicHCModel(AbstractModel):
             "evaluated_triplets": torch.tensor(triplets.shape[0], device=device),
         }
 
-    def compute_importance_sampling_loss(self, embeddings: torch.Tensor, importance_sample_size: int) -> dict[str, torch.Tensor]:
+    def compute_importance_sampling_loss(self, embeddings: torch.Tensor, importance_sample_size: int, similarities: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
         """Compute hyperbolic loss via importance sampling."""
         n = embeddings.size(0)
         device = embeddings.device
@@ -268,9 +304,10 @@ class HyperbolicHCModel(AbstractModel):
 
         # Note: We compute all similarities since the odds of not sampling an index is vanishingly
         # small for minimum sample sizes larger than 1_000 triplets
-        # Compute the pairwise similarities
-        distances = compute_pairwise_distances(embeddings, self.manifold)
-        similarities = torch.reciprocal(1 + distances)
+        if similarities is None:
+            # Compute the pairwise similarities from hyperbolic distances
+            distances = compute_pairwise_distances(embeddings, self.manifold)
+            similarities = torch.reciprocal(1 + distances)
 
         # Compute the pairwise min/max similarities
         triu_idx = torch.triu_indices(n, n, offset=1, device=device)
@@ -454,7 +491,7 @@ class HyperbolicHCModel(AbstractModel):
             "evaluated_triplets": torch.tensor(triplets.shape[0], device=device),
         }
 
-    def compute_hyperbolic_loss(self, embeddings: torch.Tensor) -> torch.Tensor:
+    def compute_hyperbolic_loss(self, embeddings: torch.Tensor, similarities: torch.Tensor | None = None) -> torch.Tensor:
         n = embeddings.size(0)
         num_all_triplets = n * (n - 1) * (n - 2) // 6
 
@@ -464,9 +501,10 @@ class HyperbolicHCModel(AbstractModel):
         importance_sample_size = int(math.ceil((0.5 + 2/3 * eps) * math.log(2.0 / delta) / (eps ** 2)))
 
         if (num_all_triplets <= 2 * importance_sample_size) or not self.hparams.use_importance_sampling:
-            # Compute the pairwise similarities
-            distances = compute_pairwise_distances(embeddings, self.manifold)
-            similarities = torch.reciprocal(1 + distances)
+            if similarities is None:
+                # Compute the pairwise similarities from hyperbolic distances
+                distances = compute_pairwise_distances(embeddings, self.manifold)
+                similarities = torch.reciprocal(1 + distances)
             # Compute the full cost
             results = self.compute_full_loss(embeddings, similarities)
             # Log the individual costs and cost components
@@ -486,7 +524,7 @@ class HyperbolicHCModel(AbstractModel):
                 raise ValueError(f"Invalid loss version: {self.hparams.loss_version}")
         else:
             # Approximate the true cost with importance sampling
-            results = self.compute_importance_sampling_loss(embeddings, importance_sample_size)
+            results = self.compute_importance_sampling_loss(embeddings, importance_sample_size, similarities=similarities)
 
             # Log the individual costs and cost components
             for key in results.keys():
@@ -528,8 +566,9 @@ class HyperbolicHCModel(AbstractModel):
         return x_recon, manifold_z
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
-        x_aug_1, _, x, _ = batch
+        x_aug_1, x_aug_2, x, _ = batch
         x_aug_1 = x_aug_1.to(dtype=get_dtype_from_precision(self.hparams.params_dtype))
+        x_aug_2 = x_aug_2.to(dtype=get_dtype_from_precision(self.hparams.params_dtype))
         x = x.to(dtype=get_dtype_from_precision(self.hparams.params_dtype))
 
         # Hyperbolic loss
@@ -539,7 +578,17 @@ class HyperbolicHCModel(AbstractModel):
             print("Warning: Non-finite values detected in manifold_z embeddings.")
             exit()
 
-        hyperbolic_loss = self.compute_hyperbolic_loss(manifold_z)
+        # Optionally replace the similarity matrix with backbone SNN similarities.
+        # The backbone features (before hyperbolic projection) carry richer semantic structure;
+        # SNN Jaccard similarity in that space gives a more stable, informative signal.
+        snn_similarities = None
+        if self.hparams.use_backbone_knn_similarities:
+            with torch.no_grad():
+                backbone_features = self.encoder(x)  # type: ignore
+                backbone_features = self.rms(backbone_features)  # type: ignore
+            snn_similarities = self.compute_snn_similarities(backbone_features, k=self.hparams.snn_k)
+
+        hyperbolic_loss = self.compute_hyperbolic_loss(manifold_z, similarities=snn_similarities)
         # Log the hyperbolic loss
         self.metrics.setdefault("clustering/hyperbolic_loss", []).append(hyperbolic_loss.detach().item())  # type: ignore
         # Compute the current hyperbolic loss weight
@@ -564,10 +613,11 @@ class HyperbolicHCModel(AbstractModel):
             # Add the weighted reconstruction loss to the total loss
             total_loss += self.hparams.recon_weight * recon_loss
 
-        # Contrastive loss
+        # Contrastive loss: use (aug_1, aug_2) as the positive pair for proper two-view SimCLR
         if self.hparams.contrastive_weight > 0.0 and self.hparams.contrastive_loss_enabled:
             manifold_z_aug_1 = self.encode(x_aug_1)
-            contrastive_loss = self.compute_contrastive_loss(manifold_z, manifold_z_aug_1, temperature=self.hparams.contrastive_temperature)
+            manifold_z_aug_2 = self.encode(x_aug_2)
+            contrastive_loss = self.compute_contrastive_loss(manifold_z_aug_1, manifold_z_aug_2, temperature=self.hparams.contrastive_temperature)
             # Log the contrastive loss
             self.metrics.setdefault("clustering/contrastive_loss", []).append(contrastive_loss.detach().item())
             # Add the weighted contrastive loss to the total loss

@@ -61,6 +61,7 @@ def main(cfg: DictConfig) -> None:
                 every_n_epochs=10,
             )
 
+        pretrain_accum = max(1, cfg.pretraining.get("accumulate_gradients", 1))
         trainer = pl.Trainer(
             logger=logger,
             max_epochs=cfg.pretraining.epochs,
@@ -69,6 +70,7 @@ def main(cfg: DictConfig) -> None:
             deterministic=True if cfg.experiment.seed >= 0 else False,
             enable_checkpointing=True if cfg.dataset.name == 'imagenet' else False,
             default_root_dir=None,
+            accumulate_grad_batches=pretrain_accum,
             gradient_clip_algorithm="value"
             if cfg.experiment.gradient_clip_value is not None
             else None,

@@ -14,6 +14,7 @@ pretraining:
   overwrite: False
   learning_rate: 0.003
   weight_decay: 1e-5
+  accumulate_gradients: 1  # Gradient accumulation steps (effective_batch = batch_size * accumulate_gradients * num_gpus)
   enable_checkpointing: False  # Enable for long training runs (e.g., ImageNet)
   # Reconstruction loss parameters
   reconstruction_loss:
@@ -25,8 +26,8 @@ pretraining:
     temperature: 0.5
   # Learning rate scheduler
   lr_scheduler:
-    type: # 'warmup_cosine', 'ReduceLROnPlateau'
-    interval: 40  # Number of epochs for warmup phase
+    type: warmup_cosine  # 'warmup_cosine', 'ReduceLROnPlateau'
+    interval: 40  # Number of epochs for warmup phase (also T_0 for cosine restart)
     cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
     patience: 20 # Number of epochs
   load_supervised_weights: False
@@ -40,6 +41,7 @@ clustering:
   weight_decay: 1e-5
   enable_checkpointing: False  # Enable for long training runs
   accumulate_gradients: 1
+  freeze_encoder: True  # Freeze backbone encoder during clustering (recommended with use_backbone_knn_similarities)
   # Learning rate scheduler
   lr_scheduler:
     type: # 'warmup_cosine'
@@ -54,16 +56,23 @@ clustering:
     temperature: 0.2
     lca_version: 'ours' # 'ours', 'chami'
     loss_version: 'wang' # 'wang', 'normalized', 'chami' (chami & wang requires use_importance_sampling=False)
-    use_importance_sampling: True
+    use_importance_sampling: False
     sampling_delta: 0.01 # confidence importance sampling
     sampling_eps: 0.01 # accuracy importance sampling
     log_approximation_diff: False # log the difference between the importance sampling estimate and the true loss
+    # Backbone kNN SNN similarities: replace hyperbolic-distance similarities with Jaccard SNN
+    # in backbone feature space (higher-dim, richer semantic signal). Pair with freeze_encoder: true.
+    use_backbone_knn_similarities: True
+    snn_k: 10 # number of nearest neighbors for SNN computation
     similarity_pruning: # similarity pruning is only enabled for the full cost computation (not importance sampling)
-      version: 'percentile_pruning' # 'percentile_pruning', 'knn_pruning', 'threshold_pruning', None (disables similarity pruning)
+      version: null # 'percentile_pruning', 'knn_pruning', 'threshold_pruning', None (disables similarity pruning)
       threshold: 0.01
       quantile: 0.2
       nearest_neighbors: 10
   # Contrastive loss parameters
+  # For end-to-end unsupervised: enable this and set pretraining.epochs=0, freeze_encoder=False,
+  # hyperbolic_loss.start_weight=0.0, end_weight=1.0, weight_interval=<warmup_epochs>.
+  # Contrastive loss uses (aug_1, aug_2) as the positive pair (two-view SimCLR on hyperbolic embeddings).
   contrastive_loss:
     enabled: False
     temperature: 0.5
@@ -132,7 +141,8 @@ wandb:
   project: 'hyper_clustering'
   entity: 'kevin-sidak-team'
   save_dir: './logs'
-  tags: []
+  tags:
+    - temperature_test
 
 
 ## Hydra specifics

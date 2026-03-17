@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
 from typing import Tuple
@@ -149,49 +150,77 @@ class HyperbolicResNet(AbstractModel):
 
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
+        hidden, manifold_z = self.encode_with_backbone(x)
+        return manifold_z
+
+    def encode_with_backbone(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Returns (backbone_features, hyperbolic_embeddings) in a single forward pass."""
         hidden = self.encoder(x)
         hidden = self.rms(hidden)
         if self.hparams.feature_scaling and not isinstance(self.manifold, Euclidean):
-            hidden = self.feature_scaling_layer(hidden)
-        manifold_z = self.hyperbolic_encoding_layer(hidden)
-        return manifold_z
+            manifold_z = self.hyperbolic_encoding_layer(self.feature_scaling_layer(hidden))
+        else:
+            manifold_z = self.hyperbolic_encoding_layer(hidden)
+        return hidden, manifold_z
 
     def forward(self, x: torch.Tensor) -> Tuple[None, torch.Tensor]:
         manifold_z = self.encode(x)
         return None, manifold_z
 
+    def _compute_euclidean_contrastive_loss(self, h_i: torch.Tensor, h_j: torch.Tensor, temperature: float) -> torch.Tensor:
+        """NT-Xent using cosine similarity on pre-hyperbolic backbone features."""
+        batch_size = h_i.shape[0]
+        h = torch.cat([h_i, h_j], dim=0)  # (2N, d)
+        h = F.normalize(h, p=2, dim=1)
+        sim = h @ h.T / temperature  # (2N, 2N)
+        mask = torch.eye(2 * batch_size, dtype=torch.bool, device=h.device)
+        sim = sim.masked_fill(mask, float("-inf"))
+        labels = torch.cat([
+            torch.arange(batch_size, 2 * batch_size, device=h.device),
+            torch.arange(0, batch_size, device=h.device),
+        ])
+        return F.cross_entropy(sim, labels)
+
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
-        x_aug_1, _, x, y = batch
+        x_aug_1, x_aug_2, x, y = batch
 
         if self.hparams.supervised:
-            z_x = self.encode(x)
             z_aug_1 = self.encode(x_aug_1)
+            z_aug_2 = self.encode(x_aug_2)
 
-            if not torch.isfinite(z_x).all() or not torch.isfinite(z_aug_1).all():
+            if not torch.isfinite(z_aug_1).all() or not torch.isfinite(z_aug_2).all():
                 raise ValueError("Non-finite values encountered in supervised contrastive embeddings.")
 
             supcon_loss = self.compute_supervised_contrastive_loss(
-                z_x, z_aug_1, y, temperature=self.hparams.contrastive_temperature
+                z_aug_1, z_aug_2, y, temperature=self.hparams.contrastive_temperature
             )
             loss = self.hparams.contrastive_weight * supcon_loss
 
             # Supervised contrastive metrics
             self.metrics.setdefault("pretrain/supcon_loss", []).append(supcon_loss.detach().item())
-            dist_to_center = self.manifold.dist_0(z_x).mean()
+            dist_to_center = self.manifold.dist_0(z_aug_1).mean()
             self.metrics.setdefault("pretrain/dist_to_center", []).append(dist_to_center.detach().item())
         else:
-            z_x = self.encode(x)
-            z_aug_1 = self.encode(x_aug_1)
+            h_aug_1, z_aug_1 = self.encode_with_backbone(x_aug_1)
+            h_aug_2, z_aug_2 = self.encode_with_backbone(x_aug_2)
 
-            if not torch.isfinite(z_x).all() or not torch.isfinite(z_aug_1).all():
+            if not torch.isfinite(z_aug_1).all() or not torch.isfinite(z_aug_2).all():
                 raise ValueError("Non-finite values encountered in contrastive embeddings.")
 
-            contrastive_loss = self.compute_contrastive_loss(z_x, z_aug_1, temperature=self.hparams.contrastive_temperature)
-            loss = self.hparams.contrastive_weight * contrastive_loss
+            # Hyperbolic contrastive on (aug_1, aug_2) — proper two-view SimCLR
+            contrastive_loss = self.compute_contrastive_loss(z_aug_1, z_aug_2, temperature=self.hparams.contrastive_temperature)
+
+            # Euclidean contrastive on pre-hyperbolic backbone features — faster, more stable gradient
+            euclidean_contrastive_loss = self._compute_euclidean_contrastive_loss(
+                h_aug_1, h_aug_2, temperature=self.hparams.contrastive_temperature
+            )
+
+            loss = self.hparams.contrastive_weight * (contrastive_loss + euclidean_contrastive_loss)
 
             # Contrastive-specific metrics
             self.metrics.setdefault("pretrain/contrastive_loss", []).append(contrastive_loss.detach().item())
-            dist_to_center = self.manifold.dist_0(z_x).mean()
+            self.metrics.setdefault("pretrain/euclidean_contrastive_loss", []).append(euclidean_contrastive_loss.detach().item())
+            dist_to_center = self.manifold.dist_0(z_aug_1).mean()
             self.metrics.setdefault("pretrain/dist_to_center", []).append(dist_to_center.detach().item())
 
         # Logging
@@ -210,11 +239,11 @@ class HyperbolicResNet(AbstractModel):
             on_step=False,
             sync_dist=False,
         )
-        self.metrics.setdefault("latent_space/mean", []).append(z_x.mean().detach().item())
-        self.metrics.setdefault("latent_space/std", []).append(z_x.std().detach().item())
-        self.metrics.setdefault("latent_space/max", []).append(z_x.max().detach().item())
-        self.metrics.setdefault("latent_space/min", []).append(z_x.min().detach().item())
-        self.metrics.setdefault("latent_space/norm_mean", []).append(z_x.norm(p=2, dim=-1).mean().detach().item())
+        self.metrics.setdefault("latent_space/mean", []).append(z_aug_1.mean().detach().item())
+        self.metrics.setdefault("latent_space/std", []).append(z_aug_1.std().detach().item())
+        self.metrics.setdefault("latent_space/max", []).append(z_aug_1.max().detach().item())
+        self.metrics.setdefault("latent_space/min", []).append(z_aug_1.min().detach().item())
+        self.metrics.setdefault("latent_space/norm_mean", []).append(z_aug_1.norm(p=2, dim=-1).mean().detach().item())
 
         if self.hparams.hyperbolic_encoding in ["HyperbolicLinearHyperboloidFHCNN", "HyperbolicLinearHyperboloidFHNN"]:
             scale = self.hyperbolic_encoding_layer[1].scale  # type: ignore

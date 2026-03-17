@@ -42,8 +42,6 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "load_supervised_weights": cfg.pretraining.load_supervised_weights,
         "supervised": cfg.pretraining.supervised,
     }
-    if cfg.pretraining.load_supervised_weights:
-        attr['supervised_weights_path'] = cfg.pretraining.supervised_weights_path
     return md5(str(attr).encode()).hexdigest()
 
 
@@ -207,6 +205,10 @@ def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[Hyperb
         # Regularizer parameters
         regularize_to_origin_enabled=cfg.clustering.regularizer.enabled,
         regularizer_weight=cfg.clustering.regularizer.weight,
+        # Backbone kNN SNN similarity parameters
+        use_backbone_knn_similarities=cfg.clustering.hyperbolic_loss.get("use_backbone_knn_similarities", False),
+        snn_k=cfg.clustering.hyperbolic_loss.get("snn_k", 10),
+        freeze_encoder=cfg.clustering.get("freeze_encoder", False),
     )
     return model
 
