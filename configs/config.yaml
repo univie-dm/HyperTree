@@ -107,6 +107,7 @@ evaluation_metrics:
   dendrogram_purity_complete: True
   dendrogram_purity_average: False
   dendrogram_purity_ward: True
+  dendrogrampurity_use_root: True  # if True, the root node (final dendrogram merge) is included in the purity sum
   agglomerative_clustering_single: False
   agglomerative_clustering_complete: True
   agglomerative_clustering_average: False
@@ -131,7 +132,8 @@ wandb:
   project: 'hyper_clustering'
   entity: 'kevin-sidak-team'
   save_dir: './logs'
-  tags: []
+  tags:
+    - test
 
 
 ## Hydra specifics

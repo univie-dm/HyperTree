@@ -315,53 +315,54 @@ def evaluation(
         results["delta_hyperbolicity"] = delta_hyp.item()
         results["diameter_hyperbolicity"] = diam_hyp.item()
         results["relative_delta_hyperbolicity"] = rel_delta_hyp.item()
+    dp_use_root = metrics.get("dendrogrampurity_use_root", False)
     if metrics.get("dendrogram_purity_single", False):
         # Compute dendrogram purity for single linkage
         if Y_coarse is not None:
             # Use hierarchical DP for datasets with coarse labels
             dp_score_single = hierarchical_dendrogram_purity(
-                distance_matrix, Y, Y_coarse, "single"
+                distance_matrix, Y, Y_coarse, "single", use_root=dp_use_root
             )
             results["hierarchical_dendrogram_purity_single"] = dp_score_single
         else:
             # Use flat DP for simple datasets
-            dp_score_single = dendrogram_purity(distance_matrix, Y, "single")
+            dp_score_single = dendrogram_purity(distance_matrix, Y, "single", use_root=dp_use_root)
             results["dendrogram_purity_single"] = dp_score_single
     if metrics.get("dendrogram_purity_complete", False):
         # Compute dendrogram purity for complete linkage
         if Y_coarse is not None:
             # Use hierarchical DP for datasets with coarse labels
             dp_score_complete = hierarchical_dendrogram_purity(
-                distance_matrix, Y, Y_coarse, "complete"
+                distance_matrix, Y, Y_coarse, "complete", use_root=dp_use_root
             )
             results["hierarchical_dendrogram_purity_complete"] = dp_score_complete
         else:
             # Use flat DP for simple datasets
-            dp_score_complete = dendrogram_purity(distance_matrix, Y, "complete")
+            dp_score_complete = dendrogram_purity(distance_matrix, Y, "complete", use_root=dp_use_root)
             results["dendrogram_purity_complete"] = dp_score_complete
     if metrics.get("dendrogram_purity_average", False):
         # Compute dendrogram purity for average linkage
         if Y_coarse is not None:
             # Use hierarchical DP for datasets with coarse labels
             dp_score_average = hierarchical_dendrogram_purity(
-                distance_matrix, Y, Y_coarse, "average"
+                distance_matrix, Y, Y_coarse, "average", use_root=dp_use_root
             )
             results["hierarchical_dendrogram_purity_average"] = dp_score_average
         else:
             # Use flat DP for simple datasets
-            dp_score_average = dendrogram_purity(distance_matrix, Y, "average")
+            dp_score_average = dendrogram_purity(distance_matrix, Y, "average", use_root=dp_use_root)
             results["dendrogram_purity_average"] = dp_score_average
     if metrics.get("dendrogram_purity_ward", False):
         # Compute dendrogram purity for ward linkage
         if Y_coarse is not None:
             # Use hierarchical DP for datasets with coarse labels
             dp_score_ward = hierarchical_dendrogram_purity(
-                distance_matrix, Y, Y_coarse, "ward"
+                distance_matrix, Y, Y_coarse, "ward", use_root=dp_use_root
             )
             results["hierarchical_dendrogram_purity_ward"] = dp_score_ward
         else:
             # Use flat DP for simple datasets
-            dp_score_ward = dendrogram_purity(distance_matrix, Y, "ward")
+            dp_score_ward = dendrogram_purity(distance_matrix, Y, "ward", use_root=dp_use_root)
             results["dendrogram_purity_ward"] = dp_score_ward
     if metrics.get("agglomerative_clustering_single", False):
         # Compute agglomerative clustering metrics
@@ -1320,6 +1321,7 @@ def dendrogram_purity(
     distance_matrix: torch.Tensor,
     labels: np.ndarray | torch.Tensor,
     linkage_method: str = "average",
+    use_root: bool = False,
 ) -> float:
     """
     Computes the canonical Dendrogram Purity for a hierarchy built from a distance matrix.
@@ -1332,6 +1334,8 @@ def dendrogram_purity(
         distance_matrix (np.ndarray): A square N x N matrix of pairwise distances.
         labels (np.ndarray): A 1D array of size N with ground-truth class labels.
         linkage_method (str): The linkage algorithm to use (e.g., 'average', 'single', 'complete').
+        use_root (bool): If True, the root node (final merge containing all samples) is included
+            in the purity sum. If False (default), the root node is excluded.
 
     Returns:
         float: The Dendrogram Purity score, between 0 and 1.
@@ -1369,8 +1373,12 @@ def dendrogram_purity(
     # It starts with leaf nodes (the original data points).
     cluster_label_counts = {i: Counter({labels_np[i]: 1}) for i in range(num_samples)}
 
+    num_merges = len(Z)
     # Iterate over each merge operation in the linkage matrix
     for i, merge in enumerate(Z):
+        # Skip the root node (last merge) unless use_root is enabled
+        if not use_root and i == num_merges - 1:
+            break
         node1_id, node2_id = int(merge[0]), int(merge[1])
         new_node_id = num_samples + i
 
@@ -1486,6 +1494,7 @@ def hierarchical_dendrogram_purity(
     labels_fine: np.ndarray | torch.Tensor,
     labels_coarse: np.ndarray | torch.Tensor,
     linkage_method: str = "average",
+    use_root: bool = False,
 ) -> float:
     """
     Computes the Hierarchical Dendrogram Purity for a hierarchy built from a distance matrix.
@@ -1513,18 +1522,24 @@ def hierarchical_dendrogram_purity(
 
     if full_hierarchy_clusters:
         # Use generalized hierarchical DP
-        
+
+        # Optionally include the root label cluster (all fine classes)
+        if use_root:
+            root_cluster = set(np.unique(labels_fine_np).tolist())
+            if root_cluster not in [set(c) for c in full_hierarchy_clusters]:
+                full_hierarchy_clusters = list(full_hierarchy_clusters) + [root_cluster]
+
         # 1. Calculate Normalization Factor
         _, fine_counts = np.unique(labels_fine_np, return_counts=True)
         # We need a map label -> count
         fine_label_counts_map = dict(zip(np.unique(labels_fine_np), fine_counts))
-        
+
         num_same_class_pairs = 0
         for cluster in full_hierarchy_clusters:
             # Count points in this cluster
             count = sum(fine_label_counts_map.get(l, 0) for l in cluster)
             num_same_class_pairs += count * (count - 1) // 2
-            
+
         if num_same_class_pairs == 0:
             return 1.0
 
@@ -1536,7 +1551,12 @@ def hierarchical_dendrogram_purity(
         total_purity_sum = 0.0
         cluster_label_counts = {i: Counter({labels_fine_np[i]: 1}) for i in range(num_samples)}
 
+        num_merges = len(Z)
         for i, merge in enumerate(Z):
+            # Skip the root node (last merge) unless use_root is enabled
+            if not use_root and i == num_merges - 1:
+                break
+
             node1_id, node2_id = int(merge[0]), int(merge[1])
             new_node_id = num_samples + i
 
@@ -1548,15 +1568,15 @@ def hierarchical_dendrogram_purity(
 
             # For optimization, we only evaluate clusters that have representatives in both children
             # But iterating all clusters is safer/easier logic and fast enough
-            
+
             # Optimization: Only iterate clusters that contain at least one label present in new_node_counts
             # present_labels = set(new_node_counts.keys())
             # But constructing set every time is slow.
-            
+
             for cluster in full_hierarchy_clusters:
                 n1_k = sum(counts1[l] for l in cluster if l in counts1)
                 n2_k = sum(counts2[l] for l in cluster if l in counts2)
-                
+
                 num_new_pairs = n1_k * n2_k
                 if num_new_pairs > 0:
                     count_in_lca = n1_k + n2_k
@@ -1607,8 +1627,13 @@ def hierarchical_dendrogram_purity(
             i: Counter({labels_np[i]: 1}) for i in range(num_samples)
         }
 
+        num_merges = len(Z)
         # Iterate over each merge operation in the linkage matrix
         for i, merge in enumerate(Z):
+            # Skip the root node (last merge) unless use_root is enabled
+            if not use_root and i == num_merges - 1:
+                break
+
             node1_id, node2_id = int(merge[0]), int(merge[1])
             new_node_id = num_samples + i
 
