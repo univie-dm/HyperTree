@@ -111,7 +111,7 @@ class HyperbolicHCModel(AbstractModel):
             raise ValueError("hyperbolic_loss_start_weight must be less than or equal to hyperbolic_loss_end_weight.")
 
         # Rejection sampling caches (re-estimated each training step)
-        self.cached_acceptance_rate = 0.3
+        self.cached_acceptance_rate = 0.2
 
     def configure_optimizers(self) -> Any:
         if self.hparams.optimizer_name == "Adam":
@@ -256,13 +256,22 @@ class HyperbolicHCModel(AbstractModel):
         eps = self.hparams.sampling_eps
         delta = self.hparams.sampling_delta
         alpha = self.hparams.sampling_alpha
-        importance_sample_size = int(math.ceil((0.5 + 2/3 * eps) * math.log(2.0 / delta) / (eps ** 2)))
-        # Dynamically compute the power_weighted minimum sample size with a O(1) lookup
-        power_weighted_sample_size = self.get_power_weighted_sample_size(similarities, max_min_delta.item())
+
+        # Evaluate the full triplet set when the sampling strategy requires at least all triplets
+        use_full_triplet_cost = False
+        if self.hparams.sampling_strategy in [None, "None"]:
+            use_full_triplet_cost = True
+        elif self.hparams.sampling_strategy == "importance":
+            importance_sample_size = int(math.ceil((0.5 + 2/3 * eps) * math.log(2.0 / delta) / (eps ** 2)))
+            use_full_triplet_cost = importance_sample_size >= num_all_triplets
+        elif self.hparams.sampling_strategy == "power_weighted":
+            # Dynamically compute the power_weighted minimum sample size with a O(1) lookup
+            power_weighted_sample_size = self.get_power_weighted_sample_size(similarities, max_min_delta.item())
+            use_full_triplet_cost = power_weighted_sample_size >= num_all_triplets
 
         # Sample the triplets
         with torch.no_grad():
-            if self.hparams.sampling_strategy in [None, "None"] or (num_all_triplets <= 2*importance_sample_size) or (num_all_triplets <= 2*power_weighted_sample_size):
+            if use_full_triplet_cost:
                 # Sample all triplets
                 all_indices = torch.arange(n, device=device)
                 triplets = torch.combinations(all_indices, r=3)
@@ -517,11 +526,12 @@ class HyperbolicHCModel(AbstractModel):
         x_aug_1 = x_aug_1.to(dtype=get_dtype_from_precision(self.hparams.params_dtype))
         x = x.to(dtype=get_dtype_from_precision(self.hparams.params_dtype))
 
-        # Hyperbolic loss
         manifold_z = self.encode(x)
         if not torch.isfinite(manifold_z).all():
             print("Warning: Non-finite values detected in manifold_z embeddings.")
             exit()
+
+        # Hyperbolic loss
         ## Compute the current hyperbolic loss temperature
         if self.hparams.hyperbolic_loss_temperature_interval > 0:
             hyperbolic_loss_temperature = self.hparams.hyperbolic_loss_start_temperature + (

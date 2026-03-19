@@ -49,8 +49,8 @@ clustering:
   # Hyperbolic loss parameters
   hyperbolic_loss:
     start_weight: 1.0
-    end_weight: 3.0
-    weight_interval: 300 # 0 equals to end_weight all times
+    end_weight: 5.0
+    weight_interval: 250 # 0 equals to end_weight all times
     start_temperature: 0.2
     end_temperature: 0.1
     temperature_interval: 250 # 0 equals to end_temperature all times
@@ -59,8 +59,8 @@ clustering:
     sampling_strategy: 'importance' # None/'None', 'uniform', 'importance', 'power_weighted'
     sampling_eps: 0.001 # accuracy of sampling
     sampling_delta: 0.01 # confidence of sampling
-    sampling_alpha: 0.5 # interpolation factor between uniform-importance sampling
-    uniform_sample_size: 1000
+    sampling_alpha: 0.2 # interpolation factor between uniform-importance sampling
+    uniform_sample_size: 10000
     log_approximation_diff: False # log the approximation quality when using sampling
   # Contrastive loss parameters
   contrastive_loss:
@@ -96,8 +96,8 @@ architecture:
   activation_function: 'swish' # 'swish', 'relu'
   hyperbolic_clamping: 1.0
   hyperbolic_smoothing: 50.0
-  hyperboloid_layer_learnable_scale: False # only used in Hyperboloid layers
-  FHCNN_normalize: False # only used if hyperbolic_encoding is 'HyperbolicLinearHyperboloidFHCNN'
+  hyperboloid_layer_learnable_scale: True # only used in Hyperboloid layers
+  FHCNN_normalize: True # only used if hyperbolic_encoding is 'HyperbolicLinearHyperboloidFHCNN'
 
 
 ## Evaluation Metrics to be used and logged
