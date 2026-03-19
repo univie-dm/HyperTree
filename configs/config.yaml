@@ -51,15 +51,19 @@ clustering:
   # Hyperbolic loss parameters
   hyperbolic_loss:
     start_weight: 1.0
-    end_weight: 1.0
-    weight_interval: 0 # 0 equals to max_loss_weight all times
-    temperature: 0.2
+    end_weight: 5.0
+    weight_interval: 250 # 0 equals to end_weight all times
+    start_temperature: 0.2
+    end_temperature: 0.1
+    temperature_interval: 250 # 0 equals to end_temperature all times
     lca_version: 'ours' # 'ours', 'chami'
-    loss_version: 'wang' # 'wang', 'normalized', 'chami' (chami & wang requires use_importance_sampling=False)
-    use_importance_sampling: False
-    sampling_delta: 0.01 # confidence importance sampling
-    sampling_eps: 0.01 # accuracy importance sampling
-    log_approximation_diff: False # log the difference between the importance sampling estimate and the true loss
+    loss_version: 'normalized' # 'wang', 'normalized', 'chami' (chami & wang requires use_importance_sampling=False)
+    sampling_strategy: 'importance' # None/'None', 'uniform', 'importance', 'power_weighted'
+    sampling_eps: 0.001 # accuracy of sampling
+    sampling_delta: 0.01 # confidence of sampling
+    sampling_alpha: 0.2 # interpolation factor between uniform-importance sampling
+    uniform_sample_size: 10000
+    log_approximation_diff: False # log the approximation quality when using sampling
     # Backbone kNN SNN similarities: replace hyperbolic-distance similarities with Jaccard SNN
     # in backbone feature space (higher-dim, richer semantic signal). Pair with freeze_encoder: true.
     use_backbone_knn_similarities: True
@@ -74,7 +78,7 @@ clustering:
   # hyperbolic_loss.start_weight=0.0, end_weight=1.0, weight_interval=<warmup_epochs>.
   # Contrastive loss uses (aug_1, aug_2) as the positive pair (two-view SimCLR on hyperbolic embeddings).
   contrastive_loss:
-    enabled: False
+    enabled: True
     temperature: 0.5
     weight: 0.1
   # Reconstruction loss parameters
@@ -106,8 +110,8 @@ architecture:
   activation_function: 'swish' # 'swish', 'relu'
   hyperbolic_clamping: 1.0
   hyperbolic_smoothing: 50.0
-  hyperboloid_layer_learnable_scale: False # only used in Hyperboloid layers
-  FHCNN_normalize: False # only used if hyperbolic_encoding is 'HyperbolicLinearHyperboloidFHCNN'
+  hyperboloid_layer_learnable_scale: True # only used in Hyperboloid layers
+  FHCNN_normalize: True # only used if hyperbolic_encoding is 'HyperbolicLinearHyperboloidFHCNN'
 
 
 ## Evaluation Metrics to be used and logged
@@ -117,6 +121,7 @@ evaluation_metrics:
   dendrogram_purity_complete: True
   dendrogram_purity_average: False
   dendrogram_purity_ward: True
+  dendrogrampurity_use_root: True  # if True, the root node (final dendrogram merge) is included in the purity sum
   agglomerative_clustering_single: False
   agglomerative_clustering_complete: True
   agglomerative_clustering_average: False
@@ -142,7 +147,7 @@ wandb:
   entity: 'kevin-sidak-team'
   save_dir: './logs'
   tags:
-    - temperature_test
+    - test
 
 
 ## Hydra specifics

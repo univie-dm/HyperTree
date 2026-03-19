@@ -27,15 +27,18 @@ class HyperbolicHCModel(AbstractModel):
         evaluation_metrics: dict[str, bool] = {},
         # Hyperbolic Loss parameters
         hyperbolic_loss_start_weight: float = 1.0,
-        hyperbolic_loss_end_weight: float = 1.0,
-        hyperbolic_loss_weight_interval: int = 0,
-        hyperbolic_loss_temperature: float = 0.05,
+        hyperbolic_loss_end_weight: float = 3.0,
+        hyperbolic_loss_weight_interval: int = 300,
+        hyperbolic_loss_start_temperature: float = 0.2,
+        hyperbolic_loss_end_temperature: float = 0.1,
+        hyperbolic_loss_temperature_interval: int = 250,
         lca_version: str = "ours",
-        loss_version: str = "wang",
-        similarity_pruning: dict | None = None,
-        use_importance_sampling: bool = True,
-        sampling_delta: float = 0.01,
-        sampling_eps: float = 0.01,
+        loss_version: str = "normalized",
+        sampling_strategy: str | None = "importance",
+        sampling_eps: float = 1e-3,
+        sampling_delta: float = 1e-2,
+        sampling_alpha: float = 0.5,
+        uniform_sample_size: int = 1_000,
         log_approximation_diff: bool = False,
         # Contrastive Loss parameters
         contrastive_loss_enabled: bool = False,
@@ -117,7 +120,7 @@ class HyperbolicHCModel(AbstractModel):
                 param.requires_grad_(False)
 
         # Rejection sampling caches (re-estimated each training step)
-        self.cached_acceptance_rate = 0.3
+        self.cached_acceptance_rate = 0.2
 
     def configure_optimizers(self) -> Any:
         if self.hparams.optimizer_name == "Adam":
@@ -176,29 +179,55 @@ class HyperbolicHCModel(AbstractModel):
         k = k + (k >= low).long() + (k >= high - 1).long()
         return torch.stack([i, j, k], dim=1)
 
-    def symmetric_percentile_pruning(self, similarities: torch.Tensor, percentile: float) -> torch.Tensor:
-        """Prunes a symmetric matrix by calculating the quantile on unique off-diagonal edges."""
-        n = similarities.size(0)
-        indices = torch.triu_indices(n, n, offset=1, device=similarities.device)
-        unique_edges = similarities[indices[0], indices[1]]
-        threshold = torch.quantile(unique_edges, percentile)
-        condition = similarities < threshold
-        similarities = torch.where(condition, torch.zeros_like(similarities), similarities)
-        return similarities
-
-    def symmetric_knn_pruning(self, similarities: torch.Tensor, k: int) -> torch.Tensor:
-        """Prunes a symmetric matrix by only keeping edges to the top-k neighbors."""
+    def get_power_weighted_sample_size(self, similarities: torch.Tensor, max_min_delta: float) -> int:
+        """Dynamically estimates the minimum power-weighted sample size."""
         n = similarities.size(0)
         device = similarities.device
-        # Extract the top k+1 NN (include self loops)
-        k_plus_self = min(int(k) + 1, n)
-        topk_values, topk_indices = torch.topk(similarities, k_plus_self, dim=1)
-        pruned_matrix = torch.zeros_like(similarities)
-        row_indices = torch.arange(n, device=device).unsqueeze(1).expand(-1, k_plus_self)
-        pruned_matrix[row_indices, topk_indices] = topk_values
-        # Reinforce symmetry
-        pruned_matrix = torch.max(pruned_matrix, pruned_matrix.T)
-        return pruned_matrix
+        eps = self.hparams.sampling_eps
+        delta = self.hparams.sampling_delta
+        alpha = self.hparams.sampling_alpha
+
+        # Sample a lightweight uniform batch to estimate the expectations
+        num_est_samples = min(5000, n * (n - 1) * (n - 2))
+        sampled_indices = torch.randint(0, n * (n - 1) * (n - 2), (num_est_samples,), device=device)
+        triplets = self.decode_triplet_indices_from_flattened_indices(sampled_indices, n)
+        i, j, k = triplets[:, 0], triplets[:, 1], triplets[:, 2]
+
+        # Calculate the per-triplet spread for the sampled triplets
+        with torch.no_grad():
+            pairwise_sums_stack = torch.stack(
+                (similarities[i, j] + similarities[i, k],
+                 similarities[i, j] + similarities[j, k],
+                 similarities[i, k] + similarities[j, k]),
+                dim=1,
+            )
+            triplet_spread_stack = pairwise_sums_stack.max(dim=1).values - pairwise_sums_stack.min(dim=1).values
+
+            # Estimate mu_V^(alpha) and prevent division by zero (if similarities collapse)
+            mean_triplet_spread_stack = triplet_spread_stack.mean().item()
+            mean_triplet_spread_stack_alpha = (triplet_spread_stack ** alpha).mean().clamp(min=1e-10).item()
+            mu_V = mean_triplet_spread_stack / mean_triplet_spread_stack_alpha
+
+        # Calculate the required sample size
+        m_required = (8 * (max_min_delta ** (2 * (1 - alpha))) * math.log(4.0 / delta)) / ((eps ** 2) * (mu_V ** 2))
+
+        # Optional: Apply EMA to stabilize training
+        apply_EMA_stabilizer = False
+        if apply_EMA_stabilizer:
+            if not hasattr(self, "running_pw_sample_size"):
+                self.running_pw_sample_size = m_required
+            else:
+                self.running_pw_sample_size = 0.9 * self.running_pw_sample_size + 0.1 * m_required
+        else:
+            self.running_pw_sample_size = m_required
+
+        # Prevent under-sampling
+        final_m = max(int(self.running_pw_sample_size), 10_000)
+
+        # Log the minimum sample size
+        self.metrics.setdefault("sampling/target_pw_sample_size", []).append(final_m)
+        self.metrics.setdefault("sampling/final_required_diff_pw_sample_size", []).append(abs(final_m - int(m_required)))
+        return final_m
 
     def compute_snn_similarities(self, features: torch.Tensor, k: int) -> torch.Tensor:
         """Compute Shared Nearest Neighbor (SNN) Jaccard similarity matrix in feature space.
@@ -227,24 +256,10 @@ class HyperbolicHCModel(AbstractModel):
             similarities = intersection / union.clamp(min=1.0)
         return similarities
 
-    def compute_full_loss(self, embeddings: torch.Tensor, similarities: torch.Tensor) -> dict[str, torch.Tensor]:
+    def compute_full_loss(self, embeddings: torch.Tensor, similarities: torch.Tensor, hyperbolic_loss_temperature: float) -> dict[str, torch.Tensor]:
         """Compute the exact hyperbolic loss over all triplets."""
         n = embeddings.size(0)
         device = embeddings.device
-
-        # Optional: Apply similarity pruning
-        pruning_cfg = self.hparams.similarity_pruning
-        if pruning_cfg is not None:
-            version = pruning_cfg.get("version", None) if isinstance(pruning_cfg, dict) else None
-            if version == "percentile_pruning":
-                similarities = self.symmetric_percentile_pruning(
-                    similarities, percentile=pruning_cfg.get("quantile", 0.2))
-            elif version == "knn_pruning":
-                similarities = self.symmetric_knn_pruning(
-                    similarities, k=pruning_cfg.get("nearest_neighbors", 10))
-            elif version == "threshold_pruning":
-                threshold = pruning_cfg.get("threshold", 0.01)
-                similarities = torch.where(similarities <= threshold, torch.zeros_like(similarities), similarities)
 
         # Compute the LCA depths
         if self.hparams.lca_version not in ["ours", "chami"]:
@@ -259,7 +274,7 @@ class HyperbolicHCModel(AbstractModel):
         # Compute the triplet loss N_t
         lca_stack = torch.stack((lcas[i, j], lcas[i, k], lcas[j, k]), dim=1)
         lca_max = lca_stack.max(dim=1, keepdim=True).values
-        scaled_exp = torch.exp((lca_stack - lca_max) / self.hparams.hyperbolic_loss_temperature)
+        scaled_exp = torch.exp((lca_stack - lca_max) / hyperbolic_loss_temperature)
         softmax_stack = scaled_exp / scaled_exp.sum(dim=1, keepdim=True)
 
         sim_stack = torch.stack((similarities[i, j], similarities[i, k], similarities[j, k]), dim=1)
@@ -292,15 +307,12 @@ class HyperbolicHCModel(AbstractModel):
             "evaluated_triplets": torch.tensor(triplets.shape[0], device=device),
         }
 
-    def compute_importance_sampling_loss(self, embeddings: torch.Tensor, importance_sample_size: int, similarities: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
+    def compute_importance_sampling_loss(self, embeddings: torch.Tensor, importance_sample_size: int, hyperbolic_loss_temperature: float, similarities: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
         """Compute hyperbolic loss via importance sampling."""
         n = embeddings.size(0)
         device = embeddings.device
+        num_all_triplets = n * (n - 1) * (n - 2) // 6
         total_unordered_triplet_combinations = n * (n - 1) * (n - 2)
-
-        if self.hparams.similarity_pruning.version not in [None, 'None']:
-            print("Warning: Similarity pruning is not applied in the importance sampling loss estimator. "
-                  "This may lead to a bias in the loss estimate if pruning is enabled.")
 
         # Note: We compute all similarities since the odds of not sampling an index is vanishingly
         # small for minimum sample sizes larger than 1_000 triplets
@@ -312,176 +324,247 @@ class HyperbolicHCModel(AbstractModel):
         # Compute the pairwise min/max similarities
         triu_idx = torch.triu_indices(n, n, offset=1, device=device)
         upper_sims = similarities[triu_idx[0], triu_idx[1]]
-        min_sim = upper_sims.min()
-        max_sim = upper_sims.max()
-        max_min_delta = max_sim - min_sim
+        min_sim = upper_sims.min().detach()
+        max_sim = upper_sims.max().detach()
+        max_min_delta = (max_sim - min_sim).detach()
+        self.metrics.setdefault("sampling/similarities_min", []).append(min_sim)
+        self.metrics.setdefault("sampling/similarities_max", []).append(max_sim)
+        self.metrics.setdefault("sampling/similarities_max_min_delta", []).append(max_min_delta)
 
         # Compute the LCA depths
         if self.hparams.lca_version not in ["ours", "chami"]:
             raise ValueError(f"Invalid LCA version: {self.hparams.lca_version}")
         lcas = self.compute_lca_depth(embeddings, version=self.hparams.lca_version)
 
-        if max_min_delta < 1e-15:
-            print("Warning: Similarity range is very small. Embeddings have collapsed.")
-            max_min_delta = 1e-15
+        # Compute the minimum required sample size for importance/power_weighted sampling
+        eps = self.hparams.sampling_eps
+        delta = self.hparams.sampling_delta
+        alpha = self.hparams.sampling_alpha
 
-        use_uniform_sampling_instead_of_importance_sampling = False
-        if use_uniform_sampling_instead_of_importance_sampling:
-            # Sample 1_000 triplets uniformly at random with replacement
-            sample_size = 10
-            sampled_indices = torch.randint(0, total_unordered_triplet_combinations, (sample_size,), device=device)
-            accepted_trips = [self.decode_triplet_indices_from_flattened_indices(sampled_indices, n)]
-        else:
-            # Importance sampling loop
-            accepted_trips: list[torch.Tensor] = []
-            total_num_accepted = 0
-            total_sampled = 0
+        # Evaluate the full triplet set when the sampling strategy requires at least all triplets
+        use_full_triplet_cost = False
+        if self.hparams.sampling_strategy in [None, "None"]:
+            use_full_triplet_cost = True
+        elif self.hparams.sampling_strategy == "importance":
+            use_full_triplet_cost = importance_sample_size >= num_all_triplets
+        elif self.hparams.sampling_strategy == "power_weighted":
+            # Dynamically compute the power_weighted minimum sample size with a O(1) lookup
+            power_weighted_sample_size = self.get_power_weighted_sample_size(similarities, max_min_delta.item())
+            use_full_triplet_cost = power_weighted_sample_size >= num_all_triplets
 
-            # Sample triplets in batches until we have accepted enough triplets for a low-variance estimate of the loss
-            for _ in range(50):
-                if total_num_accepted >= importance_sample_size:
-                    break
-                remaining_samples = importance_sample_size - total_num_accepted
-
-                # Compute the required sample size to have a high probability of accepting the required number of triplets
-                sample_size = min(int(remaining_samples / self.cached_acceptance_rate * 1.75), 200_000)
-
-                # Sample random triplets uniformly at random from the set of all possible triplets
-                sampled_indices = torch.randint(0, total_unordered_triplet_combinations, (sample_size,), device=device)
+        # Sample the triplets
+        with torch.no_grad():
+            if use_full_triplet_cost:
+                # Sample all triplets
+                all_indices = torch.arange(n, device=device)
+                triplets = torch.combinations(all_indices, r=3)
+            elif self.hparams.sampling_strategy == "uniform":
+                # Sample triplets uniformly at random with replacement
+                sampled_indices = torch.randint(0, total_unordered_triplet_combinations, (self.hparams.uniform_sample_size,), device=device)
                 triplets = self.decode_triplet_indices_from_flattened_indices(sampled_indices, n)
-                i, j, k = triplets[:, 0], triplets[:, 1], triplets[:, 2]
+            elif self.hparams.sampling_strategy == "importance":
+                # Sample triplets using importance sampling
+                accepted_triplets: list[torch.Tensor] = []
+                total_num_accepted = 0
+                total_num_sampled = 0
 
-                # Calculate the per-triplet spread for the sampled triplets
-                with torch.no_grad():
-                    pairwise_sums = torch.stack(
+                # Sample triplets in batches until enough triplets are accepted (rejection sampling)
+                for _ in range(50):
+                    if total_num_accepted >= importance_sample_size:
+                        break
+                    remaining_samples = importance_sample_size - total_num_accepted
+
+                    # Compute the required sample size to have a high probability of accepting the required number of triplets
+                    sample_size = min(int(remaining_samples / self.cached_acceptance_rate * 1.5), 200_000)
+
+                    # Sample random triplets uniformly at random from the set of all possible triplets
+                    sampled_indices = torch.randint(0, total_unordered_triplet_combinations, (sample_size,), device=device)
+                    triplets = self.decode_triplet_indices_from_flattened_indices(sampled_indices, n)
+                    i, j, k = triplets[:, 0], triplets[:, 1], triplets[:, 2]
+
+                    # Calculate the per-triplet spread for the sampled triplets
+                    pairwise_sums_stack = torch.stack(
                         (similarities[i, j] + similarities[i, k],
                         similarities[i, j] + similarities[j, k],
                         similarities[i, k] + similarities[j, k]),
                         dim=1,
                     )
-                    per_triplet_spread = pairwise_sums.max(dim=1).values - pairwise_sums.min(dim=1).values
+                    triplet_spread_stack = pairwise_sums_stack.max(dim=1).values - pairwise_sums_stack.min(dim=1).values
 
-                # Calculate the acceptance probability for the triplet candidates
-                acceptance_probability = (per_triplet_spread / max_min_delta).clamp(min=0.0, max=1.0)
+                    # Calculate the acceptance probability for the triplet candidates
+                    acceptance_probability = (triplet_spread_stack / max_min_delta).clamp(min=0.0, max=1.0)
 
-                # Accept/Reject the candidate triplet
-                mask = torch.rand(sample_size, device=device) <= acceptance_probability
-                accepted_indices = mask.nonzero(as_tuple=True)[0]
+                    # Accept/Reject the candidate triplet
+                    mask = torch.rand(sample_size, device=device) <= acceptance_probability
+                    accepted_indices = mask.nonzero(as_tuple=True)[0]
 
-                # Take only as many accepted triplets as needed to reach the target sample size for the loss estimate
-                num_accepted = min(accepted_indices.shape[0], remaining_samples)
-                if num_accepted > 0:
-                    accepted_trips.append(triplets[accepted_indices[:num_accepted]])
+                    # Take only as many accepted triplets as needed to reach the target sample size for the loss estimate
+                    num_accepted = min(accepted_indices.shape[0], remaining_samples)
+                    accepted_triplets.append(triplets[accepted_indices[:num_accepted]])
                     total_num_accepted += num_accepted
-                total_sampled += sample_size
+                    total_num_sampled += sample_size
 
                 # Update the acceptance rate cache for the next training step
-                self.cached_acceptance_rate = max(total_num_accepted / total_sampled, 0.01)
+                self.cached_acceptance_rate = max(total_num_accepted / total_num_sampled, 0.01)
+                triplets = torch.cat(accepted_triplets, dim=0)
+                self.metrics.setdefault("sampling/acceptance_rate", []).append(self.cached_acceptance_rate)
+            elif self.hparams.sampling_strategy == "power_weighted":
+                # Sample triplets using power-weighted sampling
+                accepted_triplets: list[torch.Tensor] = []
+                total_num_accepted = 0
+                total_num_sampled = 0
 
-        # Extract the accepted triplets and their corresponding indices
-        triplets = torch.cat(accepted_trips, dim=0)
+                # Sample triplets in batches until enough triplets are accepted (rejection sampling)
+                for _ in range(50):
+                    if total_num_accepted >= power_weighted_sample_size:
+                        break
+                    remaining_samples = power_weighted_sample_size - total_num_accepted
+
+                    # Compute the required sample size to have a high probability of accepting the required number of triplets
+                    sample_size = min(int(remaining_samples / self.cached_acceptance_rate * 1.5), 200_000)
+
+                    # Sample random triplets uniformly at random from the set of all possible triplets
+                    sampled_indices = torch.randint(0, total_unordered_triplet_combinations, (sample_size,), device=device)
+                    triplets = self.decode_triplet_indices_from_flattened_indices(sampled_indices, n)
+                    i, j, k = triplets[:, 0], triplets[:, 1], triplets[:, 2]
+
+                    # Calculate the per-triplet spread for the sampled triplets
+                    pairwise_sums_stack = torch.stack(
+                        (similarities[i, j] + similarities[i, k],
+                        similarities[i, j] + similarities[j, k],
+                        similarities[i, k] + similarities[j, k]),
+                        dim=1,
+                    )
+                    triplet_spread_stack = pairwise_sums_stack.max(dim=1).values - pairwise_sums_stack.min(dim=1).values
+
+                    # Calculate the acceptance probability for the triplet candidates
+                    base_prob = (triplet_spread_stack / max_min_delta).clamp(min=0.0, max=1.0)
+                    acceptance_probability = base_prob ** alpha
+
+                    # Accept/Reject the candidate triplet
+                    mask = torch.rand(sample_size, device=device) <= acceptance_probability
+                    accepted_indices = mask.nonzero(as_tuple=True)[0]
+
+                    # Take only as many accepted triplets as needed to reach the target sample size for the loss estimate
+                    num_accepted = min(accepted_indices.shape[0], remaining_samples)
+                    accepted_triplets.append(triplets[accepted_indices[:num_accepted]])
+                    total_num_accepted += num_accepted
+                    total_num_sampled += sample_size
+
+                # Update the acceptance rate cache for the next training step
+                self.cached_acceptance_rate = max(total_num_accepted / total_num_sampled, 0.01)
+                triplets = torch.cat(accepted_triplets, dim=0)
+                self.metrics.setdefault("sampling/acceptance_rate", []).append(self.cached_acceptance_rate)
+            else:
+                raise ValueError(f"Invalid sampling method: {self.hparams.sampling_strategy}")
+
+        # Log the number of triplets and extract the indices
+        self.metrics.setdefault("sampling/evaluated_triplets", []).append(triplets.shape[0])
         i, j, k = triplets[:, 0], triplets[:, 1], triplets[:, 2]
 
-        if use_uniform_sampling_instead_of_importance_sampling:
-            # Compute the triplet loss N_t
-            lca_stack = torch.stack((lcas[i, j], lcas[i, k], lcas[j, k]), dim=1)
-            lca_max = lca_stack.max(dim=1, keepdim=True).values
-            scaled_exp = torch.exp((lca_stack - lca_max) / self.hparams.hyperbolic_loss_temperature)
-            softmax_stack = scaled_exp / scaled_exp.sum(dim=1, keepdim=True)
+        # Compute the triplet cost N_t
+        lca_stack = torch.stack((lcas[i, j], lcas[i, k], lcas[j, k]), dim=1)
+        lca_max = lca_stack.max(dim=1, keepdim=True).values
+        scaled_exp = torch.exp((lca_stack - lca_max) / hyperbolic_loss_temperature)
+        softmax_stack = scaled_exp / scaled_exp.sum(dim=1, keepdim=True)
 
-            sim_stack = torch.stack((similarities[i, j], similarities[i, k], similarities[j, k]), dim=1)
-            triplet_cost = torch.sum(sim_stack * (1 - softmax_stack))
+        sim_stack = torch.stack((similarities[i, j], similarities[i, k], similarities[j, k]), dim=1)
+        triplet_cost_stack = torch.sum(sim_stack * (1 - softmax_stack), dim=1)
 
-            # Compute the min/max triplet cost for normalization
-            pairwise_sums = torch.stack(
-                (similarities[i, j] + similarities[i, k],
-                similarities[i, j] + similarities[j, k],
-                similarities[i, k] + similarities[j, k]),
-                dim=1,
-            )
-            triplet_cost_min = pairwise_sums.min(dim=1).values.sum()
-            triplet_cost_max = pairwise_sums.max(dim=1).values.sum()
-            similarities_sum = similarities.sum() - n  # off-diagonal sum
+        # Compute the per-triplet min/max triplet cost for normalization
+        pairwise_sums_stack = torch.stack(
+            (similarities[i, j] + similarities[i, k],
+            similarities[i, j] + similarities[j, k],
+            similarities[i, k] + similarities[j, k]),
+            dim=1,
+        )
+        triplet_cost_min_stack = pairwise_sums_stack.min(dim=1).values
+        triplet_cost_max_stack = pairwise_sums_stack.max(dim=1).values
+
+        # Compute the hyperbolic loss
+        if self.hparams.sampling_strategy in [None, "None", "uniform"]:
+            triplet_cost_sum = triplet_cost_stack.sum() # sum of N_t
+            triplet_cost_min_sum = triplet_cost_min_stack.sum() # sum of N_t^min
+            triplet_cost_max_sum = triplet_cost_max_stack.sum() # sum of N_t^max
+            similarities_sum = similarities.sum() - n  # sum of all off-diagonal elements
 
             # Loss variants
-            normalized_cost = (triplet_cost - triplet_cost_min) / (triplet_cost_max - triplet_cost_min).clamp(min=1e-15)
-            wang_cost = triplet_cost / triplet_cost_min.clamp(min=1e-15)
-            chami_cost = triplet_cost + similarities_sum
-        else:
-            # Compute the triplet loss N_t
+            normalized_cost = (triplet_cost_sum - triplet_cost_min_sum) / (triplet_cost_max_sum - triplet_cost_min_sum)
+            wang_cost = (triplet_cost_sum / triplet_cost_min_sum) - 1.0
+            chami_cost = triplet_cost_sum + similarities_sum
+
+            results = {
+                "wang_cost": wang_cost,
+                "normalized_cost": normalized_cost,
+                "chami_cost": chami_cost,
+                "triplet_cost_sum": triplet_cost_sum,
+                "triplet_cost_min_sum": triplet_cost_min_sum,
+                "triplet_cost_max_sum": triplet_cost_max_sum,
+                "similarities_sum": similarities_sum,
+            }
+        elif self.hparams.sampling_strategy == "importance":
+            triplet_cost_range_stack = (triplet_cost_max_stack - triplet_cost_min_stack).clamp(min=1e-15)
+            # Detach the denominator gradient such that the optimizer does not focus on maximizing the triplet spread
+            triplet_cost_range_stack = triplet_cost_range_stack.detach()
+            X_t = (triplet_cost_stack - triplet_cost_min_stack) / triplet_cost_range_stack
+            X_t = torch.where(triplet_cost_range_stack > 1e-15, X_t, torch.zeros_like(X_t))
+            normalized_cost = X_t.mean()
+            results = {"normalized_cost": normalized_cost}
+        elif self.hparams.sampling_strategy == "power_weighted":
+            triplet_cost_range_stack = (triplet_cost_max_stack - triplet_cost_min_stack).clamp(min=1e-15)
+
+            # Apply the bias correction to numerator and denominator
+            num_terms = (triplet_cost_stack - triplet_cost_min_stack) * (triplet_cost_range_stack ** -alpha)
+            denom_terms = triplet_cost_range_stack ** (1 - alpha)
+
+            # Zero out numerically unstable triplets where spread is basically zero
+            valid_mask = triplet_cost_range_stack > 1e-15
+            num_terms = torch.where(valid_mask, num_terms, torch.zeros_like(num_terms))
+            denom_terms = torch.where(valid_mask, denom_terms, torch.zeros_like(denom_terms))
+
+            normalized_cost = num_terms.sum() / denom_terms.sum()
+            results = {"normalized_cost": normalized_cost}
+
+        # Log the individual costs and cost components
+        for key in results.keys():
+            self.metrics.setdefault(f"clustering/{key}", []).append(results[key].detach().item())
+
+        # Compute and log the approximation quality
+        if self.hparams.log_approximation_diff and not self.hparams.sampling_strategy in [None, "None"] and self.hparams.loss_version in ["normalized", "power_weighted"]:
+            # Compute the full cost
+            with torch.no_grad():
+                all_indices = torch.arange(n, device=device)
+                triplets = torch.combinations(all_indices, r=3)
+            i, j, k = triplets[:, 0], triplets[:, 1], triplets[:, 2]
+
             lca_stack = torch.stack((lcas[i, j], lcas[i, k], lcas[j, k]), dim=1)
             lca_max = lca_stack.max(dim=1, keepdim=True).values
-            scaled_exp = torch.exp((lca_stack - lca_max) / self.hparams.hyperbolic_loss_temperature)
+            scaled_exp = torch.exp((lca_stack - lca_max) / hyperbolic_loss_temperature)
             softmax_stack = scaled_exp / scaled_exp.sum(dim=1, keepdim=True)
 
             sim_stack = torch.stack((similarities[i, j], similarities[i, k], similarities[j, k]), dim=1)
-            per_triplet_cost = torch.sum(sim_stack * (1 - softmax_stack), dim=1)
+            triplet_cost_sum = torch.sum(sim_stack * (1 - softmax_stack), dim=1).sum() # sum of N_t
 
-            # Compute the per-triplet min/max triplet cost for normalization
-            pairwise_sums = torch.stack(
+            pairwise_sums_stack = torch.stack(
                 (similarities[i, j] + similarities[i, k],
                 similarities[i, j] + similarities[j, k],
                 similarities[i, k] + similarities[j, k]),
                 dim=1,
             )
-            per_triplet_cost_min = pairwise_sums.min(dim=1).values
-            per_triplet_cost_max = pairwise_sums.max(dim=1).values
+            triplet_cost_min_sum = pairwise_sums_stack.min(dim=1).values.sum() # sum of N_t^min
+            triplet_cost_max_sum = pairwise_sums_stack.max(dim=1).values.sum() # sum of N_t^max
 
-            # Compute the normalized cost estimator (=X_t)
-            per_triplet_range = (per_triplet_cost_max - per_triplet_cost_min).clamp(min=1e-15)
-            X_t = (per_triplet_cost - per_triplet_cost_min) / per_triplet_range.detach() ## fix denom gradient
-            X_t = torch.where(per_triplet_range > 1e-15, X_t, torch.zeros_like(X_t))
-            normalized_cost = X_t.mean()
+            true_normalized_cost = (triplet_cost_sum - triplet_cost_min_sum) / (triplet_cost_max_sum - triplet_cost_min_sum)
+            self.metrics.setdefault("sampling/true_normalized_cost", []).append(true_normalized_cost.detach().item())
 
-        if self.hparams.log_approximation_diff:
-            # Compute the full cost
-            true_results = self.compute_full_loss(embeddings, similarities)
             # Log the approximation error
-            self.metrics.setdefault("clustering-importance_sampling/approximation_error_normalized", []).append((normalized_cost - true_results["normalized_cost"]).abs().detach().item())
-            self.metrics.setdefault("clustering-importance_sampling/normalized_cost", []).append(normalized_cost.detach().item())
-            self.metrics.setdefault("clustering-importance_sampling/true_normalized_cost", []).append(true_results["normalized_cost"].detach().item())
+            self.metrics.setdefault("sampling/normalized_cost_approximation_diff", []).append((results["normalized_cost"] - true_normalized_cost).abs().detach().item())
 
-            if use_uniform_sampling_instead_of_importance_sampling:
-                self.metrics.setdefault("clustering-importance_sampling/approximation_error_wang", []).append((wang_cost - true_results["wang_cost"]).abs().detach().item())
-                self.metrics.setdefault("clustering-importance_sampling/wang_cost", []).append(wang_cost.detach().item())
-                self.metrics.setdefault("clustering-importance_sampling/true_wang_cost", []).append(true_results["wang_cost"].detach().item())
-
-                self.metrics.setdefault("clustering-importance_sampling/approximation_error_triplet_cost", []).append((triplet_cost - true_results["triplet_cost"]).abs().detach().item())
-                self.metrics.setdefault("clustering-importance_sampling/triplet_cost", []).append(triplet_cost.detach().item())
-                self.metrics.setdefault("clustering-importance_sampling/true_triplet_cost", []).append(true_results["triplet_cost"].detach().item())
-
-            # Compute cosine similarity and the kullback-leibler divergence between gradients of importance-sampled and full loss
-            is_grad = torch.autograd.grad(normalized_cost, embeddings, retain_graph=True, create_graph=False)[0]
-            full_grad = torch.autograd.grad(true_results["normalized_cost"], embeddings, retain_graph=True, create_graph=False)[0]
-            gradient_cos_sim = F.cosine_similarity(is_grad.reshape(1, -1), full_grad.reshape(1, -1)).item()
-            self.metrics.setdefault("clustering-importance_sampling/gradient_cosine_similarity", []).append(gradient_cos_sim)
-            gradient_kl_div = F.kl_div(F.log_softmax(is_grad.reshape(1, -1), dim=1), F.softmax(full_grad.reshape(1, -1), dim=1), reduction='batchmean').item()
-            self.metrics.setdefault("clustering-importance_sampling/gradient_kl_divergence", []).append(gradient_kl_div)
-
-            if use_uniform_sampling_instead_of_importance_sampling:
-                is_grad = torch.autograd.grad(wang_cost, embeddings, retain_graph=True, create_graph=False)[0]
-                full_grad = torch.autograd.grad(true_results["wang_cost"], embeddings, retain_graph=True, create_graph=False)[0]
-                gradient_cos_sim = F.cosine_similarity(is_grad.reshape(1, -1), full_grad.reshape(1, -1)).item()
-                self.metrics.setdefault("clustering-importance_sampling/gradient_cosine_similarity_wang", []).append(gradient_cos_sim)
-                gradient_kl_div = F.kl_div(F.log_softmax(is_grad.reshape(1, -1), dim=1), F.softmax(full_grad.reshape(1, -1), dim=1), reduction='batchmean').item()
-                self.metrics.setdefault("clustering-importance_sampling/gradient_kl_divergence_wang", []).append(gradient_kl_div)
-
-                is_grad = torch.autograd.grad(triplet_cost, embeddings, retain_graph=True, create_graph=False)[0]
-                full_grad = torch.autograd.grad(true_results["triplet_cost"], embeddings, retain_graph=True, create_graph=False)[0]
-                gradient_cos_sim = F.cosine_similarity(is_grad.reshape(1, -1), full_grad.reshape(1, -1)).item()
-                self.metrics.setdefault("clustering-importance_sampling/gradient_cosine_similarity_triplet", []).append(gradient_cos_sim)
-                gradient_kl_div = F.kl_div(F.log_softmax(is_grad.reshape(1, -1), dim=1), F.softmax(full_grad.reshape(1, -1), dim=1), reduction='batchmean').item()
-                self.metrics.setdefault("clustering-importance_sampling/gradient_kl_divergence_triplet", []).append(gradient_kl_div)
-
-            # Log the cosine similarity of the last layer's gradients individually
-            is_grad = torch.autograd.grad(normalized_cost, self.hyperbolic_encoding_layer.parameters(), retain_graph=True, create_graph=False)
-            is_grad = torch.cat([g.reshape(-1) for g in is_grad])
-            full_grad = torch.autograd.grad(true_results["normalized_cost"], self.hyperbolic_encoding_layer.parameters(), retain_graph=True, create_graph=False)
-            full_grad = torch.cat([g.reshape(-1) for g in full_grad])
-            gradient_cos_sim = F.cosine_similarity(is_grad.reshape(1, -1), full_grad.reshape(1, -1)).item()
-            self.metrics.setdefault("clustering-importance_sampling/gradient_cosine_similarity_last_layer", []).append(gradient_cos_sim)
-            gradient_kl_div = F.kl_div(F.log_softmax(is_grad.reshape(1, -1), dim=1), F.softmax(full_grad.reshape(1, -1), dim=1), reduction='batchmean').item()
-            self.metrics.setdefault("clustering-importance_sampling/gradient_kl_divergence_last_layer", []).append(gradient_kl_div)
+            # Compute the cosine similarity between the loss gradients of sampling vs. all triplets (=full cost)
+            sampling_grad = torch.autograd.grad(results["normalized_cost"], embeddings, retain_graph=True, create_graph=False)[0]
+            full_grad = torch.autograd.grad(true_normalized_cost, embeddings, retain_graph=True, create_graph=False)[0]
+            gradient_cos_sim = F.cosine_similarity(sampling_grad.reshape(1, -1), full_grad.reshape(1, -1)).item()
+            self.metrics.setdefault("sampling/gradient_cosine_similarity", []).append(gradient_cos_sim)
 
         return {
             "normalized_cost": normalized_cost,
@@ -491,7 +574,7 @@ class HyperbolicHCModel(AbstractModel):
             "evaluated_triplets": torch.tensor(triplets.shape[0], device=device),
         }
 
-    def compute_hyperbolic_loss(self, embeddings: torch.Tensor, similarities: torch.Tensor | None = None) -> torch.Tensor:
+    def compute_hyperbolic_loss(self, embeddings: torch.Tensor, hyperbolic_loss_temperature: float, similarities: torch.Tensor | None = None) -> torch.Tensor:
         n = embeddings.size(0)
         num_all_triplets = n * (n - 1) * (n - 2) // 6
 
@@ -500,13 +583,15 @@ class HyperbolicHCModel(AbstractModel):
         delta = self.hparams.sampling_delta
         importance_sample_size = int(math.ceil((0.5 + 2/3 * eps) * math.log(2.0 / delta) / (eps ** 2)))
 
-        if (num_all_triplets <= 2 * importance_sample_size) or not self.hparams.use_importance_sampling:
+        use_full_triplet_cost = self.hparams.sampling_strategy in [None, "None"] or num_all_triplets <= importance_sample_size
+
+        if use_full_triplet_cost:
             if similarities is None:
                 # Compute the pairwise similarities from hyperbolic distances
                 distances = compute_pairwise_distances(embeddings, self.manifold)
                 similarities = torch.reciprocal(1 + distances)
             # Compute the full cost
-            results = self.compute_full_loss(embeddings, similarities)
+            results = self.compute_full_loss(embeddings, similarities, hyperbolic_loss_temperature)
             # Log the individual costs and cost components
             max_min_delta = results["triplet_cost_max"] - results["triplet_cost_min"]
             self.metrics.setdefault("clustering/max_min_delta", []).append(max_min_delta.detach().item())
@@ -524,7 +609,7 @@ class HyperbolicHCModel(AbstractModel):
                 raise ValueError(f"Invalid loss version: {self.hparams.loss_version}")
         else:
             # Approximate the true cost with importance sampling
-            results = self.compute_importance_sampling_loss(embeddings, importance_sample_size, similarities=similarities)
+            results = self.compute_importance_sampling_loss(embeddings, importance_sample_size, hyperbolic_loss_temperature, similarities=similarities)
 
             # Log the individual costs and cost components
             for key in results.keys():
@@ -571,12 +656,20 @@ class HyperbolicHCModel(AbstractModel):
         x_aug_2 = x_aug_2.to(dtype=get_dtype_from_precision(self.hparams.params_dtype))
         x = x.to(dtype=get_dtype_from_precision(self.hparams.params_dtype))
 
-        # Hyperbolic loss
         manifold_z = self.encode(x)
-
         if not torch.isfinite(manifold_z).all():
             print("Warning: Non-finite values detected in manifold_z embeddings.")
             exit()
+
+        # Hyperbolic loss
+        ## Compute the current hyperbolic loss temperature
+        if self.hparams.hyperbolic_loss_temperature_interval > 0:
+            hyperbolic_loss_temperature = self.hparams.hyperbolic_loss_start_temperature + (
+                self.hparams.hyperbolic_loss_end_temperature - self.hparams.hyperbolic_loss_start_temperature
+            ) * min(self.current_epoch / self.hparams.hyperbolic_loss_temperature_interval, 1.0)
+        else:
+            hyperbolic_loss_temperature = self.hparams.hyperbolic_loss_end_temperature
+        self.metrics["clustering/hyperbolic_loss_temperature"] = hyperbolic_loss_temperature
 
         # Optionally replace the similarity matrix with backbone SNN similarities.
         # The backbone features (before hyperbolic projection) carry richer semantic structure;
@@ -588,10 +681,10 @@ class HyperbolicHCModel(AbstractModel):
                 backbone_features = self.rms(backbone_features)  # type: ignore
             snn_similarities = self.compute_snn_similarities(backbone_features, k=self.hparams.snn_k)
 
-        hyperbolic_loss = self.compute_hyperbolic_loss(manifold_z, similarities=snn_similarities)
+        hyperbolic_loss = self.compute_hyperbolic_loss(manifold_z, hyperbolic_loss_temperature, similarities=snn_similarities)
         # Log the hyperbolic loss
         self.metrics.setdefault("clustering/hyperbolic_loss", []).append(hyperbolic_loss.detach().item())  # type: ignore
-        # Compute the current hyperbolic loss weight
+        ## Compute the current hyperbolic loss weight
         if self.hparams.hyperbolic_loss_weight_interval > 0:
             hyperbolic_loss_weight = self.hparams.hyperbolic_loss_start_weight + (
                 self.hparams.hyperbolic_loss_end_weight - self.hparams.hyperbolic_loss_start_weight
@@ -599,7 +692,7 @@ class HyperbolicHCModel(AbstractModel):
         else:
             hyperbolic_loss_weight = self.hparams.hyperbolic_loss_end_weight
         self.metrics["clustering/hyperbolic_loss_weight"] = hyperbolic_loss_weight
-        # Add the weighted reconstruction loss to the total loss
+        ## Add the weighted hyperbolic loss to the total loss
         total_loss = hyperbolic_loss_weight * hyperbolic_loss
 
         # Reconstruction loss
