@@ -62,6 +62,7 @@ wandb:
   tags:
     - imagenet
     - poincare
+    - sweep
 
 evaluation:
   use_wordnet_labels: true
