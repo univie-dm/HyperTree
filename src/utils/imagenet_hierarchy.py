@@ -141,8 +141,8 @@ def build_synset_list_from_imagenet_folder(
         if d.is_dir() and d.name.startswith('n')
     ])
     
-    if len(synsets) != 1000:
-        print(f"Warning: Found {len(synsets)} synsets, expected 1000")
+    if len(synsets) not in (200, 1000):
+        print(f"Warning: Found {len(synsets)} synsets, expected 200 (Tiny ImageNet) or 1000 (ImageNet)")
     
     # Save to file
     save_path_obj = Path(save_path)
@@ -280,8 +280,8 @@ def build_imagenet_hierarchy_file(
     # Also add any children that are not ImageNet classes (higher-level parents)
     intermediate_nodes.update(all_children - set(synset_to_idx.keys()))
     
-    # Assign IDs to intermediate nodes (starting from 1000)
-    next_idx = 1000
+    # Assign IDs to intermediate nodes (starting after the leaf classes)
+    next_idx = len(synset_to_idx)
     for synset in sorted(intermediate_nodes):
         if synset not in node_to_idx:
             node_to_idx[synset] = next_idx
@@ -576,6 +576,65 @@ def get_labels_at_hierarchy_level(
     return coarse_labels, current_mapping
 
 
+def get_hierarchy_node_names(
+    parent_child: Dict[int, List[int]],
+    leaf_names: Dict[int, str],
+    max_examples: int = 3,
+) -> Dict[int, str]:
+    """
+    Build human-readable names for all nodes in a hierarchy.
+
+    Leaf nodes use the provided ``leaf_names``.  Parent nodes are named by
+    listing up to ``max_examples`` representative leaf descendants (sorted
+    alphabetically), e.g. ``"apple/mushroom/orange/…(5)"``.
+
+    Works for both CIFAR-100 and ImageNet hierarchies.
+
+    Parameters
+    ----------
+    parent_child : Dict[int, List[int]]
+        Parent → children mapping.
+    leaf_names : Dict[int, str]
+        Mapping from leaf node ID to human-readable name.
+    max_examples : int
+        Maximum number of leaf example names to show for parent nodes.
+
+    Returns
+    -------
+    Dict[int, str]
+        Mapping from *every* node ID to a display name.
+    """
+    # Recursively collect leaf descendants.
+    _cache: Dict[int, List[int]] = {}
+
+    def _get_leaves(node: int) -> List[int]:
+        if node in _cache:
+            return _cache[node]
+        if node not in parent_child:
+            _cache[node] = [node]
+            return [node]
+        leaves: List[int] = []
+        for child in parent_child[node]:
+            leaves.extend(_get_leaves(child))
+        _cache[node] = leaves
+        return leaves
+
+    node_names: Dict[int, str] = dict(leaf_names)
+    for parent in parent_child:
+        leaves = _get_leaves(parent)
+        names_sorted = sorted({leaf_names[l] for l in leaves if l in leaf_names})
+        if not names_sorted:
+            node_names[parent] = str(parent)
+        elif len(names_sorted) <= max_examples:
+            node_names[parent] = "/".join(names_sorted)
+        else:
+            node_names[parent] = (
+                "/".join(names_sorted[:max_examples])
+                + f"/\u2026({len(names_sorted)})"
+            )
+    return node_names
+
+
 def print_imagenet_hierarchy_statistics(parent_child: Dict[int, List[int]]) -> None:
     """
     Print statistics about the ImageNet WordNet hierarchy.
@@ -590,9 +649,12 @@ def print_imagenet_hierarchy_statistics(parent_child: Dict[int, List[int]]) -> N
     for children in parent_child.values():
         all_nodes.update(children)
     
-    # Find leaf nodes (ImageNet classes: 0-999)
-    leaf_nodes = [n for n in all_nodes if n < 1000]
-    parent_nodes = [n for n in all_nodes if n >= 1000]
+    # Find leaf nodes (nodes that never appear as parents)
+    all_children = set()
+    for children in parent_child.values():
+        all_children.update(children)
+    leaf_nodes = [n for n in all_children if n not in parent_child]
+    parent_nodes = list(parent_child.keys())
     
     print("ImageNet WordNet Hierarchy Statistics:")
     print(f"  Total nodes: {len(all_nodes)}")
@@ -607,6 +669,93 @@ def print_imagenet_hierarchy_statistics(parent_child: Dict[int, List[int]]) -> N
     print(f"  Avg children per parent: {np.mean(children_counts):.2f}")
     print(f"  Max children per parent: {max(children_counts)}")
     print(f"  Min children per parent: {min(children_counts)}")
+
+
+def setup_tiny_imagenet_hierarchy(
+    tiny_imagenet_dir: str,
+    output_path: Optional[str] = None,
+    force_download: bool = False,
+) -> str:
+    """
+    Set up the WordNet hierarchy file for Tiny ImageNet (200-class subset).
+
+    Downloads the full ImageNet WordNet hierarchy, then filters it to only
+    include the 200 Tiny ImageNet leaf classes and their ancestors.
+
+    Parameters
+    ----------
+    tiny_imagenet_dir : str
+        Root directory of Tiny ImageNet dataset (containing wnids.txt or train/).
+    output_path : Optional[str]
+        Path for the output hierarchy file. If None, uses default location.
+    force_download : bool
+        If True, re-download/rebuild even if the output file exists.
+
+    Returns
+    -------
+    str
+        Path to the hierarchy file.
+    """
+    if output_path is None:
+        output_path = "./data/tiny_imagenet_wordnet_hierarchy.txt"
+
+    if Path(output_path).exists() and not force_download:
+        return output_path
+
+    # Read the 200 synset IDs
+    tiny_dir = Path(tiny_imagenet_dir)
+    wnids_file = tiny_dir / "wnids.txt"
+    if wnids_file.exists():
+        with open(wnids_file) as f:
+            synsets = sorted(line.strip() for line in f if line.strip())
+    else:
+        synsets = sorted(
+            d.name for d in (tiny_dir / "train").iterdir()
+            if d.is_dir() and d.name.startswith("n")
+        )
+
+    # Build synset-to-index mapping for the 200 classes
+    synset_to_idx = {s: i for i, s in enumerate(synsets)}
+
+    # Download the full WordNet hierarchy
+    hierarchy_raw_path = "./data/imagenet_wordnet_hierarchy_raw.txt"
+    if not Path(hierarchy_raw_path).exists() or force_download:
+        print("Downloading ImageNet WordNet hierarchy from cvjena/semantic-embeddings...")
+        download_imagenet_wordnet_hierarchy(hierarchy_raw_path)
+
+    synset_hierarchy = load_synset_hierarchy(hierarchy_raw_path)
+
+    # Filter hierarchy to only include ancestors of the 200 leaf synsets.
+    # Walk up from each leaf to find all relevant ancestor edges.
+    # First, build child -> parent mapping from the full hierarchy
+    child_to_parent_full: Dict[str, str] = {}
+    for parent, children in synset_hierarchy.items():
+        for child in children:
+            child_to_parent_full[child] = parent
+
+    # Find all ancestor synsets by walking up from each leaf
+    relevant_synsets = set(synsets)
+    for synset in synsets:
+        current = synset
+        while current in child_to_parent_full:
+            parent = child_to_parent_full[current]
+            relevant_synsets.add(parent)
+            current = parent
+
+    # Filter the hierarchy to only keep edges where both endpoints are relevant
+    filtered_hierarchy: Dict[str, List[str]] = {}
+    for parent, children in synset_hierarchy.items():
+        if parent not in relevant_synsets:
+            continue
+        filtered_children = [c for c in children if c in relevant_synsets]
+        if filtered_children:
+            filtered_hierarchy[parent] = filtered_children
+
+    # Build the numeric hierarchy file
+    print(f"Building Tiny ImageNet hierarchy file ({len(synsets)} leaf classes): {output_path}")
+    build_imagenet_hierarchy_file(synset_to_idx, filtered_hierarchy, output_path)
+
+    return output_path
 
 
 # Allow running as a script to set up the hierarchy

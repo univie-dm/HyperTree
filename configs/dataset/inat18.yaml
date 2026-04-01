@@ -1,0 +1,10 @@
+name: 'inat18'
+subset: 'train'
+data_dir: 'data/inat18'
+resize: 224
+channels: 3
+selected_classes:
+
+# Enable checkpointing due to long training times
+pretraining:
+  enable_checkpointing: True

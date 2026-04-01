@@ -109,6 +109,9 @@ class HyperbolicResNet(AbstractModel):
             # Overwrite the first convolutional layer and maxpooling layer
             self.encoder.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
             self.encoder.maxpool = nn.Identity()  # type: ignore
+        elif self.hparams.input_size == 64:
+            print("Modifying ResNet encoder for 64x64 images (removing maxpool).", flush=True)
+            self.encoder.maxpool = nn.Identity()  # type: ignore
 
         if self.hparams.load_supervised_weights:
             for param in self.encoder.parameters():

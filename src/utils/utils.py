@@ -15,6 +15,7 @@ from src.models import (
     HyperbolicAE,
     HyperbolicHCModel,
     HyperbolicResNet,
+    DINOHyperbolicResNet,
 )
 
 
@@ -72,6 +73,7 @@ def get_datamodule(
         input_dim = cfg.dataset.resize * cfg.dataset.resize * cfg.dataset.channels
         is_image = True
     elif hasattr(cfg.dataset, "channels") and cfg.dataset.channels == 3:
+        augmentation = cfg.pretraining.get("augmentation", "byol") if stage == "pretrain" else "byol"
         datamodule = ColorDataModule(
             dataset_name=cfg.dataset.name,
             data_dir=cfg.dataset.data_dir,
@@ -81,6 +83,9 @@ def get_datamodule(
             num_workers=cfg.experiment.num_workers,
             selected_classes=cfg.dataset.get("selected_classes", None),
             precision=cfg.architecture.precision,
+            augmentation=augmentation,
+            n_local_crops=cfg.pretraining.get("n_local_crops", 6),
+            local_crop_size=cfg.pretraining.get("local_crop_size", 96),
         )
         input_dim = cfg.dataset.resize * cfg.dataset.resize * cfg.dataset.channels
         is_image = True
@@ -91,10 +96,19 @@ def get_datamodule(
 
 
 def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[HyperbolicAE, HyperbolicResNet]:
-    if (os.path.exists(f"data/models/{get_model_path(cfg)}.pt") and not cfg.pretraining.overwrite):
-        model = torch.load(f"data/models/{get_model_path(cfg)}.pt", weights_only=False)
-        print("Loaded model from {}".format(f"data/models/{get_model_path(cfg)}.pt"))
-    elif cfg.architecture.model_type == "feedforward":
+    model_path = f"data/models/{get_model_path(cfg)}.pt"
+    if os.path.exists(model_path) and not cfg.pretraining.overwrite:
+        try:
+            saved = torch.load(model_path, weights_only=False)
+            if not isinstance(saved, dict):
+                print(f"Loaded model from {model_path}")
+                return saved
+            # If it's a state dict, fall through and build a fresh model
+            # (train.py will load the state dict)
+        except RuntimeError:
+            print(f"Warning: corrupted model file {model_path}, removing and retraining")
+            os.remove(model_path)
+    if cfg.architecture.model_type == "feedforward":
         model = HyperbolicAE(
             # Architecture
             input_dim=input_dim,
@@ -123,6 +137,56 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             smoothing_factor=cfg.architecture.hyperbolic_smoothing,
             hyperboloid_layer_learnable_scale=cfg.architecture.hyperboloid_layer_learnable_scale,
             FHCNN_normalize=cfg.architecture.FHCNN_normalize,
+        )
+    elif cfg.pretraining.get("method", "contrastive") == "dino" and \
+         cfg.architecture.model_type in ["resnet18", "resnet34", "resnet50", "resnet101", "resnet152"]:
+        dino_cfg = cfg.pretraining.get("dino", {})
+        model = DINOHyperbolicResNet(
+            # DINO-specific parameters
+            dino_out_dim=dino_cfg.get("out_dim", 65536),
+            dino_hidden_dim=dino_cfg.get("hidden_dim", 2048),
+            dino_bottleneck_dim=dino_cfg.get("bottleneck_dim", 256),
+            teacher_momentum_start=dino_cfg.get("teacher_momentum_start", 0.996),
+            teacher_momentum_end=dino_cfg.get("teacher_momentum_end", 1.0),
+            teacher_temperature=dino_cfg.get("teacher_temperature", 0.04),
+            student_temperature=dino_cfg.get("student_temperature", 0.1),
+            center_momentum=dino_cfg.get("center_momentum", 0.9),
+            n_local_crops=cfg.pretraining.get("n_local_crops", 6),
+            warmup_teacher_temp=dino_cfg.get("warmup_teacher_temp", 0.04),
+            warmup_teacher_temp_epochs=dino_cfg.get("warmup_teacher_temp_epochs", 30),
+            max_epochs=cfg.pretraining.epochs,
+            # Architecture
+            model_type=cfg.architecture.model_type,
+            params_dtype=cfg.architecture.precision,
+            activation_function=cfg.architecture.activation_function,
+            feature_scaling=cfg.architecture.feature_scaling,
+            hyperbolic_encoding=cfg.architecture.hyperbolic_encoding,
+            latent_dim=cfg.architecture.latent_dim,
+            manifold_name=cfg.architecture.manifold_name,
+            manifold_precision=cfg.architecture.manifold_precision,
+            curvature_magnitude=cfg.architecture.curvature_magnitude,
+            hyperbolic_decoding=cfg.architecture.hyperbolic_decoding,
+            # Optimizer
+            optimizer_name=cfg.experiment.optimizer,
+            learning_rate=cfg.pretraining.learning_rate,
+            weight_decay=cfg.pretraining.weight_decay,
+            lr_scheduler_params=cfg.pretraining.get("lr_scheduler", None),
+            # Evaluation & Logging
+            stage="pretrain",
+            global_epoch=0,
+            log_interval=cfg.experiment.log_interval,
+            evaluation_metrics=cfg.evaluation_metrics,
+            # Layer params
+            clamping_factor=cfg.architecture.hyperbolic_clamping,
+            smoothing_factor=cfg.architecture.hyperbolic_smoothing,
+            hyperboloid_layer_learnable_scale=cfg.architecture.hyperboloid_layer_learnable_scale,
+            FHCNN_normalize=cfg.architecture.FHCNN_normalize,
+            # ResNet params
+            projection_layer_dims=cfg.architecture.projection_layer_dims,
+            input_size=cfg.dataset.resize,
+            contrastive_loss_enabled=cfg.pretraining.contrastive_loss.enabled,
+            contrastive_weight=cfg.pretraining.contrastive_loss.weight,
+            contrastive_temperature=cfg.pretraining.contrastive_loss.temperature,
         )
     elif cfg.architecture.model_type in ["resnet18", "resnet34", "resnet50", "resnet101", "resnet152"]:
         model = HyperbolicResNet(

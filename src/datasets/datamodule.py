@@ -1,4 +1,6 @@
 import argparse
+import os
+from pathlib import Path
 import torch
 import pytorch_lightning as pl
 import numpy as np
@@ -6,8 +8,88 @@ from sklearn.datasets import load_iris
 from sklearn.preprocessing import StandardScaler
 from torchvision import datasets
 from torchvision.transforms import v2 as transforms
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, DistributedSampler
 from typing import Literal, Optional, Dict, Tuple
+
+
+class DINOTransform:
+    """
+    DINO-style multi-crop augmentation: 2 global crops (full resolution) + N local crops (smaller).
+    Teacher sees only global crops; student sees all crops.
+    Returns: (global1, global2, local1, ..., localN)
+    """
+
+    def __init__(
+        self,
+        dataset_name: str,
+        normalize_fn: transforms.Normalize,
+        resize: int = 224,
+        precision: torch.dtype = torch.float32,
+        n_local_crops: int = 6,
+        local_crop_size: int = 96,
+        global_scale: tuple = (0.4, 1.0),
+        local_scale: tuple = (0.05, 0.4),
+    ):
+        self.n_local_crops = n_local_crops
+
+        # Global crop augmentations (stronger)
+        self.global_transform1 = transforms.Compose([
+            transforms.RandomResizedCrop(
+                size=(resize, resize), scale=global_scale, antialias=True
+            ),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomApply([
+                transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)
+            ], p=0.8),
+            transforms.RandomGrayscale(p=0.2),
+            transforms.RandomApply([
+                transforms.GaussianBlur(kernel_size=23, sigma=(0.1, 2.0))
+            ], p=1.0),  # Always blur first global crop
+            transforms.ToImage(),
+            transforms.ToDtype(precision, scale=True),
+            normalize_fn,
+        ])
+        self.global_transform2 = transforms.Compose([
+            transforms.RandomResizedCrop(
+                size=(resize, resize), scale=global_scale, antialias=True
+            ),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomApply([
+                transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)
+            ], p=0.8),
+            transforms.RandomGrayscale(p=0.2),
+            transforms.RandomApply([
+                transforms.GaussianBlur(kernel_size=23, sigma=(0.1, 2.0))
+            ], p=0.1),
+            transforms.RandomSolarize(threshold=0.5, p=0.2),
+            transforms.ToImage(),
+            transforms.ToDtype(precision, scale=True),
+            normalize_fn,
+        ])
+
+        # Local crop augmentations (smaller crops, lighter augmentation)
+        self.local_transform = transforms.Compose([
+            transforms.RandomResizedCrop(
+                size=(local_crop_size, local_crop_size), scale=local_scale, antialias=True
+            ),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomApply([
+                transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)
+            ], p=0.8),
+            transforms.RandomGrayscale(p=0.2),
+            transforms.RandomApply([
+                transforms.GaussianBlur(kernel_size=23 if dataset_name in ("imagenet", "inat18") else 3, sigma=(0.1, 2.0))
+            ], p=0.5),
+            transforms.ToImage(),
+            transforms.ToDtype(precision, scale=True),
+            normalize_fn,
+        ])
+
+    def __call__(self, img):
+        global1 = self.global_transform1(img)
+        global2 = self.global_transform2(img)
+        locals_ = [self.local_transform(img) for _ in range(self.n_local_crops)]
+        return (global1, global2, *locals_)
 
 
 class BYOLTransform:
@@ -22,10 +104,16 @@ class BYOLTransform:
         resize: int = 32,
         precision: torch.dtype = torch.float32,
     ):
-        if dataset_name == "imagenet":
+        if dataset_name in ("imagenet", "inat18"):
             gaussian_blur = [
                 transforms.RandomApply(
                     [transforms.GaussianBlur(kernel_size=23, sigma=(0.1, 2.0))], p=0.1
+                )
+            ]
+        elif dataset_name == "tiny_imagenet":
+            gaussian_blur = [
+                transforms.RandomApply(
+                    [transforms.GaussianBlur(kernel_size=7, sigma=(0.1, 2.0))], p=0.1
                 )
             ]
         else:
@@ -114,7 +202,11 @@ class MultiViewDataset(torch.utils.data.Dataset):
         img, label = self.dataset[idx]
         base_img = self.base_transform(img)
 
-        if isinstance(self.aug_transform, BYOLTransform):
+        if isinstance(self.aug_transform, DINOTransform):
+            crops = self.aug_transform(img)
+            # Return: (global1, global2, base_img, label, local1, ..., localN)
+            return crops[0], crops[1], base_img, label, *crops[2:]
+        elif isinstance(self.aug_transform, BYOLTransform):
             aug_img_1, aug_img_2 = self.aug_transform(img)
         else:
             # For non-BYOL transforms, use the same augmentation twice
@@ -131,7 +223,7 @@ class ColorDataModule(pl.LightningDataModule):
     def __init__(
         self,
         dataset_name: Literal[
-            "cifar10", "cifar100", "cifar100_20", "gtsrb", "imagenet"
+            "cifar10", "cifar100", "cifar100_20", "gtsrb", "imagenet", "inat18", "tiny_imagenet"
         ] = "cifar10",
         data_dir: str = "./data",
         batch_size: int = 256,
@@ -140,6 +232,9 @@ class ColorDataModule(pl.LightningDataModule):
         num_workers: int = 1,
         selected_classes: Optional[list] = None,
         precision: str = "float32",
+        augmentation: str = "byol",  # 'byol' or 'dino'
+        n_local_crops: int = 6,
+        local_crop_size: int = 96,
     ):
         super().__init__()
         self.hparams: argparse.Namespace
@@ -169,7 +264,7 @@ class ColorDataModule(pl.LightningDataModule):
         )
 
     def setup(self, stage: Optional[str] = None) -> None:
-        dataset_class = self.dataset_map[self.hparams.dataset_name]
+        dataset_class = self.dataset_map.get(self.hparams.dataset_name)
         is_cifar100_20 = self.hparams.dataset_name == "cifar100_20"
 
         # --- Base Datasets ---
@@ -187,6 +282,17 @@ class ColorDataModule(pl.LightningDataModule):
             base_test = dataset_class(
                 self.hparams.data_dir, split="val", transform=None
             )
+        elif self.hparams.dataset_name == "inat18":
+            base_train = datasets.ImageFolder(
+                os.path.join(self.hparams.data_dir, "train"), transform=None
+            )
+            base_test = datasets.ImageFolder(
+                os.path.join(self.hparams.data_dir, "val"), transform=None
+            )
+        elif self.hparams.dataset_name == "tiny_imagenet":
+            from src.datasets.tiny_imagenet import TinyImageNet
+            base_train = TinyImageNet(self.hparams.data_dir, split="train", transform=None)
+            base_test = TinyImageNet(self.hparams.data_dir, split="val", transform=None)
         else:
             base_train = dataset_class(
                 self.hparams.data_dir, train=True, transform=None, download=True
@@ -202,7 +308,7 @@ class ColorDataModule(pl.LightningDataModule):
         # so resize to self.hparams.resize if provided, otherwise default to 224.
         if self.hparams.dataset_name == "gtsrb":
             temp_transform_list.append(transforms.Resize((32, 32), antialias=True))
-        elif self.hparams.dataset_name == "imagenet":
+        elif self.hparams.dataset_name in ("imagenet", "inat18", "tiny_imagenet"):
             resize_size = self.hparams.resize if self.hparams.resize else 224
             temp_transform_list.append(
                 transforms.Resize((resize_size, resize_size), antialias=True)
@@ -217,6 +323,13 @@ class ColorDataModule(pl.LightningDataModule):
             temp_dataset = dataset_class(
                 self.hparams.data_dir, split="train", transform=temp_transform
             )
+        elif self.hparams.dataset_name == "inat18":
+            temp_dataset = datasets.ImageFolder(
+                os.path.join(self.hparams.data_dir, "train"), transform=temp_transform
+            )
+        elif self.hparams.dataset_name == "tiny_imagenet":
+            from src.datasets.tiny_imagenet import TinyImageNet
+            temp_dataset = TinyImageNet(self.hparams.data_dir, split="train", transform=temp_transform)
         elif self.hparams.dataset_name == "gtsrb":
             # GTSRB uses `split` and supports download
             temp_dataset = dataset_class(
@@ -235,7 +348,7 @@ class ColorDataModule(pl.LightningDataModule):
             )
 
         # Use standard ImageNet normalization stats to avoid slow data loading
-        if self.hparams.dataset_name == "imagenet":
+        if self.hparams.dataset_name in ("imagenet", "inat18", "tiny_imagenet"):
             normalize_fn = transforms.Normalize(
                 mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
             )
@@ -263,12 +376,22 @@ class ColorDataModule(pl.LightningDataModule):
         base_transform = transforms.Compose(transform_list)
 
         # Always create augmentation transforms - let the dataset decide what to use
-        aug_transform = BYOLTransform(
-            dataset_name=self.hparams.dataset_name,
-            normalize_fn=normalize_fn,
-            resize=self.hparams.resize or 32,
-            precision=self.precision,
-        )
+        if self.hparams.augmentation == "dino":
+            aug_transform = DINOTransform(
+                dataset_name=self.hparams.dataset_name,
+                normalize_fn=normalize_fn,
+                resize=self.hparams.resize or 224,
+                precision=self.precision,
+                n_local_crops=self.hparams.n_local_crops,
+                local_crop_size=self.hparams.local_crop_size,
+            )
+        else:
+            aug_transform = BYOLTransform(
+                dataset_name=self.hparams.dataset_name,
+                normalize_fn=normalize_fn,
+                resize=self.hparams.resize or 32,
+                precision=self.precision,
+            )
 
         # --- Filtering and Subsetting ---
         if is_cifar100_20:
@@ -332,24 +455,42 @@ class ColorDataModule(pl.LightningDataModule):
             "test": self.test_dataset,
             "train": self.train_dataset,
         }[self.hparams.subset]
+        
+        # Check if we are in a distributed environment
+        # self.trainer.world_size is the Lightning way to check this
+        is_distributed = self.trainer is not None and self.trainer.world_size > 1
+        
+        sampler = DistributedSampler(dataset) if is_distributed else None
+        
         return DataLoader(
             dataset,
+            sampler=sampler,
             batch_size=self.hparams.batch_size,
-            shuffle=True,
+            # CRITICAL: shuffle must be False if using a sampler
+            shuffle=True if sampler is None else False,
             num_workers=self.hparams.num_workers,
             pin_memory=True,
             persistent_workers=True if self.hparams.num_workers > 0 else False,
         )
 
     def test_dataloader(self) -> DataLoader:
+        # Use the correct dataset for testing
+        dataset = self.test_dataset
+        
+        is_distributed = self.trainer is not None and self.trainer.world_size > 1
+        
+        # We use a sampler here too so each GPU validates a different chunk of data
+        sampler = DistributedSampler(dataset, shuffle=False) if is_distributed else None
+        
         return DataLoader(
-            self.test_dataset,
+            dataset,
+            sampler=sampler,
             batch_size=self.hparams.batch_size,
+            shuffle=False,
             num_workers=self.hparams.num_workers,
             pin_memory=True,
             persistent_workers=True if self.hparams.num_workers > 0 else False,
         )
-
     @staticmethod
     def _get_coarse_label(fine_label: int) -> int:
         """Convert CIFAR100 fine labels to coarse labels (20 classes)"""
@@ -499,11 +640,50 @@ class ColorDataModule(pl.LightningDataModule):
             else:  # cifar100_20
                 # For cifar100_20, the labels are already coarse (0-19)
                 return {i: (coarse_labels[i], None) for i in range(20)}
+        elif self.hparams.dataset_name in ("imagenet", "tiny_imagenet"):
+            return self._get_imagenet_class_names()
         elif self.hparams.dataset_name == "gtsrb":
             # Implementation for GTSRB class names would go here
             # Simplified for brevity
             return None
         else:
+            return None
+
+    def _get_imagenet_class_names(self) -> Optional[Dict[int, Tuple[str, Optional[str]]]]:
+        """Load ImageNet class names from the cached class index JSON.
+
+        For Tiny ImageNet, maps the dataset's local indices (0-199) to human-readable
+        names using the synset IDs from the dataset.
+        """
+        import json
+        cache_path = Path("./data/imagenet_class_index.json")
+        if not cache_path.exists():
+            try:
+                import requests
+                url = "https://s3.amazonaws.com/deep-learning-models/image-models/imagenet_class_index.json"
+                resp = requests.get(url)
+                resp.raise_for_status()
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(resp.text)
+            except Exception:
+                return None
+        try:
+            class_index = json.loads(cache_path.read_text())
+            # class_index: {"0": ["n01440764", "tench"], "1": ["n01443537", "goldfish"], ...}
+            # Build synset -> name mapping from the full ImageNet class index
+            synset_to_name = {v[0]: v[1].replace("_", " ") for v in class_index.values()}
+
+            if self.hparams.dataset_name == "tiny_imagenet":
+                # Map Tiny ImageNet's local indices to names using synset IDs
+                from src.datasets.tiny_imagenet import TinyImageNet
+                ds = TinyImageNet(self.hparams.data_dir, split="train")
+                return {
+                    idx: (synset_to_name.get(synset, synset), None)
+                    for idx, synset in enumerate(ds.classes)
+                }
+            else:
+                return {int(k): (v[1].replace("_", " "), None) for k, v in class_index.items()}
+        except Exception:
             return None
 
 

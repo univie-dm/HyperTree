@@ -13,6 +13,7 @@ import hydra
 import os
 import traceback
 import torch
+from pytorch_lightning.plugins.environments import LightningEnvironment
 import wandb
 import warnings
 import pytorch_lightning as pl
@@ -53,7 +54,9 @@ def main(cfg: DictConfig) -> None:
         logger = get_logger(cfg)
 
         pretrain_ckpt_dir = f"./data/checkpoints/pretrain_{get_model_path(cfg)}"
-        if cfg.dataset.name == 'imagenet':
+        enable_pretrain_ckpt = cfg.pretraining.get("enable_checkpointing", False)
+        checkpoint_callback = None
+        if enable_pretrain_ckpt:
             os.makedirs(pretrain_ckpt_dir, exist_ok=True)
             checkpoint_callback = ModelCheckpoint(
                 dirpath=pretrain_ckpt_dir,
@@ -62,13 +65,28 @@ def main(cfg: DictConfig) -> None:
             )
 
         pretrain_accum = max(1, cfg.pretraining.get("accumulate_gradients", 1))
+        gpu_count = torch.cuda.device_count()
+        # When SLURM allocates multiple GPUs to a single task (ntasks-per-node=1),
+        # Lightning's SLURM auto-detection conflicts with devices>1.
+        # Remove the env vars so Lightning uses standard DDP instead of SLURM DDP.
+        is_slurm = "SLURM_JOB_ID" in os.environ
+        slurm_ntasks = int(os.environ.get("SLURM_NTASKS_PER_NODE", "0"))
+        if slurm_ntasks == 1 and gpu_count > 1:
+            for var in ("SLURM_NTASKS", "SLURM_NTASKS_PER_NODE", "SLURM_PROCID",
+                        "SLURM_LOCALID", "SLURM_NODEID"):
+                os.environ.pop(var, None)
+        n_devices = gpu_count if gpu_count > 0 else 1
+        use_ddp = n_devices > 1
+
+
         trainer = pl.Trainer(
             logger=logger,
             max_epochs=cfg.pretraining.epochs,
-            devices="auto",
-            accelerator="auto",
+            accelerator="gpu",
+            devices=n_devices,
+            strategy="ddp_find_unused_parameters_true" if use_ddp else "auto",
             deterministic=True if cfg.experiment.seed >= 0 else False,
-            enable_checkpointing=True if cfg.dataset.name == 'imagenet' else False,
+            enable_checkpointing=enable_pretrain_ckpt,
             default_root_dir=None,
             accumulate_grad_batches=pretrain_accum,
             gradient_clip_algorithm="value"
@@ -78,7 +96,7 @@ def main(cfg: DictConfig) -> None:
             if cfg.experiment.gradient_clip_value is not None
             else 1.0,
             log_every_n_steps=None,
-            callbacks=[checkpoint_callback] if cfg.dataset.name == 'imagenet' else None,
+            callbacks=[checkpoint_callback] if checkpoint_callback else None,
         )
         datamodule, input_dim, _ = get_datamodule(cfg, stage="pretrain")
         pretrain_model = get_pretrain_model(cfg, input_dim)
@@ -87,15 +105,28 @@ def main(cfg: DictConfig) -> None:
             or cfg.pretraining.overwrite):
             print("Starting pretraining", flush=True)
             ckpt_path = None
-            if cfg.dataset.name == 'imagenet':
+            if enable_pretrain_ckpt:
                 last_ckpt = os.path.join(pretrain_ckpt_dir, "last.ckpt")
                 if os.path.exists(last_ckpt):
                     print(f"Resuming pretraining from checkpoint: {last_ckpt}", flush=True)
                     ckpt_path = last_ckpt
-            trainer.fit(pretrain_model, datamodule, ckpt_path=ckpt_path)
-            torch.save(pretrain_model, f"data/models/{get_model_path(cfg)}.pt")
+            try:
+                trainer.fit(pretrain_model, datamodule, ckpt_path=ckpt_path)
+            except KeyError as e:
+                if "_schedulers" in str(e) and ckpt_path is not None:
+                    print(f"LR scheduler mismatch in checkpoint, loading weights only and restarting training", flush=True)
+                    ckpt = torch.load(ckpt_path, weights_only=False)
+                    pretrain_model.load_state_dict(ckpt["state_dict"])
+                    trainer.fit(pretrain_model, datamodule)
+                else:
+                    raise
+            torch.save(pretrain_model.state_dict(), f"data/models/{get_model_path(cfg)}.pt")
         else:
-            pretrain_model = torch.load(f"data/models/{get_model_path(cfg)}.pt", weights_only=False)
+            saved = torch.load(f"data/models/{get_model_path(cfg)}.pt", weights_only=False)
+            if isinstance(saved, dict):
+                pretrain_model.load_state_dict(saved)
+            else:
+                pretrain_model = saved
 
         print("Finished pretraining", flush=True)
         if cfg.experiment.seed >= 0:
@@ -116,21 +147,24 @@ def main(cfg: DictConfig) -> None:
                   flush=True)
 
         clustering_model = get_clustering_model(cfg, pretrain_model)
+
         trainer = pl.Trainer(
             logger=logger,
             max_epochs=cfg.clustering.epochs,
-            devices="auto",
-            accelerator="auto",
+            accelerator="gpu" if gpu_count > 0 else "cpu",
+            devices=n_devices,
+            strategy="ddp_find_unused_parameters_true" if use_ddp else "auto",
+            accumulate_grad_batches=accumulate_grad_batches,
             deterministic=True if cfg.experiment.seed >= 0 else False,
             enable_checkpointing=False,
             default_root_dir=None,
-            accumulate_grad_batches=(accumulate_grad_batches),
             gradient_clip_algorithm="norm"
             if cfg.experiment.gradient_clip_value is not None
             else None,
             gradient_clip_val=cfg.experiment.gradient_clip_value
             if cfg.experiment.gradient_clip_value is not None
             else 1.0,
+            plugins=[LightningEnvironment()] if is_slurm else [],
         )
         trainer.fit(clustering_model, datamodule)
         wandb.finish()

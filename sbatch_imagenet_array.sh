@@ -18,6 +18,7 @@ source /etc/profile.d/modules.sh
 module load miniforge
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
+export MASTER_PORT=$(shuf -i 20000-65000 -n 1)
 
 # Define hyperparameter possibilities
 C_LRS=(1e-4 5e-5 1e-5)                          # 3 Clustering learning rates
@@ -40,7 +41,7 @@ L_DIM=${LATENT_DIMS[$LD_IDX]}
 echo "Starting Array Task ${SLURM_ARRAY_TASK_ID}"
 echo "Parameters: LR=${C_LR} | ContrastiveWeight=${C_WEIGHT} | StartTemp=${S_TEMP} | LatentDim=${L_DIM}"
 
-python train.py --config-name imagenet_poincare +slurm_id=${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID} dataset=imagenet \
+uv run python train.py --config-name imagenet_poincare +slurm_id=${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID} dataset=imagenet \
     experiment.seed=69 \
     pretraining.load_supervised_weights=True \
     architecture.latent_dim=${L_DIM} \

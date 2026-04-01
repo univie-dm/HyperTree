@@ -1,7 +1,7 @@
 import math
 import torch
 import torch.nn.functional as F
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 
 from typing import Any, Tuple
 from lightning.pytorch.utilities import grad_norm
@@ -145,11 +145,22 @@ class HyperbolicHCModel(AbstractModel):
             if self.hparams.lr_scheduler_params["type"] is None:
                 return optimizer
             if self.hparams.lr_scheduler_params["type"] == "warmup_cosine":
-                scheduler = CosineAnnealingWarmRestarts(
+                warmup_epochs = self.hparams.lr_scheduler_params["interval"]
+                total_epochs = self.trainer.max_epochs
+                eta_min = (
+                    self.hparams.lr_scheduler_params["cosine_min_factor"]
+                    * self.hparams.learning_rate
+                )
+                warmup = LinearLR(
+                    optimizer, start_factor=1e-3, total_iters=warmup_epochs
+                )
+                cosine = CosineAnnealingLR(
+                    optimizer, T_max=total_epochs - warmup_epochs, eta_min=eta_min
+                )
+                scheduler = SequentialLR(
                     optimizer,
-                    T_0=self.hparams.lr_scheduler_params["interval"],
-                    eta_min=self.hparams.lr_scheduler_params["cosine_min_factor"]
-                    * self.hparams.learning_rate,
+                    schedulers=[warmup, cosine],
+                    milestones=[warmup_epochs],
                 )
                 return {
                     "optimizer": optimizer,

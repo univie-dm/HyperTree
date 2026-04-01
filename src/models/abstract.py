@@ -4,15 +4,16 @@ import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 import wandb
 
+from pathlib import Path
 from typing import Tuple, Any
 from pytorch_lightning.loggers import WandbLogger
 
-from src.evaluation import evaluation
+from src.evaluation import evaluation, build_hierarchy_clusters, write_results
 from src.hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.hyperbolic_math.src.utils.math_utils import atanh
 from src.utils.wordnet_hierarchy import get_wordnet_labels_for_cifar100
-from src.utils.imagenet_hierarchy import get_wordnet_labels_for_imagenet
+from src.utils.imagenet_hierarchy import get_wordnet_labels_for_imagenet, get_hierarchy_node_names, setup_tiny_imagenet_hierarchy
 
 
 class AbstractModel(pl.LightningModule):
@@ -200,11 +201,22 @@ class AbstractModel(pl.LightningModule):
         if self.hparams.lr_scheduler_params["type"] is None:
             return optimizer
         elif self.hparams.lr_scheduler_params["type"] == "warmup_cosine":
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            warmup_epochs = self.hparams.lr_scheduler_params["interval"]
+            total_epochs = self.trainer.max_epochs
+            eta_min = (
+                self.hparams.lr_scheduler_params["cosine_min_factor"]
+                * self.hparams.learning_rate
+            )
+            warmup = torch.optim.lr_scheduler.LinearLR(
+                optimizer, start_factor=1e-3, total_iters=warmup_epochs
+            )
+            cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=total_epochs - warmup_epochs, eta_min=eta_min
+            )
+            scheduler = torch.optim.lr_scheduler.SequentialLR(
                 optimizer,
-                T_0=self.hparams.lr_scheduler_params["interval"],
-                eta_min=self.hparams.lr_scheduler_params["cosine_min_factor"]
-                * self.hparams.learning_rate,
+                schedulers=[warmup, cosine],
+                milestones=[warmup_epochs],
             )
         elif self.hparams.lr_scheduler_params["type"] == "ReduceLROnPlateau":
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -288,7 +300,9 @@ class AbstractModel(pl.LightningModule):
                 all_embeddings = torch.cat(embeddings, dim=0)
                 all_labels = torch.cat(labels, dim=0)
 
-                # Override with WordNet labels if configured for CIFAR-100
+                # Override with WordNet labels if configured
+                coarse_label_names = None
+                hierarchy_clusters = None
                 use_wordnet = self.hparams.evaluation_metrics.get("use_wordnet_labels", False)
                 if use_wordnet:
                     try:
@@ -298,6 +312,13 @@ class AbstractModel(pl.LightningModule):
                             datamodule_hparams = getattr(self.trainer.datamodule, 'hparams', None)  # type: ignore
                             if datamodule_hparams and hasattr(datamodule_hparams, 'dataset_name'):
                                 dataset_name = datamodule_hparams.dataset_name
+
+                        # Build leaf name mapping from str_labels (fine label → name)
+                        leaf_names = {}
+                        if labels_map is not None:
+                            for idx, val in labels_map.items():
+                                name = val[0] if isinstance(val, tuple) else val
+                                leaf_names[idx] = str(name)
 
                         # Apply WordNet labels based on dataset
                         if dataset_name == "cifar100":
@@ -310,12 +331,16 @@ class AbstractModel(pl.LightningModule):
                             if not isinstance(download_if_missing, bool):
                                 download_if_missing = bool(download_if_missing)
 
-                            wordnet_labels, _ = get_wordnet_labels_for_cifar100(
+                            wordnet_labels, parent_child = get_wordnet_labels_for_cifar100(
                                 all_labels.cpu().numpy(),
                                 hierarchy_file=wordnet_path,
                                 download_if_missing=download_if_missing
                             )
                             coarse_labels_array = wordnet_labels
+                            leaf_ids = set(np.unique(all_labels.cpu().numpy()).tolist())
+                            hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
+                            if leaf_names:
+                                coarse_label_names = get_hierarchy_node_names(parent_child, leaf_names)
 
                         elif dataset_name == "imagenet":
                             imagenet_hierarchy_path = self.hparams.evaluation_metrics.get("imagenet_hierarchy_path", "./data/imagenet_wordnet_hierarchy.txt")
@@ -327,13 +352,45 @@ class AbstractModel(pl.LightningModule):
                             if not isinstance(setup_if_missing, bool):
                                 setup_if_missing = bool(setup_if_missing)
 
-                            wordnet_labels, _ = get_wordnet_labels_for_imagenet(
+                            wordnet_labels, parent_child = get_wordnet_labels_for_imagenet(
                                 all_labels.cpu().numpy(),
                                 hierarchy_file=imagenet_hierarchy_path,
                                 setup_if_missing=setup_if_missing
                             )
                             coarse_labels_array = wordnet_labels
-                            
+                            leaf_ids = set(np.unique(all_labels.cpu().numpy()).tolist())
+                            hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
+                            if leaf_names:
+                                coarse_label_names = get_hierarchy_node_names(parent_child, leaf_names)
+
+                        elif dataset_name == "tiny_imagenet":
+                            tiny_hierarchy_path = self.hparams.evaluation_metrics.get(
+                                "tiny_imagenet_hierarchy_path", "./data/tiny_imagenet_wordnet_hierarchy.txt"
+                            )
+                            if not isinstance(tiny_hierarchy_path, str):
+                                tiny_hierarchy_path = str(tiny_hierarchy_path)
+
+                            # Build hierarchy if missing
+                            if not Path(tiny_hierarchy_path).exists():
+                                data_dir = None
+                                if hasattr(self.trainer, 'datamodule') and self.trainer.datamodule is not None:
+                                    dm_hparams = getattr(self.trainer.datamodule, 'hparams', None)
+                                    if dm_hparams and hasattr(dm_hparams, 'data_dir'):
+                                        data_dir = dm_hparams.data_dir
+                                if data_dir:
+                                    setup_tiny_imagenet_hierarchy(data_dir, tiny_hierarchy_path)
+
+                            wordnet_labels, parent_child = get_wordnet_labels_for_imagenet(
+                                all_labels.cpu().numpy(),
+                                hierarchy_file=tiny_hierarchy_path,
+                                setup_if_missing=False
+                            )
+                            coarse_labels_array = wordnet_labels
+                            leaf_ids = set(np.unique(all_labels.cpu().numpy()).tolist())
+                            hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
+                            if leaf_names:
+                                coarse_label_names = get_hierarchy_node_names(parent_child, leaf_names)
+
                     except Exception as e:
                         print(f"Warning: Failed to load WordNet labels: {e}")
                         print("Falling back to standard coarse labels (if available)")
@@ -361,6 +418,8 @@ class AbstractModel(pl.LightningModule):
                     metrics=self.hparams.evaluation_metrics,
                     str_labels=str_labels_array,
                     Y_coarse=coarse_labels_array,
+                    coarse_label_names=coarse_label_names,
+                    hierarchy_clusters=hierarchy_clusters,
                 )
 
                 del all_embeddings, all_labels, distance_matrix, embeddings, labels
@@ -369,6 +428,16 @@ class AbstractModel(pl.LightningModule):
                     self.metrics[f"test/{key}"] = value
                 plt.close()
                 self.train()
+
+    def _write_metrics_to_file(self, epoch: int) -> None:
+        """Write current metrics to a JSON file for LLM consumption."""
+        results_dir = self.hparams.evaluation_metrics.get("results_dir", "./results")
+        write_results(
+            metrics=self.metrics,
+            results_dir=results_dir,
+            stage=self.hparams.stage,
+            epoch=epoch,
+        )
 
     def on_train_start(self) -> None:
         self.test_phase()
@@ -384,6 +453,7 @@ class AbstractModel(pl.LightningModule):
                 self.metrics[key] = sum(value) / len(value)
         if isinstance(self.logger, WandbLogger):
             self.logger.experiment.log(self.metrics, step=self.current_epoch + self.hparams.global_epoch)
+        self._write_metrics_to_file(self.current_epoch)
         self.metrics = {}
         self.train()
 
@@ -396,6 +466,7 @@ class AbstractModel(pl.LightningModule):
                 self.metrics[key] = sum(value) / len(value)
         if isinstance(self.logger, WandbLogger):
             self.logger.experiment.log(self.metrics, step=self.current_epoch + self.hparams.global_epoch)
+        self._write_metrics_to_file(self.current_epoch)
         self.metrics = {}
         self.train()
 
@@ -409,6 +480,7 @@ class AbstractModel(pl.LightningModule):
                 self.metrics[key] = sum(value) / len(value)
         if isinstance(self.logger, WandbLogger):
             self.logger.experiment.log(self.metrics, step=self.current_epoch + self.hparams.global_epoch + 1)
+        self._write_metrics_to_file(self.current_epoch + 1)
         self.metrics = {}
         self.train()
 

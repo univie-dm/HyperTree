@@ -1,4 +1,6 @@
+import json
 import os
+from datetime import datetime
 from logging import warning
 from matplotlib import pyplot as plt
 import torch
@@ -10,6 +12,7 @@ from typing import Union, Optional
 from scipy.cluster.hierarchy import linkage
 from scipy.spatial.distance import squareform
 from sklearn.cluster import AgglomerativeClustering, KMeans, SpectralClustering
+from sklearn.manifold import TSNE
 from sklearn.metrics import (
     adjusted_rand_score,
     normalized_mutual_info_score,
@@ -23,10 +26,389 @@ from collections import Counter
 from pathlib import Path
 
 from src.hyperbolic_math.src.manifolds.euclidean import Euclidean
-from src.hyperbolic_math.src.manifolds import PoincareBall, Manifold
-from src.hyperbolic_math.src.utils.helpers import get_delta
-from src.hyperbolic_math.src.utils.vis_utils import create_figure, pointsTo2dPoincare
+from src.hyperbolic_math.src.manifolds import PoincareBall, Hyperboloid, Manifold
 
+
+# ---------------------------------------------------------------------------
+# Results file I/O — plain JSON readable by an LLM
+# ---------------------------------------------------------------------------
+
+def _serializable(value):
+    """Convert a metric value to a JSON-serializable type."""
+    if isinstance(value, (int, float, str, bool, type(None))):
+        return value
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().tolist()
+    if isinstance(value, wandb.Image):
+        return "<wandb.Image>"
+    return str(value)
+
+
+def write_results(
+    metrics: dict,
+    results_dir: str | Path,
+    stage: str = "eval",
+    epoch: int | None = None,
+) -> Path:
+    """
+    Write evaluation metrics to a human/LLM-readable JSON file.
+
+    Two files are maintained:
+    - ``<results_dir>/<stage>_results_latest.json`` — overwritten each call
+      (always reflects the most recent evaluation).
+    - ``<results_dir>/<stage>_results_history.jsonl`` — one JSON object per
+      line, appended each call (full history of intermediate results).
+
+    Parameters
+    ----------
+    metrics : dict
+        The metrics dict (may contain wandb.Image values — they are skipped).
+    results_dir : str | Path
+        Directory to write into (created if it does not exist).
+    stage : str
+        Label such as ``"pretrain"`` or ``"clustering"``.
+    epoch : int | None
+        Current epoch number (included in the record if provided).
+
+    Returns
+    -------
+    Path
+        Path to the ``_latest.json`` file.
+    """
+    results_dir = Path(results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    record = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "stage": stage,
+    }
+    if epoch is not None:
+        record["epoch"] = epoch
+
+    for key, value in sorted(metrics.items()):
+        serialized = _serializable(value)
+        if serialized == "<wandb.Image>":
+            continue
+        record[key] = serialized
+
+    latest_path = results_dir / f"{stage}_results_latest.json"
+    history_path = results_dir / f"{stage}_results_history.jsonl"
+
+    with open(latest_path, "w") as f:
+        json.dump(record, f, indent=2)
+        f.write("\n")
+
+    with open(history_path, "a") as f:
+        json.dump(record, f)
+        f.write("\n")
+
+    return latest_path
+
+
+# ---------------------------------------------------------------------------
+# Visualization helpers
+# ---------------------------------------------------------------------------
+
+def _get_categorical_colors(labels):
+    """Create a list of distinct colors for categorical labels.
+
+    The special label 'Other' (if present) is always colored gray.
+    """
+    unique_labels = np.unique(labels)
+    # Exclude "Other" from the colormap so it doesn't consume a slot
+    real_labels = [l for l in unique_labels if str(l) != "Other"]
+    has_other = len(real_labels) < len(unique_labels)
+    n_real = len(real_labels)
+
+    if n_real <= 10:
+        cmap = plt.cm.get_cmap("tab10")
+    elif n_real <= 20:
+        cmap = plt.cm.get_cmap("tab20")
+    else:
+        cmap = plt.cm.get_cmap("hsv", n_real)
+
+    label_to_idx = {label: i for i, label in enumerate(real_labels)}
+    if has_other:
+        label_to_idx["Other"] = -1  # sentinel
+
+    gray = (0.7, 0.7, 0.7, 1.0)
+    colors = [
+        gray if str(label) == "Other"
+        else cmap(label_to_idx[label] / max(n_real - 1, 1))
+        for label in labels
+    ]
+    return colors, label_to_idx, cmap
+
+
+def _set_square_axes(ax, pts):
+    """Set square axes with equal limits based on max range."""
+    max_range = max(
+        pts[:, 0].max() - pts[:, 0].min(), pts[:, 1].max() - pts[:, 1].min()
+    )
+    mid_x = (pts[:, 0].max() + pts[:, 0].min()) / 2
+    mid_y = (pts[:, 1].max() + pts[:, 1].min()) / 2
+    ax.set_xlim(mid_x - max_range / 2, mid_x + max_range / 2)
+    ax.set_ylim(mid_y - max_range / 2, mid_y + max_range / 2)
+    ax.set_aspect("equal", adjustable="box")
+
+
+def _aggregate_labels_top_k(labels, max_classes=20):
+    """Keep the top-k most frequent labels, map the rest to 'Other'."""
+    labels = np.asarray(labels)
+    counts = Counter(labels)
+    top_k = [l for l, _ in counts.most_common(max_classes)]
+    top_set = set(top_k)
+    return np.array([l if l in top_set else "Other" for l in labels])
+
+
+def _create_scatter_plot(two_d_pts, labels, title, max_legend_classes=20):
+    """Create a 2D scatter plot with categorical coloring and legend."""
+    two_d_pts_np = two_d_pts.cpu().numpy() if isinstance(two_d_pts, torch.Tensor) else np.asarray(two_d_pts)
+    labels = np.asarray(labels)
+    n_unique = len(np.unique(labels))
+
+    # Aggregate to top-k classes if too many for readable visualization
+    display_labels = _aggregate_labels_top_k(labels, max_legend_classes) if n_unique > max_legend_classes else labels
+
+    colors, label_to_idx, cmap = _get_categorical_colors(display_labels)
+    unique_display = np.unique(display_labels)
+    n_display = len(unique_display)
+    n_real = len([l for l in unique_display if str(l) != "Other"])
+
+    fig, ax = plt.subplots(figsize=(10, 10))
+    ax.scatter(two_d_pts_np[:, 0], two_d_pts_np[:, 1], c=colors, s=10, alpha=0.6)
+
+    # Build legend — "Other" drawn last in gray
+    legend_labels = sorted([l for l in unique_display if str(l) != "Other"])
+    if "Other" in unique_display:
+        legend_labels.append("Other")
+    handles = [
+        plt.Line2D(
+            [0], [0], marker="o", color="w",
+            markerfacecolor=(
+                (0.7, 0.7, 0.7, 1.0) if str(label) == "Other"
+                else cmap(label_to_idx[label] / max(n_real - 1, 1))
+            ),
+            markersize=8, label=str(label),
+        )
+        for label in legend_labels
+    ]
+    ax.legend(handles=handles, loc="center left", bbox_to_anchor=(1, 0.5), frameon=True,
+              fontsize=8 if n_display <= 25 else 6)
+
+    if n_unique > max_legend_classes:
+        title = f"{title} (top {max_legend_classes} classes shown)"
+
+    _set_square_axes(ax, two_d_pts_np)
+    ax.set_title(title)
+    ax.set_xlabel("Dim 1")
+    ax.set_ylabel("Dim 2")
+    plt.tight_layout()
+    return fig
+
+
+def _compute_2d_embeddings(X_sampled, manifold):
+    """Compute 2D embeddings using log map + t-SNE (hyperbolic) or PCA (Euclidean)."""
+    if isinstance(manifold, Euclidean):
+        from sklearn.decomposition import PCA as SklearnPCA
+        pca = SklearnPCA(n_components=2)
+        pts_np = X_sampled.detach().cpu().float().numpy()
+        two_d = pca.fit_transform(pts_np)
+        return torch.tensor(two_d, dtype=X_sampled.dtype, device=X_sampled.device)
+
+    # Hyperbolic: log map to tangent space at origin, then t-SNE
+    if isinstance(manifold, Hyperboloid):
+        # Convert to PoincareBall first for logmap_0
+        poincare = PoincareBall(c=manifold.c.detach().clone(), dtype=manifold.dtype)
+        pts_poincare = poincare.from_hyperboloid(X_sampled.to(manifold.dtype))
+        tangent = poincare.logmap_0(pts_poincare)
+    elif isinstance(manifold, PoincareBall):
+        tangent = manifold.logmap_0(X_sampled.to(manifold.dtype))
+    else:
+        raise ValueError(f"Unsupported manifold: {manifold}")
+
+    tangent_np = tangent.detach().cpu().float().numpy()
+    # Handle edge case: if dim is already 2, skip t-SNE
+    if tangent_np.shape[1] == 2:
+        return torch.tensor(tangent_np, dtype=X_sampled.dtype, device=X_sampled.device)
+
+    perplexity = min(30.0, max(5.0, tangent_np.shape[0] / 4.0))
+    tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42, init="pca", learning_rate="auto")
+    two_d = tsne.fit_transform(tangent_np)
+    return torch.tensor(two_d, dtype=X_sampled.dtype, device=X_sampled.device)
+
+
+# ---------------------------------------------------------------------------
+# Confusion matrix
+# ---------------------------------------------------------------------------
+
+def _create_confusion_matrix_plot(y_true, y_pred, title="Confusion Matrix", str_labels=None, hierarchy_file=None, coarse_label_names=None):
+    """Create a confusion matrix visualization, aggregating for large class counts."""
+    max_display_classes = 50
+    unique_true = np.unique(y_true)
+    n_true_classes = len(unique_true)
+
+    y_true_display = y_true
+    y_pred_display = y_pred
+    aggregated = False
+
+    if n_true_classes > max_display_classes:
+        hierarchy_path = hierarchy_file or "./data/imagenet_wordnet_hierarchy.txt"
+        if Path(hierarchy_path).exists():
+            try:
+                from src.utils.imagenet_hierarchy import (
+                    load_imagenet_hierarchy,
+                    get_labels_at_hierarchy_level,
+                )
+                parent_child = load_imagenet_hierarchy(hierarchy_path, exclude_root=True)
+                y_true_display, _ = get_labels_at_hierarchy_level(
+                    np.asarray(y_true), parent_child, target_num_classes=max_display_classes
+                )
+                pred_to_agg = {}
+                for pred_label in np.unique(y_pred):
+                    mask = y_pred == pred_label
+                    most_common = Counter(y_true_display[mask]).most_common(1)[0][0]
+                    pred_to_agg[pred_label] = most_common
+                y_pred_display = np.array([pred_to_agg[p] for p in y_pred])
+                aggregated = True
+                title = f"{title} (aggregated to ~{len(np.unique(y_true_display))} categories)"
+            except Exception as e:
+                warning(f"Could not aggregate labels using hierarchy: {e}")
+
+    # Use the union of true and predicted labels so the matrix is always square
+    all_labels = sorted(set(np.unique(y_true_display)) | set(np.unique(y_pred_display)))
+    cm = confusion_matrix(y_true_display, y_pred_display, labels=all_labels)
+    row_sums = cm.sum(axis=1)[:, np.newaxis]
+    cm_normalized = np.divide(cm.astype("float"), row_sums, where=row_sums != 0, out=np.zeros_like(cm, dtype=float))
+
+    fig, ax = plt.subplots(figsize=(12, 10))
+    im = ax.imshow(cm_normalized, interpolation="nearest", cmap=plt.cm.Blues)
+    ax.figure.colorbar(im, ax=ax)
+
+    n_display = len(all_labels)
+
+    # Resolve label IDs to human-readable names
+    max_label_len = 40
+    if coarse_label_names is not None:
+        label_names = [coarse_label_names.get(int(l), str(l)) for l in all_labels]
+    elif str_labels is not None and not aggregated:
+        label_names = []
+        for label in all_labels:
+            idx = np.where(y_true == label)[0]
+            if len(idx) > 0:
+                label_names.append(str(str_labels[idx[0]]))
+            else:
+                label_names.append(str(label))
+    else:
+        label_names = [str(l) for l in all_labels]
+    # Truncate long names for readability on axes
+    label_names = [n if len(n) <= max_label_len else n[:max_label_len - 1] + "\u2026" for n in label_names]
+
+    fontsize = 8 if n_display <= 50 else 6
+    ax.set_yticks(np.arange(n_display))
+    ax.set_yticklabels(label_names, fontsize=fontsize)
+    ax.set_xticks(np.arange(n_display))
+    ax.set_xticklabels(label_names, fontsize=fontsize)
+    ax.set_ylabel("True Label", fontsize=10)
+    ax.set_xlabel("Predicted Cluster", fontsize=10)
+    ax.set_title(title, fontsize=12)
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+    plt.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Clustering helper: runs agglomerative clustering + confusion matrix + vis
+# ---------------------------------------------------------------------------
+
+def _map_preds_to_coarse(pred_labels, Y_coarse_np):
+    """Map each predicted cluster to the most common coarse label in that cluster."""
+    mapped = np.copy(pred_labels)
+    for cluster_id in np.unique(pred_labels):
+        mask = pred_labels == cluster_id
+        most_common = Counter(Y_coarse_np[mask]).most_common(1)[0][0]
+        mapped[mask] = most_common
+    return mapped
+
+
+def _run_agglomerative(
+    linkage_name, distance_matrix, X, Y_clustering, Y_coarse,
+    str_labels, manifold, two_d_pts, vis_sample_indices, do_vis, results,
+    coarse_label_names=None,
+):
+    """Run agglomerative clustering for one linkage type and store results."""
+    Y_np = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
+    n_clusters = len(np.unique(Y_np))
+    dist_np = distance_matrix.cpu().numpy()
+
+    if linkage_name == "ward":
+        # Ward requires Euclidean input, not precomputed distances.
+        # Use log-map tangent vectors as Euclidean proxy.
+        if isinstance(manifold, Euclidean):
+            X_euc = X.detach().cpu().float().numpy()
+        elif isinstance(manifold, Hyperboloid):
+            poincare = PoincareBall(c=manifold.c.detach().clone(), dtype=manifold.dtype)
+            pts_poincare = poincare.from_hyperboloid(X.to(manifold.dtype))
+            X_euc = poincare.logmap_0(pts_poincare).detach().cpu().float().numpy()
+        elif isinstance(manifold, PoincareBall):
+            X_euc = manifold.logmap_0(X.to(manifold.dtype)).detach().cpu().float().numpy()
+        else:
+            warning(f"Ward linkage not supported for manifold {manifold}; skipping.")
+            return
+        clust = AgglomerativeClustering(n_clusters=n_clusters, linkage="ward")
+        pred_labels = clust.fit_predict(X_euc)
+    else:
+        clust = AgglomerativeClustering(
+            n_clusters=n_clusters, metric="precomputed", linkage=linkage_name,
+        )
+        pred_labels = clust.fit_predict(dist_np)
+
+    prefix = f"agglomerative_clustering_{linkage_name}"
+
+    nmi = normalized_mutual_info_score(Y_np, pred_labels)
+    ari = adjusted_rand_score(Y_np, pred_labels)
+    results[f"{prefix}_nmi"] = nmi
+    results[f"{prefix}_ari"] = ari
+
+    # Confusion matrix
+    Y_coarse_np = (
+        Y_coarse.cpu().numpy() if isinstance(Y_coarse, torch.Tensor) else np.asarray(Y_coarse)
+    ) if Y_coarse is not None else None
+
+    y_true_cm = Y_coarse_np if Y_coarse_np is not None else Y_np
+    pred_cm = _map_preds_to_coarse(pred_labels, Y_coarse_np) if Y_coarse_np is not None else pred_labels
+    cm_fig = _create_confusion_matrix_plot(
+        y_true_cm, pred_cm,
+        title=f"Agglomerative ({linkage_name.title()}) - Confusion Matrix",
+        str_labels=str_labels,
+        coarse_label_names=coarse_label_names,
+    )
+    results[f"{prefix}_confusion_matrix"] = wandb.Image(cm_fig)
+    plt.close(cm_fig)
+
+    # Visualization
+    if do_vis and two_d_pts is not None:
+        str_sub = np.asarray(str_labels)[vis_sample_indices] if str_labels is not None else None
+        vis_labels = map_predicted_labels_to_str_labels(
+            pred_labels[vis_sample_indices], Y_np[vis_sample_indices], str_sub,
+        )
+        fig = _create_scatter_plot(
+            two_d_pts, vis_labels,
+            title=f"Agglomerative ({linkage_name.title()}) Embeddings",
+        )
+        results[f"{prefix}_embeddings"] = wandb.Image(fig)
+        plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Main evaluation entry point
+# ---------------------------------------------------------------------------
 
 def evaluation(
     X: torch.Tensor,
@@ -36,6 +418,8 @@ def evaluation(
     metrics: dict[str, bool] | None = None,
     str_labels: Optional[npt.ArrayLike] | None = None,
     Y_coarse: Optional[Union[np.ndarray, torch.Tensor]] = None,
+    coarse_label_names: Optional[dict[int, str]] = None,
+    hierarchy_clusters: list[set[int]] | None = None,
 ) -> dict:
     """
     Evaluate the performance of a model using specified metrics.
@@ -55,163 +439,23 @@ def evaluation(
     str_labels : Optional[npt.ArrayLike] | None
         String labels for visualization
     Y_coarse : Optional[Union[np.ndarray, torch.Tensor]]
-        Coarse-grained labels for hierarchical datasets (e.g., CIFAR-100, GTSRB)
+        Coarse-grained labels for hierarchical datasets (e.g., CIFAR-100, ImageNet)
         If provided, hierarchical dendrogram purity will be computed
-
-    Returns
-    -------
-        dict: A dictionary with metric names as keys and their computed values.
+    coarse_label_names : Optional[dict[int, str]]
+        Mapping from hierarchy node IDs to human-readable names.
+        Built by ``get_hierarchy_node_names()`` from the WordNet hierarchy.
+    hierarchy_clusters : list[set[int]] | None
+        Full multi-level hierarchy clusters (each a set of leaf class IDs).
+        Built by ``build_hierarchy_clusters()``.  When provided, hierarchical
+        dendrogram purity uses all intermediate levels rather than just fine+coarse.
     """
     results = {}
-    points_in_manifold = False
     Y_clustering = Y_coarse if Y_coarse is not None else Y
     if metrics is None:
         return results
 
-    def get_categorical_colors(labels):
-        """Create a list of distinct colors for categorical labels."""
-        unique_labels = np.unique(labels)
-        n_labels = len(unique_labels)
-
-        # Create color mapping
-        if n_labels <= 10:
-            cmap = plt.cm.get_cmap("tab10")
-        elif n_labels <= 20:
-            cmap = plt.cm.get_cmap("tab20")
-        else:
-            cmap = plt.cm.get_cmap("hsv", n_labels)
-
-        # Map each unique label to a color index
-        label_to_idx = {label: i for i, label in enumerate(unique_labels)}
-        colors = [cmap(label_to_idx[label] / max(n_labels - 1, 1)) for label in labels]
-        return colors, label_to_idx, cmap
-
-    def set_square_axes(ax, pts):
-        """Set square axes with equal limits based on max range."""
-        max_range = max(
-            pts[:, 0].max() - pts[:, 0].min(), pts[:, 1].max() - pts[:, 1].min()
-        )
-        mid_x = (pts[:, 0].max() + pts[:, 0].min()) / 2
-        mid_y = (pts[:, 1].max() + pts[:, 1].min()) / 2
-        ax.set_xlim(mid_x - max_range / 2, mid_x + max_range / 2)
-        ax.set_ylim(mid_y - max_range / 2, mid_y + max_range / 2)
-        ax.set_aspect("equal", adjustable="box")
-
-    def create_confusion_matrix_plot(
-        y_true, y_pred, title="Confusion Matrix", str_labels=None, hierarchy_file=None
-    ):
-        """Create a confusion matrix visualization.
-
-        Parameters
-        ----------
-        y_true : array-like
-            True labels
-        y_pred : array-like
-            Predicted cluster labels
-        title : str
-            Title for the plot
-        str_labels : array-like, optional
-            String labels for the classes
-        hierarchy_file : str, optional
-            Path to hierarchy file for aggregating labels (e.g., ImageNet WordNet hierarchy)
-
-        Returns
-        -------
-        matplotlib.figure.Figure
-            The confusion matrix figure
-        """
-        # For large number of classes (e.g., ImageNet), aggregate to hierarchy level
-        max_display_classes = 50
-        unique_true = np.unique(y_true)
-        n_true_classes = len(unique_true)
-        
-        y_true_display = y_true
-        y_pred_display = y_pred
-        aggregated = False
-        
-        if n_true_classes > max_display_classes:
-            # Try to use hierarchy to aggregate labels
-            hierarchy_path = hierarchy_file or "./data/imagenet_wordnet_hierarchy.txt"
-            if Path(hierarchy_path).exists():
-                try:
-                    from src.utils.imagenet_hierarchy import (
-                        load_imagenet_hierarchy,
-                        get_labels_at_hierarchy_level
-                    )
-                    parent_child = load_imagenet_hierarchy(hierarchy_path, exclude_root=True)
-                    
-                    # Aggregate true labels to hierarchy level
-                    y_true_display, _ = get_labels_at_hierarchy_level(
-                        np.asarray(y_true), parent_child, target_num_classes=max_display_classes
-                    )
-                    
-                    # For predictions: map each prediction cluster to the most common 
-                    # aggregated true label in that cluster
-                    pred_to_agg = {}
-                    for pred_label in np.unique(y_pred):
-                        mask = y_pred == pred_label
-                        agg_labels_in_cluster = y_true_display[mask]
-                        most_common = Counter(agg_labels_in_cluster).most_common(1)[0][0]
-                        pred_to_agg[pred_label] = most_common
-                    
-                    y_pred_display = np.array([pred_to_agg[p] for p in y_pred])
-                    aggregated = True
-                    title = f"{title} (aggregated to ~{len(np.unique(y_true_display))} categories)"
-                except Exception as e:
-                    warning(f"Could not aggregate labels using hierarchy: {e}")
-        
-        # Compute confusion matrix
-        cm = confusion_matrix(y_true_display, y_pred_display)
-
-        # Normalize by row (true label)
-        cm_normalized = cm.astype("float") / cm.sum(axis=1)[:, np.newaxis]
-
-        # Create figure
-        fig, ax = plt.subplots(figsize=(12, 10))
-        im = ax.imshow(cm_normalized, interpolation="nearest", cmap=plt.cm.Blues)
-        ax.figure.colorbar(im, ax=ax)
-
-        # Set labels - get unique values that match confusion matrix dimensions
-        unique_true_display = np.unique(y_true_display)
-        unique_pred_display = np.unique(y_pred_display)
-        n_true_display = len(unique_true_display)
-        n_pred_display = len(unique_pred_display)
-        
-        if str_labels is not None and not aggregated:
-            # Map true labels to string labels (only if not aggregated)
-            true_label_names = [
-                str(str_labels[np.where(y_true == label)[0][0]])
-                for label in unique_true_display
-            ]
-            predicted_label_names = []
-            for label in unique_pred_display:
-                if label in y_true:
-                    predicted_label_names.append(str(str_labels[np.where(y_true == label)[0][0]]))
-                else:
-                    predicted_label_names.append(str(label))
-        else:
-            true_label_names = [str(t) for t in unique_true_display]
-            predicted_label_names = [str(p) for p in unique_pred_display]
-        
-        # Set y-axis (true labels)
-        ax.set_yticks(np.arange(n_true_display))
-        fontsize = 8 if n_true_display <= 50 else 6
-        ax.set_yticklabels(true_label_names, fontsize=fontsize)
-        
-        # Set x-axis (predicted clusters)
-        ax.set_xticks(np.arange(n_pred_display))
-        ax.set_xticklabels(predicted_label_names, fontsize=fontsize)
-
-        ax.set_ylabel("True Label", fontsize=10)
-        ax.set_xlabel("Predicted Cluster", fontsize=10)
-        ax.set_title(title, fontsize=12)
-        plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
-        plt.tight_layout()
-
-        return fig
-
+    # --- Subsampling ---
     if metrics.get("test_sample_size", 0) > 0 and metrics["test_sample_size"] < len(X):
-        # Sample equal number of points from each class
         sample_indices = stratified_sample(Y, metrics["test_sample_size"])
         X = X[sample_indices]
         Y = Y[sample_indices]
@@ -220,912 +464,176 @@ def evaluation(
             str_labels = np.asarray(str_labels)[sample_indices]
         if Y_coarse is not None:
             Y_coarse_np = (
-                Y_coarse.cpu().numpy()
-                if isinstance(Y_coarse, torch.Tensor)
-                else np.asarray(Y_coarse)
+                Y_coarse.cpu().numpy() if isinstance(Y_coarse, torch.Tensor) else np.asarray(Y_coarse)
             )
             Y_coarse = Y_coarse_np[sample_indices]
-        # Update Y_clustering to match the resampled data
         Y_clustering = Y_coarse if Y_coarse is not None else Y
 
     if not isinstance(manifold.c, torch.Tensor):
         manifold.c = torch.tensor(manifold.c, device=X.device, dtype=X.dtype)
 
-    # Check for collapsed embeddings (all embeddings are very similar)
+    # --- Sanity checks ---
     X_np = X.cpu().numpy()
     embedding_std = np.std(X_np, axis=0).mean()
     embedding_mean_norm = np.linalg.norm(X_np, axis=1).mean()
     if embedding_std < 1e-6:
         warning(
-            f"Embeddings appear collapsed (std={embedding_std:.2e}, mean_norm={embedding_mean_norm:.2e}). Clustering metrics may be unreliable."
+            f"Embeddings appear collapsed (std={embedding_std:.2e}, mean_norm={embedding_mean_norm:.2e}). "
+            "Clustering metrics may be unreliable."
         )
 
     if distance_matrix.min() < 0:
-        warning(
-            "Distance matrix contains negative values. Clipping to zero. Minimum: {}".format(
-                distance_matrix.min()
-            )
-        )
+        warning(f"Distance matrix contains negative values (min={distance_matrix.min():.4f}). Clipping to zero.")
         distance_matrix = distance_matrix.clamp(min=0)
 
-    # Compute visualization: HoroPCA for hyperbolic, standard PCA for Euclidean
-    if metrics["visualization"]:
-        sample_size = metrics["visualization_sample_size"]
-        sample_size = min(sample_size, len(X))
+    # --- Visualization: 2D embeddings ---
+    two_d_pts = None
+    vis_sample_indices = None
+    do_vis = metrics.get("visualization", False)
 
-        # Sample equal number of points from each class for visualization
-        pca_sample_indices = stratified_sample(Y_clustering, sample_size)
-        points_sampled = X[pca_sample_indices]
+    if do_vis:
+        sample_size = min(metrics.get("visualization_sample_size", 5000), len(X))
+        vis_sample_indices = stratified_sample(Y_clustering, sample_size)
+        points_sampled = X[vis_sample_indices]
+        try:
+            two_d_pts = _compute_2d_embeddings(points_sampled, manifold)
+        except Exception as e:
+            warning(f"2D embedding computation failed: {e}")
+            do_vis = False
 
-        if isinstance(manifold, Euclidean):
-            # Use standard sklearn PCA for Euclidean manifolds
-            from sklearn.decomposition import PCA as SklearnPCA
-
-            pca = SklearnPCA(n_components=2)
-            points_sampled_np = points_sampled.detach().cpu().numpy()
-            two_d_pts = pca.fit_transform(points_sampled_np)
-            two_d_pts = torch.tensor(two_d_pts, dtype=X.dtype, device=X.device)
-            points_in_manifold = True
-            colormap = "tab10"
-            if len(np.unique(Y_clustering)) > 10:
-                colormap = "tab20"
-            if len(np.unique(Y_clustering)) > 20:
-                colormap = "hsv"
-        else:
-            # Use HoroPCA for non-Euclidean manifolds
-            settings = {
-                "plot_manifold_dtype": manifold.dtype,
-                "dim_red_method": "HoroPCA",
-                "title": "Hyperbolic Embeddings",
-                "show_origin": True,
-                "save_figure": False,
-                "file_name": "hyperbolic_embeddings",
-                "file_path": None,
-                "file_format": "png",
-            }
-            poincare_64 = PoincareBall(
-                c=manifold.c.detach().to(settings["plot_manifold_dtype"]),
-                dtype=settings["plot_manifold_dtype"],
-            )
-            if manifold.name == "PoincareBall":
-                points_sampled = poincare_64.to_hyperboloid(points_sampled)
-            points_sampled = points_sampled.to(settings["plot_manifold_dtype"])
-            two_d_pts, _ = pointsTo2dPoincare(
-                x=points_sampled,
-                poincare=poincare_64,
-                hyperplanes=None,
-                settings=settings,
-            )
-            two_d_pts = (
-                two_d_pts.detach()
-                .clone()
-                .to(dtype=settings["plot_manifold_dtype"], device=manifold.c.device)
-            )  # type: ignore
-            if not poincare_64.is_in_manifold(two_d_pts):
-                warning(
-                    "Some points are out of the Poincare ball after dimensionality reduction. NO visualization generated"
-                )
-            else:
-                points_in_manifold = True
-
+    # --- Delta hyperbolicity ---
     if metrics.get("delta_hyperbolicity", False):
+        from src.hyperbolic_math.src.utils.helpers import get_delta
         delta_hyp, diam_hyp, rel_delta_hyp = get_delta(
             X, manifold, len(X), version="average", batch_size=100
         )
         results["delta_hyperbolicity"] = delta_hyp.item()
         results["diameter_hyperbolicity"] = diam_hyp.item()
         results["relative_delta_hyperbolicity"] = rel_delta_hyp.item()
+
+    # --- Dendrogram purity ---
     dp_use_root = metrics.get("dendrogrampurity_use_root", False)
-    if metrics.get("dendrogram_purity_single", False):
-        # Compute dendrogram purity for single linkage
+    for dp_linkage in ("single", "complete", "average", "ward"):
+        if not metrics.get(f"dendrogram_purity_{dp_linkage}", False):
+            continue
         if Y_coarse is not None:
-            # Use hierarchical DP for datasets with coarse labels
-            dp_score_single = hierarchical_dendrogram_purity(
-                distance_matrix, Y, Y_coarse, "single", use_root=dp_use_root
+            dp_score = hierarchical_dendrogram_purity(
+                distance_matrix, Y, Y_coarse, dp_linkage, use_root=dp_use_root,
+                hierarchy_clusters=hierarchy_clusters,
             )
-            results["hierarchical_dendrogram_purity_single"] = dp_score_single
+            results[f"hierarchical_dendrogram_purity_{dp_linkage}"] = dp_score
         else:
-            # Use flat DP for simple datasets
-            dp_score_single = dendrogram_purity(distance_matrix, Y, "single", use_root=dp_use_root)
-            results["dendrogram_purity_single"] = dp_score_single
-    if metrics.get("dendrogram_purity_complete", False):
-        # Compute dendrogram purity for complete linkage
-        if Y_coarse is not None:
-            # Use hierarchical DP for datasets with coarse labels
-            dp_score_complete = hierarchical_dendrogram_purity(
-                distance_matrix, Y, Y_coarse, "complete", use_root=dp_use_root
+            dp_score = dendrogram_purity(distance_matrix, Y, dp_linkage, use_root=dp_use_root)
+            results[f"dendrogram_purity_{dp_linkage}"] = dp_score
+
+    # --- Agglomerative clustering ---
+    for linkage_name in ("single", "complete", "average", "ward"):
+        if metrics.get(f"agglomerative_clustering_{linkage_name}", False):
+            _run_agglomerative(
+                linkage_name, distance_matrix, X, Y, Y_coarse,
+                str_labels, manifold, two_d_pts, vis_sample_indices, do_vis, results,
+                coarse_label_names=coarse_label_names,
             )
-            results["hierarchical_dendrogram_purity_complete"] = dp_score_complete
+
+    # --- Ground-truth embedding visualization ---
+    if do_vis and two_d_pts is not None:
+        Y_np = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
+        # Resolve per-sample labels to human-readable names for the scatter plot
+        vis_Y = Y_np[vis_sample_indices]
+        if coarse_label_names is not None:
+            labels = np.array([coarse_label_names.get(int(l), str(l)) for l in vis_Y])
+        elif str_labels is not None:
+            labels = np.asarray(str_labels)[vis_sample_indices]
+            labels = np.array([
+                str(l) if isinstance(l, (tuple, list, np.ndarray)) else (l if l is not None else "Unknown")
+                for l in labels
+            ])
         else:
-            # Use flat DP for simple datasets
-            dp_score_complete = dendrogram_purity(distance_matrix, Y, "complete", use_root=dp_use_root)
-            results["dendrogram_purity_complete"] = dp_score_complete
-    if metrics.get("dendrogram_purity_average", False):
-        # Compute dendrogram purity for average linkage
-        if Y_coarse is not None:
-            # Use hierarchical DP for datasets with coarse labels
-            dp_score_average = hierarchical_dendrogram_purity(
-                distance_matrix, Y, Y_coarse, "average", use_root=dp_use_root
-            )
-            results["hierarchical_dendrogram_purity_average"] = dp_score_average
-        else:
-            # Use flat DP for simple datasets
-            dp_score_average = dendrogram_purity(distance_matrix, Y, "average", use_root=dp_use_root)
-            results["dendrogram_purity_average"] = dp_score_average
-    if metrics.get("dendrogram_purity_ward", False):
-        # Compute dendrogram purity for ward linkage
-        if Y_coarse is not None:
-            # Use hierarchical DP for datasets with coarse labels
-            dp_score_ward = hierarchical_dendrogram_purity(
-                distance_matrix, Y, Y_coarse, "ward", use_root=dp_use_root
-            )
-            results["hierarchical_dendrogram_purity_ward"] = dp_score_ward
-        else:
-            # Use flat DP for simple datasets
-            dp_score_ward = dendrogram_purity(distance_matrix, Y, "ward", use_root=dp_use_root)
-            results["dendrogram_purity_ward"] = dp_score_ward
-    if metrics.get("agglomerative_clustering_single", False):
-        # Compute agglomerative clustering metrics
-        Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
-        agglomerative_clustering_single = AgglomerativeClustering(
-            n_clusters=len(np.unique(Y_numpy)), metric="precomputed", linkage="single"
-        )
-        pred_labels_single = agglomerative_clustering_single.fit_predict(
-            distance_matrix.cpu().numpy()
-        )
-        nmi_single = normalized_mutual_info_score(Y_numpy, pred_labels_single)
-        ari_single = adjusted_rand_score(Y_numpy, pred_labels_single)
-        results["agglomerative_clustering_single_nmi"] = nmi_single
-        results["agglomerative_clustering_single_ari"] = ari_single
+            labels = vis_Y
 
-        # Generate confusion matrix (use coarse labels if available for visualization)
-        Y_for_cm = Y_coarse if Y_coarse is not None else Y_numpy
-        Y_for_cm_np = (
-            Y_for_cm.cpu().numpy()
-            if isinstance(Y_for_cm, torch.Tensor)
-            else np.asarray(Y_for_cm)
-        )
-        # Map predicted labels to coarse labels for confusion matrix
-        if Y_coarse is not None:
-            Y_coarse_np = (
-                Y_coarse.cpu().numpy()
-                if isinstance(Y_coarse, torch.Tensor)
-                else np.asarray(Y_coarse)
-            )
-            # For each predicted cluster, assign it to the most common coarse label
-            pred_labels_for_cm = np.copy(pred_labels_single)
-            for cluster_id in np.unique(pred_labels_single):
-                cluster_mask = pred_labels_single == cluster_id
-                cluster_coarse_labels = Y_coarse_np[cluster_mask]
-                most_common = Counter(cluster_coarse_labels).most_common(1)[0][0]
-                pred_labels_for_cm[cluster_mask] = most_common
-        else:
-            pred_labels_for_cm = pred_labels_single
-        cm_fig = create_confusion_matrix_plot(
-            Y_for_cm_np,
-            pred_labels_for_cm,
-            title="Agglomerative Clustering (Single Linkage) - Confusion Matrix",
-            str_labels=str_labels,
-        )
-        results["agglomerative_clustering_single_confusion_matrix"] = wandb.Image(
-            cm_fig
-        )
-        plt.close(cm_fig)
+        method = "t-SNE" if not isinstance(manifold, Euclidean) else "PCA"
+        fig = _create_scatter_plot(two_d_pts, labels, title=f"{method} Embeddings (Ground Truth)")
+        results[f"{'tsne' if method == 't-SNE' else 'pca'}_embeddings"] = wandb.Image(fig)
+        plt.close(fig)
 
-        if metrics["visualization"] and points_in_manifold:
-            # Map predicted labels to string labels if available
-            Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
-            str_labels_subset = (
-                np.asarray(str_labels)[pca_sample_indices]
-                if str_labels is not None
-                else None
-            )
-            visualization_labels = map_predicted_labels_to_str_labels(
-                pred_labels_single[pca_sample_indices],
-                Y_numpy[pca_sample_indices],
-                str_labels_subset,
-            )
-
-            if isinstance(manifold, Euclidean):
-                # Create PCA scatter plot for Euclidean
-                fig, ax = plt.subplots(figsize=(10, 10))
-                two_d_pts_np = (
-                    two_d_pts.cpu().numpy()
-                    if isinstance(two_d_pts, torch.Tensor)
-                    else two_d_pts
-                )
-                colors, label_to_idx, cmap = get_categorical_colors(
-                    visualization_labels
-                )
-                scatter = ax.scatter(
-                    two_d_pts_np[:, 0],
-                    two_d_pts_np[:, 1],
-                    c=colors,
-                    s=10,
-                    alpha=0.6,
-                )
-                # Add legend
-                unique_labels = np.unique(visualization_labels)
-                handles = [
-                    plt.Line2D(
-                        [0],
-                        [0],
-                        marker="o",
-                        color="w",
-                        markerfacecolor=cmap(
-                            label_to_idx[label] / max(len(unique_labels) - 1, 1)
-                        ),
-                        markersize=8,
-                        label=str(label),
-                    )
-                    for label in unique_labels
-                ]
-                ax.legend(
-                    handles=handles,
-                    loc="center left",
-                    bbox_to_anchor=(1, 0.5),
-                    frameon=True,
-                )
-                set_square_axes(ax, two_d_pts_np)
-                ax.set_title("PCA Agglomerative Clustering Single Linkage")
-                ax.set_xlabel("PC1")
-                ax.set_ylabel("PC2")
-                plt.tight_layout()
-                results["agglomerative_clustering_single_pca_embeddings"] = wandb.Image(
-                    fig
-                )
-                plt.close(fig)
-            else:
-                # Create HoroPCA figure for hyperbolic
-                settings = {
-                    "plot_manifold_dtype": manifold.dtype,
-                    "dim_red_method": "HoroPCA",
-                    "title": "Hyperbolic Embeddings Agglomerative Clustering Single Linkage",
-                    "show_origin": True,
-                    "save_figure": False,
-                    "file_name": "hyperbolic_embeddings",
-                    "file_path": None,
-                    "file_format": "png",
-                }
-                fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
-                results["agglomerative_clustering_single_hyperbolic_embeddings"] = (
-                    wandb.Image(fig)
-                )
-                plt.close(fig)
-    if metrics.get("agglomerative_clustering_complete", False):
-        # Compute agglomerative clustering metrics
-        Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
-        agglomerative_clustering_complete = AgglomerativeClustering(
-            n_clusters=len(np.unique(Y_numpy)), metric="precomputed", linkage="complete"
-        )
-        pred_labels_complete = agglomerative_clustering_complete.fit_predict(
-            distance_matrix.cpu().numpy()
-        )
-        nmi_complete = normalized_mutual_info_score(Y_numpy, pred_labels_complete)
-        ari_complete = adjusted_rand_score(Y_numpy, pred_labels_complete)
-        results["agglomerative_clustering_complete_nmi"] = nmi_complete
-        results["agglomerative_clustering_complete_ari"] = ari_complete
-
-        # Generate confusion matrix (use coarse labels if available for visualization)
-        Y_for_cm = Y_coarse if Y_coarse is not None else Y_numpy
-        Y_for_cm_np = (
-            Y_for_cm.cpu().numpy()
-            if isinstance(Y_for_cm, torch.Tensor)
-            else np.asarray(Y_for_cm)
-        )
-        # Map predicted labels to coarse labels for confusion matrix
-        if Y_coarse is not None:
-            Y_coarse_np = (
-                Y_coarse.cpu().numpy()
-                if isinstance(Y_coarse, torch.Tensor)
-                else np.asarray(Y_coarse)
-            )
-            pred_labels_for_cm = np.copy(pred_labels_complete)
-            for cluster_id in np.unique(pred_labels_complete):
-                cluster_mask = pred_labels_complete == cluster_id
-                cluster_coarse_labels = Y_coarse_np[cluster_mask]
-                most_common = Counter(cluster_coarse_labels).most_common(1)[0][0]
-                pred_labels_for_cm[cluster_mask] = most_common
-        else:
-            pred_labels_for_cm = pred_labels_complete
-        cm_fig = create_confusion_matrix_plot(
-            Y_for_cm_np,
-            pred_labels_for_cm,
-            title="Agglomerative Clustering (Complete Linkage) - Confusion Matrix",
-            str_labels=str_labels,
-        )
-        results["agglomerative_clustering_complete_confusion_matrix"] = wandb.Image(
-            cm_fig
-        )
-        plt.close(cm_fig)
-
-        if metrics["visualization"] and points_in_manifold:
-            # Map predicted labels to string labels if available
-            Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
-            str_labels_subset = (
-                np.asarray(str_labels)[pca_sample_indices]
-                if str_labels is not None
-                else None
-            )
-            visualization_labels = map_predicted_labels_to_str_labels(
-                pred_labels_complete[pca_sample_indices],
-                Y_numpy[pca_sample_indices],
-                str_labels_subset,
-            )
-
-            if isinstance(manifold, Euclidean):
-                # Create PCA scatter plot for Euclidean
-                fig, ax = plt.subplots(figsize=(10, 10))
-                two_d_pts_np = (
-                    two_d_pts.cpu().numpy()
-                    if isinstance(two_d_pts, torch.Tensor)
-                    else two_d_pts
-                )
-                colors, label_to_idx, cmap = get_categorical_colors(
-                    visualization_labels
-                )
-                scatter = ax.scatter(
-                    two_d_pts_np[:, 0],
-                    two_d_pts_np[:, 1],
-                    c=colors,
-                    s=10,
-                    alpha=0.6,
-                )
-                # Add legend
-                unique_labels = np.unique(visualization_labels)
-                handles = [
-                    plt.Line2D(
-                        [0],
-                        [0],
-                        marker="o",
-                        color="w",
-                        markerfacecolor=cmap(
-                            label_to_idx[label] / max(len(unique_labels) - 1, 1)
-                        ),
-                        markersize=8,
-                        label=str(label),
-                    )
-                    for label in unique_labels
-                ]
-                ax.legend(
-                    handles=handles,
-                    loc="center left",
-                    bbox_to_anchor=(1, 0.5),
-                    frameon=True,
-                )
-                set_square_axes(ax, two_d_pts_np)
-                ax.set_title("PCA Agglomerative Clustering Complete Linkage")
-                ax.set_xlabel("PC1")
-                ax.set_ylabel("PC2")
-                plt.tight_layout()
-                results["agglomerative_clustering_complete_pca_embeddings"] = (
-                    wandb.Image(fig)
-                )
-                plt.close(fig)
-            else:
-                # Create HoroPCA figure for hyperbolic
-                settings = {
-                    "plot_manifold_dtype": manifold.dtype,
-                    "dim_red_method": "HoroPCA",
-                    "title": "Hyperbolic Embeddings Agglomerative Clustering Complete Linkage",
-                    "show_origin": True,
-                    "save_figure": False,
-                    "file_name": "hyperbolic_embeddings",
-                    "file_path": None,
-                    "file_format": "png",
-                }
-                # Map predicted labels to string labels if available
-                Y_numpy = (
-                    Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-                )
-                str_labels_subset = (
-                    np.asarray(str_labels)[pca_sample_indices]
-                    if str_labels is not None
-                    else None
-                )
-                visualization_labels = map_predicted_labels_to_str_labels(
-                    pred_labels_complete[pca_sample_indices],
-                    Y_numpy[pca_sample_indices],
-                    str_labels_subset,
-                )
-                fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
-                results["agglomerative_clustering_complete_hyperbolic_embeddings"] = (
-                    wandb.Image(fig)
-                )
-                plt.close(fig)
-    if metrics.get("agglomerative_clustering_average", False):
-        # Compute agglomerative clustering metrics
-        Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
-        agglomerative_clustering_average = AgglomerativeClustering(
-            n_clusters=len(np.unique(Y_numpy)), metric="precomputed", linkage="average"
-        )
-        pred_labels_average = agglomerative_clustering_average.fit_predict(
-            distance_matrix.cpu().numpy()
-        )
-        nmi_average = normalized_mutual_info_score(Y_numpy, pred_labels_average)
-        ari_average = adjusted_rand_score(Y_numpy, pred_labels_average)
-        results["agglomerative_clustering_average_nmi"] = nmi_average
-        results["agglomerative_clustering_average_ari"] = ari_average
-
-        # Generate confusion matrix (use coarse labels if available for visualization)
-        Y_for_cm = Y_coarse if Y_coarse is not None else Y_numpy
-        Y_for_cm_np = (
-            Y_for_cm.cpu().numpy()
-            if isinstance(Y_for_cm, torch.Tensor)
-            else np.asarray(Y_for_cm)
-        )
-        # Map predicted labels to coarse labels for confusion matrix
-        if Y_coarse is not None:
-            Y_coarse_np = (
-                Y_coarse.cpu().numpy()
-                if isinstance(Y_coarse, torch.Tensor)
-                else np.asarray(Y_coarse)
-            )
-            pred_labels_for_cm = np.copy(pred_labels_average)
-            for cluster_id in np.unique(pred_labels_average):
-                cluster_mask = pred_labels_average == cluster_id
-                cluster_coarse_labels = Y_coarse_np[cluster_mask]
-                most_common = Counter(cluster_coarse_labels).most_common(1)[0][0]
-                pred_labels_for_cm[cluster_mask] = most_common
-        else:
-            pred_labels_for_cm = pred_labels_average
-        cm_fig = create_confusion_matrix_plot(
-            Y_for_cm_np,
-            pred_labels_for_cm,
-            title="Agglomerative Clustering (Average Linkage) - Confusion Matrix",
-            str_labels=str_labels,
-        )
-        results["agglomerative_clustering_average_confusion_matrix"] = wandb.Image(
-            cm_fig
-        )
-        plt.close(cm_fig)
-
-        if metrics["visualization"] and points_in_manifold:
-            # Map predicted labels to string labels if available
-            Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
-            str_labels_subset = (
-                np.asarray(str_labels)[pca_sample_indices]
-                if str_labels is not None
-                else None
-            )
-            visualization_labels = map_predicted_labels_to_str_labels(
-                pred_labels_average[pca_sample_indices],
-                Y_numpy[pca_sample_indices],
-                str_labels_subset,
-            )
-
-            if isinstance(manifold, Euclidean):
-                # Create PCA scatter plot for Euclidean
-                fig, ax = plt.subplots(figsize=(10, 10))
-                two_d_pts_np = (
-                    two_d_pts.cpu().numpy()
-                    if isinstance(two_d_pts, torch.Tensor)
-                    else two_d_pts
-                )
-                colors, label_to_idx, cmap = get_categorical_colors(
-                    visualization_labels
-                )
-                scatter = ax.scatter(
-                    two_d_pts_np[:, 0],
-                    two_d_pts_np[:, 1],
-                    c=colors,
-                    s=10,
-                    alpha=0.6,
-                )
-                # Add legend
-                unique_labels = np.unique(visualization_labels)
-                handles = [
-                    plt.Line2D(
-                        [0],
-                        [0],
-                        marker="o",
-                        color="w",
-                        markerfacecolor=cmap(
-                            label_to_idx[label] / max(len(unique_labels) - 1, 1)
-                        ),
-                        markersize=8,
-                        label=str(label),
-                    )
-                    for label in unique_labels
-                ]
-                ax.legend(
-                    handles=handles,
-                    loc="center left",
-                    bbox_to_anchor=(1, 0.5),
-                    frameon=True,
-                )
-                set_square_axes(ax, two_d_pts_np)
-                ax.set_title("PCA Agglomerative Clustering Average Linkage")
-                ax.set_xlabel("PC1")
-                ax.set_ylabel("PC2")
-                plt.tight_layout()
-                results["agglomerative_clustering_average_pca_embeddings"] = (
-                    wandb.Image(fig)
-                )
-                plt.close(fig)
-            else:
-                # Create HoroPCA figure for hyperbolic
-                settings = {
-                    "plot_manifold_dtype": manifold.dtype,
-                    "dim_red_method": "HoroPCA",
-                    "title": "Hyperbolic Embeddings Agglomerative Clustering Average Linkage",
-                    "show_origin": True,
-                    "save_figure": False,
-                    "file_name": "hyperbolic_embeddings",
-                    "file_path": None,
-                    "file_format": "png",
-                }
-                # Map predicted labels to string labels if available
-                Y_numpy = (
-                    Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-                )
-                str_labels_subset = (
-                    np.asarray(str_labels)[pca_sample_indices]
-                    if str_labels is not None
-                    else None
-                )
-                visualization_labels = map_predicted_labels_to_str_labels(
-                    pred_labels_average[pca_sample_indices],
-                    Y_numpy[pca_sample_indices],
-                    str_labels_subset,
-                )
-                fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
-                results["agglomerative_clustering_average_hyperbolic_embeddings"] = (
-                    wandb.Image(fig)
-                )
-                plt.close(fig)
-    if metrics.get("agglomerative_clustering_ward", False):
-        # Compute agglomerative clustering metrics
-        # TODO: Implement agglomerative clustering with ward linkage. Sklearn does not support precomputed distance matrix with ward linkage.
-        pass
-    if metrics.get("visualization", False) and points_in_manifold:
-        # Create a figure with the points and labels
-        Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
-        if str_labels is not None:
-            str_labels_array = np.asarray(str_labels)
-            labels = str_labels_array[pca_sample_indices]
-            # Convert labels to strings to handle cases where they are tuples/arrays (e.g., GTSRB)
-            # Also handle None values by converting them to "Unknown"
-            labels = np.array(
-                [
-                    str(label)
-                    if isinstance(label, (tuple, list, np.ndarray))
-                    else (label if label is not None else "Unknown")
-                    for label in labels
-                ]
-            )
-        else:
-            labels = Y_numpy[pca_sample_indices]
-
-        if isinstance(manifold, Euclidean):
-            # Create PCA scatter plot for Euclidean
-            fig, ax = plt.subplots(figsize=(10, 10))
-            two_d_pts_np = (
-                two_d_pts.cpu().numpy()
-                if isinstance(two_d_pts, torch.Tensor)
-                else two_d_pts
-            )
-            colors, label_to_idx, cmap = get_categorical_colors(labels)
-            scatter = ax.scatter(
-                two_d_pts_np[:, 0],
-                two_d_pts_np[:, 1],
-                c=colors,
-                s=10,
-                alpha=0.6,
-            )
-            # Add legend
-            unique_labels = np.unique(labels)
-            handles = [
-                plt.Line2D(
-                    [0],
-                    [0],
-                    marker="o",
-                    color="w",
-                    markerfacecolor=cmap(
-                        label_to_idx[label] / max(len(unique_labels) - 1, 1)
-                    ),
-                    markersize=8,
-                    label=str(label),
-                )
-                for label in unique_labels
-            ]
-            ax.legend(
-                handles=handles,
-                loc="center left",
-                bbox_to_anchor=(1, 0.5),
-                frameon=True,
-            )
-            set_square_axes(ax, two_d_pts_np)
-            ax.set_title("PCA Embeddings (Euclidean)")
-            ax.set_xlabel("PC1")
-            ax.set_ylabel("PC2")
-            plt.tight_layout()
-            results["pca_embeddings"] = wandb.Image(fig)
-            plt.close(fig)
-        else:
-            # Create HoroPCA figure for hyperbolic
-            settings = {
-                "plot_manifold_dtype": manifold.dtype,
-                "dim_red_method": "HoroPCA",
-                "title": "Hyperbolic Embeddings",
-                "show_origin": True,
-                "save_figure": False,
-                "file_name": "hyperbolic_embeddings",
-                "file_path": None,
-                "file_format": "png",
-            }
-            fig = create_figure(two_d_pts, poincare_64, labels=labels)
-            results["hyperbolic_embeddings"] = wandb.Image(fig)
-            plt.close(fig)
-
+    # --- Nearest neighbors accuracy ---
     if metrics.get("nearest_neighbors_accuracy", False):
-        # Compute nearest neighbors accuracy
-        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y_clustering, k=1)
-        results["1_nearest_neighbors_accuracy"] = nn_accuracy
-        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y_clustering, k=5)
-        results["5_nearest_neighbors_accuracy"] = nn_accuracy
-        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y_clustering, k=10)
-        results["10_nearest_neighbors_accuracy"] = nn_accuracy
-        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y_clustering, k=100)
-        results["100_nearest_neighbors_accuracy"] = nn_accuracy
-        nn_accuracy = nearest_neighbors_accuracy(distance_matrix, Y_clustering, k=1000)
-        results["1000_nearest_neighbors_accuracy"] = nn_accuracy
+        for k in (1, 5, 10, 100, 1000):
+            results[f"{k}_nearest_neighbors_accuracy"] = nearest_neighbors_accuracy(
+                distance_matrix, Y, k=k,
+            )
 
+    # --- Spectral clustering ---
     if metrics.get("spectral_clustering", False):
-        Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
-        affinity_matrix = distance_matrix.cpu().numpy()
-        spectral_clustering = SpectralClustering(
-            n_clusters=len(np.unique(Y_numpy)),
+        Y_np = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+        n_clusters = len(np.unique(Y_np))
+        spectral = SpectralClustering(
+            n_clusters=n_clusters,
             affinity="precomputed_nearest_neighbors",
             n_neighbors=metrics.get("spectral_nn", 10),
             assign_labels="kmeans",
             random_state=int(torch.get_rng_state()[0].item()),
         )
+        pred_labels_spectral = spectral.fit_predict(distance_matrix.cpu().numpy())
+        results["spectral_clustering_nmi"] = normalized_mutual_info_score(Y_np, pred_labels_spectral)
+        results["spectral_clustering_ari"] = adjusted_rand_score(Y_np, pred_labels_spectral)
 
-        # spectral_clustering = HyperbolicSpectralClustering(n_clusters=len(np.unique(Y_numpy)))
-        pred_labels_spectral = spectral_clustering.fit_predict(affinity_matrix)
-        nmi_spectral = normalized_mutual_info_score(Y_numpy, pred_labels_spectral)
-        ari_spectral = adjusted_rand_score(Y_numpy, pred_labels_spectral)
-        results["spectral_clustering_nmi"] = nmi_spectral
-        results["spectral_clustering_ari"] = ari_spectral
-
-        # Generate confusion matrix (use coarse labels if available for visualization)
-        Y_for_cm = Y_coarse if Y_coarse is not None else Y_numpy
-        Y_for_cm_np = (
-            Y_for_cm.cpu().numpy()
-            if isinstance(Y_for_cm, torch.Tensor)
-            else np.asarray(Y_for_cm)
-        )
-        # Map predicted labels to coarse labels for confusion matrix
-        if Y_coarse is not None:
-            Y_coarse_np = (
-                Y_coarse.cpu().numpy()
-                if isinstance(Y_coarse, torch.Tensor)
-                else np.asarray(Y_coarse)
-            )
-            pred_labels_for_cm = np.copy(pred_labels_spectral)
-            for cluster_id in np.unique(pred_labels_spectral):
-                cluster_mask = pred_labels_spectral == cluster_id
-                cluster_coarse_labels = Y_coarse_np[cluster_mask]
-                most_common = Counter(cluster_coarse_labels).most_common(1)[0][0]
-                pred_labels_for_cm[cluster_mask] = most_common
-        else:
-            pred_labels_for_cm = pred_labels_spectral
-        cm_fig = create_confusion_matrix_plot(
-            Y_for_cm_np,
-            pred_labels_for_cm,
-            title="Spectral Clustering - Confusion Matrix",
-            str_labels=str_labels,
-        )
+        # Confusion matrix
+        Y_coarse_np = (
+            Y_coarse.cpu().numpy() if isinstance(Y_coarse, torch.Tensor) else np.asarray(Y_coarse)
+        ) if Y_coarse is not None else None
+        y_true_cm = Y_coarse_np if Y_coarse_np is not None else Y_np
+        pred_cm = _map_preds_to_coarse(pred_labels_spectral, Y_coarse_np) if Y_coarse_np is not None else pred_labels_spectral
+        cm_fig = _create_confusion_matrix_plot(y_true_cm, pred_cm, title="Spectral Clustering - Confusion Matrix", str_labels=str_labels, coarse_label_names=coarse_label_names)
         results["spectral_clustering_confusion_matrix"] = wandb.Image(cm_fig)
         plt.close(cm_fig)
 
-        if metrics["visualization"] and points_in_manifold:
-            # Map predicted labels to string labels if available
-            Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
-            str_labels_subset = (
-                np.asarray(str_labels)[pca_sample_indices]
-                if str_labels is not None
-                else None
+        if do_vis and two_d_pts is not None:
+            str_sub = np.asarray(str_labels)[vis_sample_indices] if str_labels is not None else None
+            vis_labels = map_predicted_labels_to_str_labels(
+                pred_labels_spectral[vis_sample_indices], Y_np[vis_sample_indices], str_sub,
             )
-            visualization_labels = map_predicted_labels_to_str_labels(
-                pred_labels_spectral[pca_sample_indices],
-                Y_numpy[pca_sample_indices],
-                str_labels_subset,
-            )
+            fig = _create_scatter_plot(two_d_pts, vis_labels, title="Spectral Clustering Embeddings")
+            results["spectral_clustering_embeddings"] = wandb.Image(fig)
+            plt.close(fig)
 
-            if isinstance(manifold, Euclidean):
-                # Create PCA scatter plot for Euclidean
-                fig, ax = plt.subplots(figsize=(10, 10))
-                two_d_pts_np = (
-                    two_d_pts.cpu().numpy()
-                    if isinstance(two_d_pts, torch.Tensor)
-                    else two_d_pts
-                )
-                colors, label_to_idx, cmap = get_categorical_colors(
-                    visualization_labels
-                )
-                scatter = ax.scatter(
-                    two_d_pts_np[:, 0],
-                    two_d_pts_np[:, 1],
-                    c=colors,
-                    s=10,
-                    alpha=0.6,
-                )
-                # Add legend
-                unique_labels = np.unique(visualization_labels)
-                handles = [
-                    plt.Line2D(
-                        [0],
-                        [0],
-                        marker="o",
-                        color="w",
-                        markerfacecolor=cmap(
-                            label_to_idx[label] / max(len(unique_labels) - 1, 1)
-                        ),
-                        markersize=8,
-                        label=str(label),
-                    )
-                    for label in unique_labels
-                ]
-                ax.legend(
-                    handles=handles,
-                    loc="center left",
-                    bbox_to_anchor=(1, 0.5),
-                    frameon=True,
-                )
-                set_square_axes(ax, two_d_pts_np)
-                ax.set_title("PCA Spectral Clustering")
-                ax.set_xlabel("PC1")
-                ax.set_ylabel("PC2")
-                plt.tight_layout()
-                results["spectral_clustering_pca_embeddings"] = wandb.Image(fig)
-                plt.close(fig)
-            else:
-                # Create HoroPCA figure for hyperbolic
-                settings = {
-                    "plot_manifold_dtype": manifold.dtype,
-                    "dim_red_method": "HoroPCA",
-                    "title": "Hyperbolic Embeddings Spectral Clustering",
-                    "show_origin": True,
-                    "save_figure": False,
-                    "file_name": "hyperbolic_embeddings",
-                    "file_path": None,
-                    "file_format": "png",
-                }
-                fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
-                results["spectral_clustering_hyperbolic_embeddings"] = wandb.Image(fig)
-                plt.close(fig)
+    # --- K-means ---
     if metrics.get("kmeans", False):
-        # Compute k-means clustering metrics
-        Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
-        kmeans = KMeans(
-            n_clusters=len(np.unique(Y_numpy)),
-            n_init="auto",
-            random_state=int(torch.get_rng_state()[0].item()),
-        )
-        pred_labels_kmeans = kmeans.fit_predict(X.cpu().numpy())
-        nmi_kmeans = normalized_mutual_info_score(Y_numpy, pred_labels_kmeans)
-        ari_kmeans = adjusted_rand_score(Y_numpy, pred_labels_kmeans)
-        results["kmeans_nmi"] = nmi_kmeans
-        results["kmeans_ari"] = ari_kmeans
+        Y_np = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+        n_clusters = len(np.unique(Y_np))
+        kmeans = KMeans(n_clusters=n_clusters, n_init="auto", random_state=int(torch.get_rng_state()[0].item()))
+        pred_labels_km = kmeans.fit_predict(X.cpu().numpy())
+        results["kmeans_nmi"] = normalized_mutual_info_score(Y_np, pred_labels_km)
+        results["kmeans_ari"] = adjusted_rand_score(Y_np, pred_labels_km)
 
-        # Generate confusion matrix (use coarse labels if available for visualization)
-        Y_for_cm = Y_coarse if Y_coarse is not None else Y_numpy
-        Y_for_cm_np = (
-            Y_for_cm.cpu().numpy()
-            if isinstance(Y_for_cm, torch.Tensor)
-            else np.asarray(Y_for_cm)
-        )
-        # Map predicted labels to coarse labels for confusion matrix
-        if Y_coarse is not None:
-            Y_coarse_np = (
-                Y_coarse.cpu().numpy()
-                if isinstance(Y_coarse, torch.Tensor)
-                else np.asarray(Y_coarse)
-            )
-            pred_labels_for_cm = np.copy(pred_labels_kmeans)
-            for cluster_id in np.unique(pred_labels_kmeans):
-                cluster_mask = pred_labels_kmeans == cluster_id
-                cluster_coarse_labels = Y_coarse_np[cluster_mask]
-                most_common = Counter(cluster_coarse_labels).most_common(1)[0][0]
-                pred_labels_for_cm[cluster_mask] = most_common
-        else:
-            pred_labels_for_cm = pred_labels_kmeans
-        cm_fig = create_confusion_matrix_plot(
-            Y_for_cm_np,
-            pred_labels_for_cm,
-            title="K-Means Clustering - Confusion Matrix",
-            str_labels=str_labels,
-        )
+        Y_coarse_np = (
+            Y_coarse.cpu().numpy() if isinstance(Y_coarse, torch.Tensor) else np.asarray(Y_coarse)
+        ) if Y_coarse is not None else None
+        y_true_cm = Y_coarse_np if Y_coarse_np is not None else Y_np
+        pred_cm = _map_preds_to_coarse(pred_labels_km, Y_coarse_np) if Y_coarse_np is not None else pred_labels_km
+        cm_fig = _create_confusion_matrix_plot(y_true_cm, pred_cm, title="K-Means - Confusion Matrix", str_labels=str_labels, coarse_label_names=coarse_label_names)
         results["kmeans_confusion_matrix"] = wandb.Image(cm_fig)
         plt.close(cm_fig)
 
-        if metrics["visualization"] and points_in_manifold:
-            # Map predicted labels to string labels if available
-            Y_numpy = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
-            str_labels_subset = (
-                np.asarray(str_labels)[pca_sample_indices]
-                if str_labels is not None
-                else None
+        if do_vis and two_d_pts is not None:
+            str_sub = np.asarray(str_labels)[vis_sample_indices] if str_labels is not None else None
+            vis_labels = map_predicted_labels_to_str_labels(
+                pred_labels_km[vis_sample_indices], Y_np[vis_sample_indices], str_sub,
             )
-            visualization_labels = map_predicted_labels_to_str_labels(
-                pred_labels_kmeans[pca_sample_indices],
-                Y_numpy[pca_sample_indices],
-                str_labels_subset,
-            )
+            fig = _create_scatter_plot(two_d_pts, vis_labels, title="K-Means Embeddings")
+            results["kmeans_embeddings"] = wandb.Image(fig)
+            plt.close(fig)
 
-            if isinstance(manifold, Euclidean):
-                # Create PCA scatter plot for Euclidean
-                fig, ax = plt.subplots(figsize=(10, 10))
-                two_d_pts_np = (
-                    two_d_pts.cpu().numpy()
-                    if isinstance(two_d_pts, torch.Tensor)
-                    else two_d_pts
-                )
-                colors, label_to_idx, cmap = get_categorical_colors(
-                    visualization_labels
-                )
-                scatter = ax.scatter(
-                    two_d_pts_np[:, 0],
-                    two_d_pts_np[:, 1],
-                    c=colors,
-                    s=10,
-                    alpha=0.6,
-                )
-                # Add legend
-                unique_labels = np.unique(visualization_labels)
-                handles = [
-                    plt.Line2D(
-                        [0],
-                        [0],
-                        marker="o",
-                        color="w",
-                        markerfacecolor=cmap(
-                            label_to_idx[label] / max(len(unique_labels) - 1, 1)
-                        ),
-                        markersize=8,
-                        label=str(label),
-                    )
-                    for label in unique_labels
-                ]
-                ax.legend(
-                    handles=handles,
-                    loc="center left",
-                    bbox_to_anchor=(1, 0.5),
-                    frameon=True,
-                )
-                set_square_axes(ax, two_d_pts_np)
-                ax.set_title("PCA KMeans Clustering")
-                ax.set_xlabel("PC1")
-                ax.set_ylabel("PC2")
-                plt.tight_layout()
-                results["kmeans_pca_embeddings"] = wandb.Image(fig)
-                plt.close(fig)
-            else:
-                # Create HoroPCA figure for hyperbolic
-                settings = {
-                    "plot_manifold_dtype": manifold.dtype,
-                    "dim_red_method": "HoroPCA",
-                    "title": "Hyperbolic Embeddings KMeans Clustering",
-                    "show_origin": True,
-                    "save_figure": False,
-                    "file_name": "hyperbolic_embeddings",
-                    "file_path": None,
-                    "file_format": "png",
-                }
-                fig = create_figure(two_d_pts, poincare_64, labels=visualization_labels)
-                results["kmeans_hyperbolic_embeddings"] = wandb.Image(fig)
-                plt.close(fig)
-
+    # --- Dasgupta cost ---
     if metrics.get("dasgupta_cost", False):
-        # Compute Dasgupta cost for average linkage
-        dasgupta_cost_average = dasgupta_cost(
-            torch.reciprocal(distance_matrix + 1), "average"
-        )
-        results["dasgupta_cost"] = dasgupta_cost_average
+        results["dasgupta_cost"] = dasgupta_cost(torch.reciprocal(distance_matrix + 1), "average")
+
     return results
 
+
+# ---------------------------------------------------------------------------
+# Tree utilities
+# ---------------------------------------------------------------------------
 
 class Node:
     def __init__(self, id, left=None, right=None):
@@ -1135,35 +643,25 @@ class Node:
         self._leaves_count = None
 
     def get_leaves_count(self):
-        # Memoize the result to avoid re-computation
         if self._leaves_count is not None:
             return self._leaves_count
-
-        if self.left is None and self.right is None:  # It's a leaf node
+        if self.left is None and self.right is None:
             self._leaves_count = 1
         else:
-            self._leaves_count = (
-                self.left.get_leaves_count() + self.right.get_leaves_count()
-            )  # type: ignore
+            self._leaves_count = self.left.get_leaves_count() + self.right.get_leaves_count()
         return self._leaves_count
 
 
-def dasgupta_cost(
-    similarity_matrix: torch.Tensor, linkage_method: str = "average"
-) -> float:
-    """
-    Computes the Dasgupta cost correctly for a hierarchy built from a similarity matrix.
-    """
+def dasgupta_cost(similarity_matrix: torch.Tensor, linkage_method: str = "average") -> float:
+    """Computes the Dasgupta cost for a hierarchy built from a similarity matrix."""
     num_samples = similarity_matrix.shape[0]
     if num_samples < 2:
         return 0.0
 
-    # 1. Build the linkage matrix (same as before)
     distance_matrix = 1 - similarity_matrix
     condensed_distances = squareform(distance_matrix.cpu().numpy(), checks=False)
     Z = linkage(condensed_distances, method=linkage_method)
 
-    # 2. Build a user-friendly tree structure from the linkage matrix
     nodes = [Node(i) for i in range(num_samples)]
     for i, merge in enumerate(Z):
         node1_id, node2_id = int(merge[0]), int(merge[1])
@@ -1171,74 +669,50 @@ def dasgupta_cost(
         nodes.append(new_node)
     root = nodes[-1]
 
-    # Create a map from leaf_id to its parent nodes for efficient LCA finding
     parent_map = {root: None}
     q = [root]
     while q:
         node = q.pop(0)
         if node.left:
-            parent_map[node.left] = node  # type: ignore
+            parent_map[node.left] = node
             q.append(node.left)
         if node.right:
-            parent_map[node.right] = node  # type: ignore
+            parent_map[node.right] = node
             q.append(node.right)
 
-    # 3. Iterate over all unique pairs of leaves
     total_cost = 0.0
     for i in range(num_samples):
         for j in range(i + 1, num_samples):
-            # 4. Find the LCA for the pair (i, j)
-            # Get ancestors of i
             ancestors_i = set()
             curr = nodes[i]
             while curr is not None:
                 ancestors_i.add(curr)
                 curr = parent_map.get(curr)
 
-            # Find the first common ancestor by traversing up from j
-            lca_node = None
             curr = nodes[j]
             while curr is not None:
                 if curr in ancestors_i:
-                    lca_node = curr
+                    num_lca_leaves = curr.get_leaves_count()
+                    total_cost += similarity_matrix[i, j].item() * num_lca_leaves
                     break
                 curr = parent_map.get(curr)
 
-            # 5. Get subtree size and calculate cost contribution
-            if lca_node:
-                num_lca_leaves = lca_node.get_leaves_count()
-                similarity_ij = similarity_matrix[i, j].item()
-                total_cost += similarity_ij * num_lca_leaves
-
     return total_cost
 
+
+# ---------------------------------------------------------------------------
+# Label mapping
+# ---------------------------------------------------------------------------
 
 def map_predicted_labels_to_str_labels(
     predicted_labels: np.ndarray,
     true_labels: np.ndarray,
     str_labels: Optional[npt.ArrayLike] = None,
 ) -> np.ndarray:
-    """
-    Map predicted cluster labels to string labels using majority voting.
-
-    Parameters
-    ----------
-    predicted_labels : np.ndarray
-        Predicted cluster labels (integers)
-    true_labels : np.ndarray
-        True labels (integers)
-    str_labels : Optional[npt.ArrayLike]
-        String labels corresponding to true_labels
-
-    Returns
-    -------
-    np.ndarray
-        Mapped string labels for predicted clusters, or original predicted labels if str_labels is None
-    """
+    """Map predicted cluster labels to string labels using majority voting."""
     if str_labels is None:
         return predicted_labels
 
-    # Ensure inputs are numpy arrays
     str_labels = np.asarray(str_labels)
     predicted_labels = np.asarray(predicted_labels)
     true_labels = np.asarray(true_labels)
@@ -1247,55 +721,31 @@ def map_predicted_labels_to_str_labels(
     mapped_labels = np.copy(predicted_labels).astype(object)
 
     for cluster_id in unique_clusters:
-        # Get indices of points in this cluster
         cluster_mask = predicted_labels == cluster_id
         cluster_true_labels = true_labels[cluster_mask]
+        most_common_true_label = Counter(cluster_true_labels).most_common(1)[0][0]
 
-        # Find the most common string label in this cluster via majority vote on true labels
-        true_label_counts = Counter(cluster_true_labels)
-        most_common_true_label = true_label_counts.most_common(1)[0][0]
-
-        # Find the corresponding string label
         true_label_mask = true_labels == most_common_true_label
         representative_str_label = str_labels[true_label_mask][0]
-
-        # Handle case where str_labels contains tuples (e.g., GTSRB with fine/coarse labels)
-        # Note: For GTSRB, we now extract only coarse labels in abstract.py, so this should be strings
         if isinstance(representative_str_label, (tuple, list, np.ndarray)):
-            # If still tuple/array, convert to string representation
             representative_str_label = str(representative_str_label)
-
-        # Assign this string label to all points in the cluster
         mapped_labels[cluster_mask] = representative_str_label
 
     return mapped_labels
 
+
+# ---------------------------------------------------------------------------
+# Nearest neighbors accuracy
+# ---------------------------------------------------------------------------
 
 def nearest_neighbors_accuracy(
     distance_matrix: Union[np.ndarray, torch.Tensor],
     labels: Union[np.ndarray, torch.Tensor],
     k: int = 1,
 ) -> float:
-    """
-    Computes the nearest neighbors accuracy based on the distance matrix and labels.
-
-    Parameters
-    ----------
-    distance_matrix : np.ndarray or torch.Tensor
-        Precomputed distance matrix.
-    labels : np.ndarray or torch.Tensor
-        True labels for the samples.
-    k : int, optional
-        Number of nearest neighbors to consider, by default 1.
-
-    Returns
-    -------
-    float
-        The accuracy of the nearest neighbors classification.
-    """
+    """Computes the nearest neighbors accuracy based on the distance matrix and labels."""
     if isinstance(labels, torch.Tensor):
         labels = labels.detach().cpu().numpy()
-
     if isinstance(distance_matrix, torch.Tensor):
         distance_matrix = distance_matrix.detach().cpu().numpy()
 
@@ -1303,19 +753,20 @@ def nearest_neighbors_accuracy(
     if num_samples < 2:
         return 1.0
 
-    # Get indices of the k+1 nearest neighbors for each sample (including itself)
-    # Then exclude the first one (which is the sample itself)
     nearest_indices = np.argsort(distance_matrix, axis=1)[:, 1 : k + 1]
     average_accuracy = 0.0
-    for i in range(distance_matrix.shape[0]):
+    for i in range(num_samples):
         counter = 0
-        # Check if the nearest neighbors are correct
         for j in range(k):
             if labels[nearest_indices[i, j]] == labels[i]:
                 counter += 1
         average_accuracy += counter / k
     return average_accuracy / num_samples
 
+
+# ---------------------------------------------------------------------------
+# Dendrogram purity
+# ---------------------------------------------------------------------------
 
 def dendrogram_purity(
     distance_matrix: torch.Tensor,
@@ -1326,57 +777,31 @@ def dendrogram_purity(
     """
     Computes the canonical Dendrogram Purity for a hierarchy built from a distance matrix.
 
-    This function first builds a dendrogram using the specified linkage method and then
-    calculates its purity against the ground-truth labels, adhering to the formula:
-    DP(T) = (1 / |P*|) * Σ_{k} Σ_{xi, xj ∈ C*_k, i≠j} pur(lca(xi, xj), C*_k)
-
-    Args:
-        distance_matrix (np.ndarray): A square N x N matrix of pairwise distances.
-        labels (np.ndarray): A 1D array of size N with ground-truth class labels.
-        linkage_method (str): The linkage algorithm to use (e.g., 'average', 'single', 'complete').
-        use_root (bool): If True, the root node (final merge containing all samples) is included
-            in the purity sum. If False (default), the root node is excluded.
-
-    Returns:
-        float: The Dendrogram Purity score, between 0 and 1.
+    DP(T) = (1 / |P*|) * sum_k sum_{xi, xj in C*_k, i!=j} pur(lca(xi, xj), C*_k)
     """
     num_samples = len(labels)
     if num_samples < 2:
         return 1.0
 
-    # Ensure numpy arrays
     distance_matrix_np = distance_matrix.cpu().numpy()
     labels_np = np.asarray(labels)
 
     if distance_matrix_np.shape != (num_samples, num_samples):
         raise ValueError("Distance matrix must be square and match number of labels.")
 
-    # --- Step 1: Calculate the Normalization Factor |P*| ---
-    # This is the total number of unique, non-identical pairs of points
-    # that belong to the same ground-truth class.
     _, class_counts = np.unique(labels_np, return_counts=True)
     num_same_class_pairs = sum(count * (count - 1) // 2 for count in class_counts)
-
     if num_same_class_pairs == 0:
-        # By convention, if there are no same-class pairs, purity is perfect.
         return 1.0
 
-    # --- Step 2: Build the Dendrogram (Linkage Matrix) ---
-    # The metric evaluates a given tree. Here, we build it first.
     condensed_distances = squareform(distance_matrix_np, checks=False)
     Z = linkage(condensed_distances, method=linkage_method)
 
-    # --- Step 3: Iterate Through Merges to Calculate Total Purity Sum ---
     total_purity_sum = 0.0
-
-    # This map will store the label distribution (Counter) for each cluster node.
-    # It starts with leaf nodes (the original data points).
     cluster_label_counts = {i: Counter({labels_np[i]: 1}) for i in range(num_samples)}
 
     num_merges = len(Z)
-    # Iterate over each merge operation in the linkage matrix
     for i, merge in enumerate(Z):
-        # Skip the root node (last merge) unless use_root is enabled
         if not use_root and i == num_merges - 1:
             break
         node1_id, node2_id = int(merge[0]), int(merge[1])
@@ -1384,108 +809,77 @@ def dendrogram_purity(
 
         counts1 = cluster_label_counts[node1_id]
         counts2 = cluster_label_counts[node2_id]
-
-        # The new node's labels are the sum of its children's labels
         new_node_counts = counts1 + counts2
         cluster_label_counts[new_node_id] = new_node_counts
 
-        # The current new_node_id is the LCA for any pair of points (x, y)
-        # where x is from the subtree of node1 and y is from the subtree of node2.
-
-        # Total points in the newly formed cluster (the LCA's leaves)
         lca_node_size = sum(new_node_counts.values())
 
-        # Iterate through all ground-truth classes present in the merge
-        all_involved_labels = set(counts1.keys()) | set(counts2.keys())
-
-        for label in all_involved_labels:
-            # Number of points with this label from each child cluster
+        for label in set(counts1.keys()) | set(counts2.keys()):
             n1_k = counts1.get(label, 0)
             n2_k = counts2.get(label, 0)
-
-            # The number of new same-class pairs whose LCA is this node
             num_new_pairs = n1_k * n2_k
-
             if num_new_pairs > 0:
-                # Purity of the LCA node with respect to this specific class `label`
-                # pur(lvs(lca), C*_k) = |lvs(lca) ∩ C*_k| / |lvs(lca)|
-                count_of_label_in_lca = new_node_counts.get(label, 0)
-                purity_of_lca_for_label = count_of_label_in_lca / lca_node_size
+                purity = new_node_counts.get(label, 0) / lca_node_size
+                total_purity_sum += num_new_pairs * purity
 
-                # Add the contribution of all these new pairs to the total sum
-                total_purity_sum += num_new_pairs * purity_of_lca_for_label
-
-        # Free memory by deleting child node info that will no longer be used
         del cluster_label_counts[node1_id]
         del cluster_label_counts[node2_id]
 
-    # --- Step 4: Final Normalization ---
     return total_purity_sum / num_same_class_pairs
 
 
-def _load_cifar100_hierarchy(file_path):
+def build_hierarchy_clusters(parent_child: dict[int, list[int]], leaf_ids: set[int]) -> list[set[int]]:
+    """Build leaf-set clusters from a parent-child hierarchy.
+
+    Each internal node in the hierarchy defines a cluster consisting of all
+    leaf descendants reachable from it.  Singleton clusters and the full-root
+    cluster are excluded so that the metric captures intermediate structure.
+
+    Parameters
+    ----------
+    parent_child : dict[int, list[int]]
+        Parent → children mapping (numeric IDs).
+    leaf_ids : set[int]
+        The set of leaf node IDs (e.g. class indices 0-199).
+
+    Returns
+    -------
+    list[set[int]]
+        Unique, non-trivial clusters of leaf IDs.
     """
-    Parses the CIFAR-100 WordNet hierarchy file.
-    Returns a list of sets, where each set contains the fine labels (0-99)
-    belonging to a node in the hierarchy.
-    """
-    if not os.path.exists(file_path):
-        return None
-        
-    adj = {}
-    nodes = set()
-    try:
-        with open(file_path, 'r') as f:
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) >= 2:
-                    u, v = int(parts[0]), int(parts[1])
-                    # Format is usually Parent Child.
-                    adj.setdefault(u, []).append(v)
-                    nodes.add(u)
-                    nodes.add(v)
-    except Exception:
-        return None
-                
-    node_leaves = {}
-    
-    def get_leaves(u):
+    node_leaves: dict[int, set[int]] = {}
+
+    def get_leaves(u: int) -> set[int]:
         if u in node_leaves:
             return node_leaves[u]
-        
-        # If u is a leaf (0-99), return {u}
-        if 0 <= u <= 99:
-             s = {u}
-             node_leaves[u] = s
-             return s
-             
-        leaves = set()
-        if u in adj:
-            for v in adj[u]:
+        if u in leaf_ids and u not in parent_child:
+            s = {u}
+            node_leaves[u] = s
+            return s
+        leaves: set[int] = set()
+        if u in parent_child:
+            for v in parent_child[u]:
                 leaves.update(get_leaves(v))
-        
+        # u might be a leaf that also appears as a parent (unlikely but safe)
+        if u in leaf_ids:
+            leaves.add(u)
         node_leaves[u] = leaves
         return leaves
 
-    all_clusters = []
-    for u in nodes:
+    num_leaves = len(leaf_ids)
+    seen: set[frozenset[int]] = set()
+    unique_clusters: list[set[int]] = []
+    all_nodes = set(parent_child.keys())
+    for children in parent_child.values():
+        all_nodes.update(children)
+
+    for u in all_nodes:
         leaves = get_leaves(u)
-        if len(leaves) > 0:
-            all_clusters.append(leaves)
-            
-    # Include individual leaves if not covered (they should be, but as singletons)
-    # The loop above covers leaf nodes if they are in 'nodes'.
-    # If a leaf is disconnected or only a child, it's in 'nodes'.
-    
-    unique_clusters = []
-    seen = set()
-    for c in all_clusters:
-        c_frozen = frozenset(c)
-        # Exclude the root cluster (all 100 classes) to avoid trivial matches
-        if c_frozen not in seen and len(c) > 0 and len(c) < 100:
+        c_frozen = frozenset(leaves)
+        if c_frozen not in seen and 1 < len(leaves) < num_leaves:
             seen.add(c_frozen)
-            unique_clusters.append(c)
-            
+            unique_clusters.append(leaves)
+
     return unique_clusters
 
 
@@ -1495,10 +889,17 @@ def hierarchical_dendrogram_purity(
     labels_coarse: np.ndarray | torch.Tensor,
     linkage_method: str = "average",
     use_root: bool = False,
+    hierarchy_clusters: list[set[int]] | None = None,
 ) -> float:
     """
     Computes the Hierarchical Dendrogram Purity for a hierarchy built from a distance matrix.
-    Supports CIFAR-100 full 8-level hierarchy if the hierarchy file is present.
+
+    When ``hierarchy_clusters`` is provided (recommended), the full multi-level
+    WordNet hierarchy is used.  Each cluster is a set of leaf class IDs that
+    share a common ancestor.  This works for any dataset (CIFAR-100, ImageNet,
+    Tiny ImageNet, etc.).
+
+    Falls back to 2-level (fine + coarse) DP when no hierarchy clusters are given.
     """
     num_samples = len(labels_fine)
     if num_samples < 2:
@@ -1511,52 +912,33 @@ def hierarchical_dendrogram_purity(
     if distance_matrix_np.shape != (num_samples, num_samples):
         raise ValueError("Distance matrix must be square and match number of labels.")
 
-    # Check for CIFAR-100 full hierarchy
-    # Hardcoded path relative to workspace or generic check
-    hierarchy_path = os.path.abspath("data/cifar100_wordnet_hierarchy.txt")
-    full_hierarchy_clusters = None
-    
-    # Simple heuristic to detect CIFAR-100: labels 0-99
-    if len(np.unique(labels_fine_np)) == 100 and labels_fine_np.max() == 99:
-        full_hierarchy_clusters = _load_cifar100_hierarchy(hierarchy_path)
-
-    if full_hierarchy_clusters:
-        # Use generalized hierarchical DP
-
-        # Optionally include the root label cluster (all fine classes)
+    if hierarchy_clusters is not None and len(hierarchy_clusters) > 0:
         if use_root:
             root_cluster = set(np.unique(labels_fine_np).tolist())
-            if root_cluster not in [set(c) for c in full_hierarchy_clusters]:
-                full_hierarchy_clusters = list(full_hierarchy_clusters) + [root_cluster]
+            if root_cluster not in [set(c) for c in hierarchy_clusters]:
+                hierarchy_clusters = list(hierarchy_clusters) + [root_cluster]
 
-        # 1. Calculate Normalization Factor
         _, fine_counts = np.unique(labels_fine_np, return_counts=True)
-        # We need a map label -> count
         fine_label_counts_map = dict(zip(np.unique(labels_fine_np), fine_counts))
 
         num_same_class_pairs = 0
-        for cluster in full_hierarchy_clusters:
-            # Count points in this cluster
+        for cluster in hierarchy_clusters:
             count = sum(fine_label_counts_map.get(l, 0) for l in cluster)
             num_same_class_pairs += count * (count - 1) // 2
 
         if num_same_class_pairs == 0:
             return 1.0
 
-        # 2. Build Dendrogram
         condensed_distances = squareform(distance_matrix_np, checks=False)
         Z = linkage(condensed_distances, method=linkage_method)
 
-        # 3. Calculate Purity
         total_purity_sum = 0.0
         cluster_label_counts = {i: Counter({labels_fine_np[i]: 1}) for i in range(num_samples)}
 
         num_merges = len(Z)
         for i, merge in enumerate(Z):
-            # Skip the root node (last merge) unless use_root is enabled
             if not use_root and i == num_merges - 1:
                 break
-
             node1_id, node2_id = int(merge[0]), int(merge[1])
             new_node_id = num_samples + i
 
@@ -1566,17 +948,9 @@ def hierarchical_dendrogram_purity(
             cluster_label_counts[new_node_id] = new_node_counts
             lca_node_size = sum(new_node_counts.values())
 
-            # For optimization, we only evaluate clusters that have representatives in both children
-            # But iterating all clusters is safer/easier logic and fast enough
-
-            # Optimization: Only iterate clusters that contain at least one label present in new_node_counts
-            # present_labels = set(new_node_counts.keys())
-            # But constructing set every time is slow.
-
-            for cluster in full_hierarchy_clusters:
+            for cluster in hierarchy_clusters:
                 n1_k = sum(counts1[l] for l in cluster if l in counts1)
                 n2_k = sum(counts2[l] for l in cluster if l in counts2)
-
                 num_new_pairs = n1_k * n2_k
                 if num_new_pairs > 0:
                     count_in_lca = n1_k + n2_k
@@ -1585,112 +959,64 @@ def hierarchical_dendrogram_purity(
 
             del cluster_label_counts[node1_id]
             del cluster_label_counts[node2_id]
-            
+
         return total_purity_sum / num_same_class_pairs
 
-    # Fallback to original 2-level logic
+    # Fallback: 2-level (fine + coarse) DP
     if len(labels_fine_np) != len(labels_coarse_np):
         raise ValueError("Fine and coarse labels must have the same length.")
 
-    # --- Step 1: Calculate the Normalization Factor |P*| ---
-    # For hierarchical DP, we count pairs from BOTH fine and coarse levels
-
-    # Count pairs from fine-grained classes
     _, fine_class_counts = np.unique(labels_fine_np, return_counts=True)
     num_fine_pairs = sum(count * (count - 1) // 2 for count in fine_class_counts)
-
-    # Count pairs from coarse-grained classes
     _, coarse_class_counts = np.unique(labels_coarse_np, return_counts=True)
     num_coarse_pairs = sum(count * (count - 1) // 2 for count in coarse_class_counts)
-
-    # Total pairs is the sum from both levels
     num_same_class_pairs = num_fine_pairs + num_coarse_pairs
 
     if num_same_class_pairs == 0:
         return 1.0
 
-    # --- Step 2: Build the Dendrogram (Linkage Matrix) ---
     condensed_distances = squareform(distance_matrix_np, checks=False)
     Z = linkage(condensed_distances, method=linkage_method)
 
-    # --- Step 3: Calculate Purity Sum for Both Fine and Coarse Levels ---
-
-    # We'll compute the purity sum separately for fine and coarse labels
-    # and then add them together
-
     def compute_purity_sum_for_labels(labels_np):
-        """Helper function to compute purity sum for a single label set."""
         total_purity_sum = 0.0
-
-        # Map to track label distribution for each cluster node
-        cluster_label_counts = {
-            i: Counter({labels_np[i]: 1}) for i in range(num_samples)
-        }
-
+        cluster_label_counts = {i: Counter({labels_np[i]: 1}) for i in range(num_samples)}
         num_merges = len(Z)
-        # Iterate over each merge operation in the linkage matrix
         for i, merge in enumerate(Z):
-            # Skip the root node (last merge) unless use_root is enabled
             if not use_root and i == num_merges - 1:
                 break
-
             node1_id, node2_id = int(merge[0]), int(merge[1])
             new_node_id = num_samples + i
 
             counts1 = cluster_label_counts[node1_id]
             counts2 = cluster_label_counts[node2_id]
-
-            # The new node's labels are the sum of its children's labels
             new_node_counts = counts1 + counts2
             cluster_label_counts[new_node_id] = new_node_counts
-
-            # Total points in the newly formed cluster
             lca_node_size = sum(new_node_counts.values())
 
-            # Iterate through all ground-truth classes present in the merge
-            all_involved_labels = set(counts1.keys()) | set(counts2.keys())
-
-            for label in all_involved_labels:
-                # Number of points with this label from each child cluster
+            for label in set(counts1.keys()) | set(counts2.keys()):
                 n1_k = counts1.get(label, 0)
                 n2_k = counts2.get(label, 0)
-
-                # The number of new same-class pairs whose LCA is this node
                 num_new_pairs = n1_k * n2_k
-
                 if num_new_pairs > 0:
-                    # Purity of the LCA node with respect to this specific class
-                    count_of_label_in_lca = new_node_counts.get(label, 0)
-                    purity_of_lca_for_label = count_of_label_in_lca / lca_node_size
+                    purity = new_node_counts.get(label, 0) / lca_node_size
+                    total_purity_sum += num_new_pairs * purity
 
-                    # Add the contribution of all these new pairs to the total sum
-                    total_purity_sum += num_new_pairs * purity_of_lca_for_label
-
-            # Free memory by deleting child node info that will no longer be used
             del cluster_label_counts[node1_id]
             del cluster_label_counts[node2_id]
-
         return total_purity_sum
 
-    # Compute purity sum for fine-grained labels
     fine_purity_sum = compute_purity_sum_for_labels(labels_fine_np)
-
-    # Compute purity sum for coarse-grained labels
     coarse_purity_sum = compute_purity_sum_for_labels(labels_coarse_np)
+    return (fine_purity_sum + coarse_purity_sum) / num_same_class_pairs
 
-    # Total purity sum is the sum from both levels
-    total_purity_sum = fine_purity_sum + coarse_purity_sum
 
-    # --- Step 4: Final Normalization ---
-    return total_purity_sum / num_same_class_pairs
-
+# ---------------------------------------------------------------------------
+# Hyperbolic spectral clustering (alternative implementation)
+# ---------------------------------------------------------------------------
 
 class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
-    """
-    A Spectral Clustering algorithm that operates on a pre-computed
-    geodesic distance matrix from a hyperbolic space, with optimizations
-    for performance and robustness, similar to sklearn's implementation.
-    """
+    """Spectral Clustering on a pre-computed geodesic distance matrix from hyperbolic space."""
 
     def __init__(
         self,
@@ -1702,21 +1028,6 @@ class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
         n_init=20,
         random_state=None,
     ):
-        """
-        Initializes the HyperbolicSpectralClustering instance.
-
-        Args:
-            n_clusters (int): The number of clusters to form.
-            gamma (float): Kernel coefficient for the RBF kernel.
-            affinity (str): How to construct the affinity matrix.
-                            'rbf': use the RBF kernel on the full distance matrix.
-                            'nearest_neighbors': construct a sparse k-NN graph.
-            n_neighbors (int): Number of neighbors for the k-NN graph.
-            assign_labels (str): The strategy for assigning labels in the spectral space.
-                                 'kmeans': use KMeans.
-            n_init (int): Number of times KMeans will be run with different seeds.
-            random_state (int or RandomState): Determines random number generation.
-        """
         self.n_clusters = n_clusters
         self.gamma = gamma
         self.affinity = affinity
@@ -1727,69 +1038,38 @@ class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
         self.labels_ = None
 
     def fit(self, D, y=None):
-        """
-        Performs hyperbolic spectral clustering on the distance matrix.
-        """
         self.fit_predict(D)
         return self
 
     def fit_predict(self, D, y=None):
-        """
-        Performs clustering and returns cluster labels.
-        """
         if D.shape[0] != D.shape[1]:
             raise ValueError("Input D must be a square distance matrix.")
 
-        # Step 1: Construct the affinity matrix
         if self.affinity == "rbf":
             affinity_matrix = np.exp(-self.gamma * (D**2))
             np.fill_diagonal(affinity_matrix, 0)
         elif self.affinity == "nearest_neighbors":
-            # Construct a sparse k-NN graph
             connectivity = kneighbors_graph(
-                D,
-                n_neighbors=self.n_neighbors,
-                mode="distance",
-                metric="precomputed",
-                include_self=False,
+                D, n_neighbors=self.n_neighbors, mode="distance",
+                metric="precomputed", include_self=False,
             )
-            # Make the graph symmetric
-            affinity_matrix = 0.5 * (connectivity + connectivity.T)  # type: ignore
-            # Apply the RBF kernel to the sparse graph
+            affinity_matrix = 0.5 * (connectivity + connectivity.T)
             affinity_matrix.data = np.exp(-self.gamma * (affinity_matrix.data**2))
         else:
             raise ValueError(f"Unknown affinity type: {self.affinity}")
 
-        # Step 2: Compute the Graph Laplacian (normalized)
-        # csgraph.laplacian is optimized for both sparse and dense matrices
-        laplacian, dd = csgraph.laplacian(
-            affinity_matrix, normed=True, return_diag=True
-        )
-
-        # Step 3: Compute the eigenvectors of the Laplacian
-        # We use a robust and efficient eigensolver (eigsh with a shift-invert mode)
-        # to find the eigenvectors corresponding to the smallest eigenvalues.
-        # Adding a small shift to the diagonal improves stability.
+        laplacian, dd = csgraph.laplacian(affinity_matrix, normed=True, return_diag=True)
         laplacian_shifted = laplacian + 1e-10 * identity(laplacian.shape[0])
         _, eigenvectors = eigsh(
-            laplacian_shifted,
-            k=self.n_clusters,
-            which="SM",  # Smallest Magnitude
-            tol=1e-6,  # type: ignore
-            v0=np.ones(laplacian.shape[0]),  # Initial vector for stability
+            laplacian_shifted, k=self.n_clusters, which="SM", tol=1e-6,
+            v0=np.ones(laplacian.shape[0]),
         )
 
-        # Step 4: Normalize the eigenvectors to form the spectral embedding
         norm = np.linalg.norm(eigenvectors, axis=1, keepdims=True)
         spectral_embedding = eigenvectors / (norm + 1e-10)
 
-        # Step 5: Cluster the points in the new spectral space
         if self.assign_labels == "kmeans":
-            kmeans = KMeans(
-                n_clusters=self.n_clusters,
-                n_init=self.n_init,
-                random_state=self.random_state,
-            )
+            kmeans = KMeans(n_clusters=self.n_clusters, n_init=self.n_init, random_state=self.random_state)
             self.labels_ = kmeans.fit_predict(spectral_embedding)
         else:
             raise ValueError(f"Unknown label assignment strategy: {self.assign_labels}")
@@ -1797,24 +1077,14 @@ class HyperbolicSpectralClustering(BaseEstimator, ClusterMixin):
         return self.labels_
 
 
+# ---------------------------------------------------------------------------
+# Stratified sampling
+# ---------------------------------------------------------------------------
+
 def stratified_sample(
     labels: Union[np.ndarray, torch.Tensor], sample_size: int
 ) -> np.ndarray:
-    """
-    Sample equal number of points from each class (stratified sampling).
-
-    Parameters
-    ----------
-    labels : np.ndarray or torch.Tensor
-        Class labels for all points
-    sample_size : int
-        Total number of samples to draw
-
-    Returns
-    -------
-    np.ndarray
-        Indices of sampled points
-    """
+    """Sample equal number of points from each class (stratified sampling)."""
     if isinstance(labels, torch.Tensor):
         labels_np = labels.cpu().numpy()
     else:
@@ -1822,30 +1092,16 @@ def stratified_sample(
 
     unique_classes = np.unique(labels_np)
     n_classes = len(unique_classes)
-
-    # Calculate samples per class (try to distribute evenly)
     samples_per_class = sample_size // n_classes
     remaining_samples = sample_size % n_classes
 
     sampled_indices = []
-
     for i, cls in enumerate(unique_classes):
-        # Get all indices for this class
         class_indices = np.where(labels_np == cls)[0]
-
-        # Determine how many samples to take from this class
-        n_samples_this_class = samples_per_class
-        if i < remaining_samples:
-            n_samples_this_class += 1
-
-        # Make sure we don't try to sample more than available
+        n_samples_this_class = samples_per_class + (1 if i < remaining_samples else 0)
         n_samples_this_class = min(n_samples_this_class, len(class_indices))
-
-        # Sample from this class
         if n_samples_this_class > 0:
-            sampled = np.random.choice(
-                class_indices, n_samples_this_class, replace=False
-            )
+            sampled = np.random.choice(class_indices, n_samples_this_class, replace=False)
             sampled_indices.extend(sampled)
 
     return np.array(sampled_indices)
