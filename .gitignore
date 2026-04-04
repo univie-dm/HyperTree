@@ -198,3 +198,4 @@ slurm/
 sbatch_config.yaml
 sweep.py
 sweep.yaml
+results/

@@ -77,6 +77,7 @@ def main(cfg: DictConfig) -> None:
                 os.environ.pop(var, None)
         n_devices = gpu_count if gpu_count > 0 else 1
         use_ddp = n_devices > 1
+        is_rank0 = int(os.environ.get("LOCAL_RANK", 0)) == 0
 
 
         trainer = pl.Trainer(
@@ -103,7 +104,7 @@ def main(cfg: DictConfig) -> None:
 
         if (not os.path.exists(f"data/models/{get_model_path(cfg)}.pt")
             or cfg.pretraining.overwrite):
-            print("Starting pretraining", flush=True)
+            if is_rank0: print("Starting pretraining", flush=True)
             ckpt_path = None
             if enable_pretrain_ckpt:
                 last_ckpt = os.path.join(pretrain_ckpt_dir, "last.ckpt")

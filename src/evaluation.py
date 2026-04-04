@@ -420,6 +420,7 @@ def evaluation(
     Y_coarse: Optional[Union[np.ndarray, torch.Tensor]] = None,
     coarse_label_names: Optional[dict[int, str]] = None,
     hierarchy_clusters: list[set[int]] | None = None,
+    visualization_labels: Optional[np.ndarray] = None,
 ) -> dict:
     """
     Evaluate the performance of a model using specified metrics.
@@ -448,6 +449,10 @@ def evaluation(
         Full multi-level hierarchy clusters (each a set of leaf class IDs).
         Built by ``build_hierarchy_clusters()``.  When provided, hierarchical
         dendrogram purity uses all intermediate levels rather than just fine+coarse.
+    visualization_labels : Optional[np.ndarray]
+        Per-sample string labels used exclusively for the ground-truth t-SNE
+        scatter plot.  When provided, these override coarse_label_names and
+        str_labels for visualization only (metrics are unaffected).
     """
     results = {}
     Y_clustering = Y_coarse if Y_coarse is not None else Y
@@ -467,6 +472,8 @@ def evaluation(
                 Y_coarse.cpu().numpy() if isinstance(Y_coarse, torch.Tensor) else np.asarray(Y_coarse)
             )
             Y_coarse = Y_coarse_np[sample_indices]
+        if visualization_labels is not None:
+            visualization_labels = np.asarray(visualization_labels)[sample_indices]
         Y_clustering = Y_coarse if Y_coarse is not None else Y
 
     if not isinstance(manifold.c, torch.Tensor):
@@ -522,6 +529,10 @@ def evaluation(
                 hierarchy_clusters=hierarchy_clusters,
             )
             results[f"hierarchical_dendrogram_purity_{dp_linkage}"] = dp_score
+            # Flat DP: standard purity on fine-grained labels only (no WordNet hierarchy).
+            # This matches the gHHC benchmark metric for a direct apples-to-apples comparison.
+            flat_dp_score = dendrogram_purity(distance_matrix, Y, dp_linkage, use_root=dp_use_root)
+            results[f"dendrogram_purity_{dp_linkage}"] = flat_dp_score
         else:
             dp_score = dendrogram_purity(distance_matrix, Y, dp_linkage, use_root=dp_use_root)
             results[f"dendrogram_purity_{dp_linkage}"] = dp_score
@@ -540,7 +551,10 @@ def evaluation(
         Y_np = Y_clustering.cpu().numpy() if isinstance(Y_clustering, torch.Tensor) else np.asarray(Y_clustering)
         # Resolve per-sample labels to human-readable names for the scatter plot
         vis_Y = Y_np[vis_sample_indices]
-        if coarse_label_names is not None:
+        if visualization_labels is not None:
+            # Explicit visualization labels (e.g. CIFAR-100 20 superclasses) take priority
+            labels = np.asarray(visualization_labels)[vis_sample_indices]
+        elif coarse_label_names is not None:
             labels = np.array([coarse_label_names.get(int(l), str(l)) for l in vis_Y])
         elif str_labels is not None:
             labels = np.asarray(str_labels)[vis_sample_indices]

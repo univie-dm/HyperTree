@@ -237,7 +237,9 @@ class AbstractModel(pl.LightningModule):
         if self.current_epoch % self.hparams.log_interval == 0 and any([i for i in self.hparams.evaluation_metrics.values()]):
             self.eval()
             with torch.no_grad():
-                test_loader = self.trainer.datamodule.test_dataloader()  # type: ignore
+                if not hasattr(self, '_cached_test_loader'):
+                    self._cached_test_loader = self.trainer.datamodule.test_dataloader()  # type: ignore
+                test_loader = self._cached_test_loader
 
                 embeddings = []
                 labels = []
@@ -410,6 +412,16 @@ class AbstractModel(pl.LightningModule):
 
                 str_labels_array = np.array(str_labels) if str_labels else None
 
+                # For CIFAR-100, use native 20 superclass names for t-SNE visualization
+                vis_labels = None
+                dataset_name_for_vis = None
+                if hasattr(self.trainer, 'datamodule') and self.trainer.datamodule is not None:
+                    dm_hp = getattr(self.trainer.datamodule, 'hparams', None)
+                    if dm_hp and hasattr(dm_hp, 'dataset_name'):
+                        dataset_name_for_vis = dm_hp.dataset_name
+                if dataset_name_for_vis == "cifar100" and str_labels_array is not None:
+                    vis_labels = str_labels_array
+
                 evaluation_results = evaluation(
                     X=all_embeddings,
                     Y=all_labels,
@@ -420,6 +432,7 @@ class AbstractModel(pl.LightningModule):
                     Y_coarse=coarse_labels_array,
                     coarse_label_names=coarse_label_names,
                     hierarchy_clusters=hierarchy_clusters,
+                    visualization_labels=vis_labels,
                 )
 
                 del all_embeddings, all_labels, distance_matrix, embeddings, labels

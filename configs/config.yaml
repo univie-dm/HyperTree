@@ -10,6 +10,8 @@ experiment:
 
 ## Pretraining parameters
 pretraining:
+  method: contrastive  # 'contrastive' or 'dino'
+  augmentation: null    # null, 'byol', 'dino'
   epochs: 800
   overwrite: False
   learning_rate: 0.003
@@ -32,6 +34,23 @@ pretraining:
     patience: 20 # Number of epochs
   load_supervised_weights: False
   supervised: False
+  # DINO multi-crop settings (used when method=dino)
+  n_local_crops: 6
+  local_crop_size: 96
+  dino_global_scale: [0.4, 1.0]
+  dino_local_scale: [0.05, 0.4]
+  # DINO-specific settings (used when method=dino)
+  dino:
+    out_dim: 65536
+    hidden_dim: 2048
+    bottleneck_dim: 256
+    teacher_momentum_start: 0.996
+    teacher_momentum_end: 1.0
+    teacher_temperature: 0.04
+    student_temperature: 0.1
+    center_momentum: 0.9
+    warmup_teacher_temp: 0.04
+    warmup_teacher_temp_epochs: 30
 
 
 ## Clustering parameters
@@ -147,7 +166,7 @@ wandb:
   entity: 'kevin-sidak-team'
   save_dir: './logs'
   tags:
-    - test
+    - cifar100
 
 
 ## Hydra specifics

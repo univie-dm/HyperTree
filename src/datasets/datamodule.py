@@ -235,6 +235,8 @@ class ColorDataModule(pl.LightningDataModule):
         augmentation: str = "byol",  # 'byol' or 'dino'
         n_local_crops: int = 6,
         local_crop_size: int = 96,
+        dino_global_scale: tuple = (0.4, 1.0),
+        dino_local_scale: tuple = (0.05, 0.4),
     ):
         super().__init__()
         self.hparams: argparse.Namespace
@@ -384,6 +386,8 @@ class ColorDataModule(pl.LightningDataModule):
                 precision=self.precision,
                 n_local_crops=self.hparams.n_local_crops,
                 local_crop_size=self.hparams.local_crop_size,
+                global_scale=self.hparams.dino_global_scale,
+                local_scale=self.hparams.dino_local_scale,
             )
         else:
             aug_transform = BYOLTransform(
