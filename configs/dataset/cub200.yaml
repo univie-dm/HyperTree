@@ -1,0 +1,6 @@
+name: 'cub200'
+subset: 'train'
+data_dir: 'data/cub200'
+resize: 224
+channels: 3
+selected_classes:

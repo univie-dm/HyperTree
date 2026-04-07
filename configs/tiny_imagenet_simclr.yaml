@@ -20,6 +20,8 @@ architecture:
   feedforward_hidden_dims: [512, 256, 128]
 
 pretraining:
+  method: contrastive
+  augmentation: byol
   epochs: 400
   overwrite: False
   learning_rate: 0.003

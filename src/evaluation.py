@@ -9,7 +9,7 @@ import numpy as np
 import numpy.typing as npt
 
 from typing import Union, Optional
-from scipy.cluster.hierarchy import linkage
+from scipy.cluster.hierarchy import linkage, fcluster
 from scipy.spatial.distance import squareform
 from sklearn.cluster import AgglomerativeClustering, KMeans, SpectralClustering
 from sklearn.manifold import TSNE
@@ -407,6 +407,70 @@ def _run_agglomerative(
 
 
 # ---------------------------------------------------------------------------
+# Best dendrogram partition (optimal flat cut)
+# ---------------------------------------------------------------------------
+
+def _get_euclidean_features(X: torch.Tensor, manifold: 'Manifold') -> np.ndarray | None:
+    """Project embeddings to Euclidean space via log map (for ward linkage)."""
+    if isinstance(manifold, Euclidean):
+        return X.detach().cpu().float().numpy()
+    elif isinstance(manifold, Hyperboloid):
+        poincare = PoincareBall(c=manifold.c.detach().clone(), dtype=manifold.dtype)
+        pts_poincare = poincare.from_hyperboloid(X.to(manifold.dtype))
+        return poincare.logmap_0(pts_poincare).detach().cpu().float().numpy()
+    elif isinstance(manifold, PoincareBall):
+        return manifold.logmap_0(X.to(manifold.dtype)).detach().cpu().float().numpy()
+    return None
+
+
+def _best_dendrogram_partition(
+    Z: np.ndarray,
+    labels_np: np.ndarray,
+    max_k: int | None = None,
+) -> dict[str, float | int]:
+    """Search dendrogram cuts k=2..max_k to find the partition maximizing NMI.
+
+    Each cut produces a non-overlapping, exhaustive partition of all data
+    points.  Iterates over all possible cluster counts and evaluates the
+    resulting flat partition against ground truth labels.
+
+    Parameters
+    ----------
+    Z : np.ndarray
+        Scipy linkage matrix (n-1 x 4).
+    labels_np : np.ndarray
+        Ground truth labels.
+    max_k : int | None
+        Maximum number of clusters to try. Defaults to 3x true class count.
+
+    Returns
+    -------
+    dict with best_nmi, best_ari, best_k
+    """
+    num_samples = len(labels_np)
+    n_true_classes = len(np.unique(labels_np))
+
+    if max_k is None:
+        max_k = min(3 * n_true_classes, num_samples - 1)
+    max_k = max(max_k, 2)
+    max_k = min(max_k, num_samples - 1)
+
+    best_nmi = -1.0
+    best_ari = 0.0
+    best_k = 2
+
+    for k in range(2, max_k + 1):
+        pred = fcluster(Z, t=k, criterion='maxclust')
+        nmi = normalized_mutual_info_score(labels_np, pred)
+        if nmi > best_nmi:
+            best_nmi = nmi
+            best_ari = adjusted_rand_score(labels_np, pred)
+            best_k = k
+
+    return {"best_nmi": best_nmi, "best_ari": best_ari, "best_k": best_k}
+
+
+# ---------------------------------------------------------------------------
 # Main evaluation entry point
 # ---------------------------------------------------------------------------
 
@@ -529,6 +593,18 @@ def evaluation(
                 hierarchy_clusters=hierarchy_clusters,
             )
             results[f"hierarchical_dendrogram_purity_{dp_linkage}"] = dp_score
+            # All-levels DP: includes singleton (fine-class) clusters so the metric
+            # rewards both fine-grained and coarse hierarchical structure.
+            if hierarchy_clusters is not None:
+                existing = {frozenset(c) for c in hierarchy_clusters}
+                singletons = [{lid} for lid in set(np.unique(np.asarray(Y)).tolist())
+                              if frozenset({lid}) not in existing]
+                all_levels_clusters = list(hierarchy_clusters) + singletons
+                all_dp_score = hierarchical_dendrogram_purity(
+                    distance_matrix, Y, Y_coarse, dp_linkage, use_root=dp_use_root,
+                    hierarchy_clusters=all_levels_clusters,
+                )
+                results[f"all_dendrogram_purity_{dp_linkage}"] = all_dp_score
             # Flat DP: standard purity on fine-grained labels only (no WordNet hierarchy).
             # This matches the gHHC benchmark metric for a direct apples-to-apples comparison.
             flat_dp_score = dendrogram_purity(distance_matrix, Y, dp_linkage, use_root=dp_use_root)
@@ -545,6 +621,31 @@ def evaluation(
                 str_labels, manifold, two_d_pts, vis_sample_indices, do_vis, results,
                 coarse_label_names=coarse_label_names,
             )
+
+    # --- Best dendrogram partition (optimal flat cut) ---
+    for linkage_name in ("complete", "average", "ward"):
+        if not metrics.get(f"best_partition_{linkage_name}", False):
+            continue
+
+        Y_bp_np = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+        bp_max_k = metrics.get("best_partition_max_k", None)
+
+        if linkage_name == "ward":
+            X_euc = _get_euclidean_features(X, manifold)
+            if X_euc is None:
+                warning(f"Ward linkage not supported for manifold {manifold}; skipping best partition.")
+                continue
+            Z = linkage(X_euc, method="ward")
+        else:
+            dist_np = distance_matrix.cpu().numpy()
+            condensed = squareform(dist_np, checks=False)
+            Z = linkage(condensed, method=linkage_name)
+
+        bp_result = _best_dendrogram_partition(Z, Y_bp_np, max_k=bp_max_k)
+        prefix = f"best_partition_{linkage_name}"
+        results[f"{prefix}_nmi"] = bp_result["best_nmi"]
+        results[f"{prefix}_ari"] = bp_result["best_ari"]
+        results[f"{prefix}_k"] = bp_result["best_k"]
 
     # --- Ground-truth embedding visualization ---
     if do_vis and two_d_pts is not None:
@@ -842,12 +943,15 @@ def dendrogram_purity(
     return total_purity_sum / num_same_class_pairs
 
 
-def build_hierarchy_clusters(parent_child: dict[int, list[int]], leaf_ids: set[int]) -> list[set[int]]:
+def build_hierarchy_clusters(parent_child: dict[int, list[int]], leaf_ids: set[int], include_singletons: bool = False) -> list[set[int]]:
     """Build leaf-set clusters from a parent-child hierarchy.
 
     Each internal node in the hierarchy defines a cluster consisting of all
-    leaf descendants reachable from it.  Singleton clusters and the full-root
-    cluster are excluded so that the metric captures intermediate structure.
+    leaf descendants reachable from it.  The full-root cluster is always
+    excluded.  When *include_singletons* is False (default), singleton
+    clusters (individual leaf classes) are also excluded so that the metric
+    captures intermediate structure only.  Set *include_singletons=True*
+    to include all hierarchy levels (matches the dev-branch "all_dp" metric).
 
     Parameters
     ----------
@@ -890,7 +994,8 @@ def build_hierarchy_clusters(parent_child: dict[int, list[int]], leaf_ids: set[i
     for u in all_nodes:
         leaves = get_leaves(u)
         c_frozen = frozenset(leaves)
-        if c_frozen not in seen and 1 < len(leaves) < num_leaves:
+        min_size = 1 if include_singletons else 2
+        if c_frozen not in seen and min_size <= len(leaves) < num_leaves:
             seen.add(c_frozen)
             unique_clusters.append(leaves)
 

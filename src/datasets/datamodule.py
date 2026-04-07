@@ -43,7 +43,7 @@ class DINOTransform:
             ], p=0.8),
             transforms.RandomGrayscale(p=0.2),
             transforms.RandomApply([
-                transforms.GaussianBlur(kernel_size=23, sigma=(0.1, 2.0))
+                transforms.GaussianBlur(kernel_size=23 if dataset_name in ("imagenet", "inat18", "cub200") else 3, sigma=(0.1, 2.0))
             ], p=1.0),  # Always blur first global crop
             transforms.ToImage(),
             transforms.ToDtype(precision, scale=True),
@@ -59,7 +59,7 @@ class DINOTransform:
             ], p=0.8),
             transforms.RandomGrayscale(p=0.2),
             transforms.RandomApply([
-                transforms.GaussianBlur(kernel_size=23, sigma=(0.1, 2.0))
+                transforms.GaussianBlur(kernel_size=23 if dataset_name in ("imagenet", "inat18", "cub200") else 3, sigma=(0.1, 2.0))
             ], p=0.1),
             transforms.RandomSolarize(threshold=0.5, p=0.2),
             transforms.ToImage(),
@@ -78,7 +78,7 @@ class DINOTransform:
             ], p=0.8),
             transforms.RandomGrayscale(p=0.2),
             transforms.RandomApply([
-                transforms.GaussianBlur(kernel_size=23 if dataset_name in ("imagenet", "inat18") else 3, sigma=(0.1, 2.0))
+                transforms.GaussianBlur(kernel_size=23 if dataset_name in ("imagenet", "inat18", "cub200") else 3, sigma=(0.1, 2.0))
             ], p=0.5),
             transforms.ToImage(),
             transforms.ToDtype(precision, scale=True),
@@ -104,7 +104,7 @@ class BYOLTransform:
         resize: int = 32,
         precision: torch.dtype = torch.float32,
     ):
-        if dataset_name in ("imagenet", "inat18"):
+        if dataset_name in ("imagenet", "inat18", "cub200"):
             gaussian_blur = [
                 transforms.RandomApply(
                     [transforms.GaussianBlur(kernel_size=23, sigma=(0.1, 2.0))], p=0.1
@@ -223,7 +223,7 @@ class ColorDataModule(pl.LightningDataModule):
     def __init__(
         self,
         dataset_name: Literal[
-            "cifar10", "cifar100", "cifar100_20", "gtsrb", "imagenet", "inat18", "tiny_imagenet"
+            "cifar10", "cifar100", "cifar100_20", "gtsrb", "imagenet", "inat18", "tiny_imagenet", "cub200"
         ] = "cifar10",
         data_dir: str = "./data",
         batch_size: int = 256,
@@ -295,6 +295,10 @@ class ColorDataModule(pl.LightningDataModule):
             from src.datasets.tiny_imagenet import TinyImageNet
             base_train = TinyImageNet(self.hparams.data_dir, split="train", transform=None)
             base_test = TinyImageNet(self.hparams.data_dir, split="val", transform=None)
+        elif self.hparams.dataset_name == "cub200":
+            from src.datasets.cub200 import CUB200
+            base_train = CUB200(self.hparams.data_dir, split="train", transform=None)
+            base_test = CUB200(self.hparams.data_dir, split="test", transform=None)
         else:
             base_train = dataset_class(
                 self.hparams.data_dir, train=True, transform=None, download=True
@@ -310,7 +314,7 @@ class ColorDataModule(pl.LightningDataModule):
         # so resize to self.hparams.resize if provided, otherwise default to 224.
         if self.hparams.dataset_name == "gtsrb":
             temp_transform_list.append(transforms.Resize((32, 32), antialias=True))
-        elif self.hparams.dataset_name in ("imagenet", "inat18", "tiny_imagenet"):
+        elif self.hparams.dataset_name in ("imagenet", "inat18", "tiny_imagenet", "cub200"):
             resize_size = self.hparams.resize if self.hparams.resize else 224
             temp_transform_list.append(
                 transforms.Resize((resize_size, resize_size), antialias=True)
@@ -332,6 +336,9 @@ class ColorDataModule(pl.LightningDataModule):
         elif self.hparams.dataset_name == "tiny_imagenet":
             from src.datasets.tiny_imagenet import TinyImageNet
             temp_dataset = TinyImageNet(self.hparams.data_dir, split="train", transform=temp_transform)
+        elif self.hparams.dataset_name == "cub200":
+            from src.datasets.cub200 import CUB200
+            temp_dataset = CUB200(self.hparams.data_dir, split="train", transform=temp_transform)
         elif self.hparams.dataset_name == "gtsrb":
             # GTSRB uses `split` and supports download
             temp_dataset = dataset_class(
@@ -350,7 +357,7 @@ class ColorDataModule(pl.LightningDataModule):
             )
 
         # Use standard ImageNet normalization stats to avoid slow data loading
-        if self.hparams.dataset_name in ("imagenet", "inat18", "tiny_imagenet"):
+        if self.hparams.dataset_name in ("imagenet", "inat18", "tiny_imagenet", "cub200"):
             normalize_fn = transforms.Normalize(
                 mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
             )

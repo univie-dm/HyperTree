@@ -149,6 +149,10 @@ evaluation_metrics:
   spectral_clustering: True
   visualization: True
   kmeans: False
+  best_partition_complete: True
+  best_partition_average: False
+  best_partition_ward: True
+  best_partition_max_k: null  # null = auto (3x true class count); set integer to override
   dasgupta_cost: False
   visualization_sample_size: 5000
   test_sample_size: 0 # if 0 all datapoints are used
