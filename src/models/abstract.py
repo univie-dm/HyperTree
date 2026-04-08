@@ -13,7 +13,7 @@ from src.hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBa
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.hyperbolic_math.src.utils.math_utils import atanh
 from src.utils.wordnet_hierarchy import get_wordnet_labels_for_cifar100
-from src.utils.imagenet_hierarchy import get_wordnet_labels_for_imagenet, get_hierarchy_node_names, setup_tiny_imagenet_hierarchy
+from src.utils.imagenet_hierarchy import get_wordnet_labels_for_imagenet, get_hierarchy_node_names, get_labels_at_hierarchy_level, setup_tiny_imagenet_hierarchy
 
 
 class AbstractModel(pl.LightningModule):
@@ -286,6 +286,7 @@ class AbstractModel(pl.LightningModule):
 
                 # Process coarse labels for hierarchical datasets
                 coarse_labels_array = None
+                native_coarse_label_names = None
                 if coarse_labels:
                     # Flatten coarse labels
                     coarse_labels_flat = [label for batch_labels in coarse_labels for label in batch_labels]
@@ -294,6 +295,8 @@ class AbstractModel(pl.LightningModule):
                         unique_coarse = sorted(set(coarse_labels_flat))
                         coarse_to_id = {label: i for i, label in enumerate(unique_coarse)}
                         coarse_labels_array = np.array([coarse_to_id[label] for label in coarse_labels_flat])
+                        # Build name mapping for native coarse labels
+                        native_coarse_label_names = {i: name for i, name in enumerate(unique_coarse)}
                     else:
                         print(
                             f"Warning: coarse_labels length ({len(coarse_labels_flat)}) doesn't match labels length ({len(torch.cat(labels, dim=0))}). Using None."
@@ -302,7 +305,7 @@ class AbstractModel(pl.LightningModule):
                 all_embeddings = torch.cat(embeddings, dim=0)
                 all_labels = torch.cat(labels, dim=0)
 
-                # Override with WordNet labels if configured
+                # Build WordNet hierarchy for DP and coarse labels for visualization
                 coarse_label_names = None
                 hierarchy_clusters = None
                 use_wordnet = self.hparams.evaluation_metrics.get("use_wordnet_labels", False)
@@ -322,46 +325,42 @@ class AbstractModel(pl.LightningModule):
                                 name = val[0] if isinstance(val, tuple) else val
                                 leaf_names[idx] = str(name)
 
-                        # Apply WordNet labels based on dataset
                         if dataset_name == "cifar100":
                             wordnet_path = self.hparams.evaluation_metrics.get("wordnet_hierarchy_path", "./data/cifar100_wordnet_hierarchy.txt")
                             download_if_missing = self.hparams.evaluation_metrics.get("wordnet_download_if_missing", True)
-
-                            # Ensure types are correct
                             if not isinstance(wordnet_path, str):
                                 wordnet_path = str(wordnet_path)
                             if not isinstance(download_if_missing, bool):
                                 download_if_missing = bool(download_if_missing)
 
-                            wordnet_labels, parent_child = get_wordnet_labels_for_cifar100(
+                            _, parent_child = get_wordnet_labels_for_cifar100(
                                 all_labels.cpu().numpy(),
                                 hierarchy_file=wordnet_path,
                                 download_if_missing=download_if_missing
                             )
-                            coarse_labels_array = wordnet_labels
                             leaf_ids = set(np.unique(all_labels.cpu().numpy()).tolist())
                             hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
-                            if leaf_names:
-                                coarse_label_names = get_hierarchy_node_names(parent_child, leaf_names)
+                            # Keep native 20 superclasses in coarse_labels_array
 
                         elif dataset_name == "imagenet":
                             imagenet_hierarchy_path = self.hparams.evaluation_metrics.get("imagenet_hierarchy_path", "./data/imagenet_wordnet_hierarchy.txt")
                             setup_if_missing = self.hparams.evaluation_metrics.get("wordnet_download_if_missing", True)
-
-                            # Ensure types are correct
                             if not isinstance(imagenet_hierarchy_path, str):
                                 imagenet_hierarchy_path = str(imagenet_hierarchy_path)
                             if not isinstance(setup_if_missing, bool):
                                 setup_if_missing = bool(setup_if_missing)
 
-                            wordnet_labels, parent_child = get_wordnet_labels_for_imagenet(
+                            _, parent_child = get_wordnet_labels_for_imagenet(
                                 all_labels.cpu().numpy(),
                                 hierarchy_file=imagenet_hierarchy_path,
                                 setup_if_missing=setup_if_missing
                             )
-                            coarse_labels_array = wordnet_labels
                             leaf_ids = set(np.unique(all_labels.cpu().numpy()).tolist())
                             hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
+                            # Aggregate to ~20 coarse classes for vis/confusion matrix
+                            coarse_labels_array, _ = get_labels_at_hierarchy_level(
+                                all_labels.cpu().numpy(), parent_child, target_num_classes=20
+                            )
                             if leaf_names:
                                 coarse_label_names = get_hierarchy_node_names(parent_child, leaf_names)
 
@@ -382,20 +381,27 @@ class AbstractModel(pl.LightningModule):
                                 if data_dir:
                                     setup_tiny_imagenet_hierarchy(data_dir, tiny_hierarchy_path)
 
-                            wordnet_labels, parent_child = get_wordnet_labels_for_imagenet(
+                            _, parent_child = get_wordnet_labels_for_imagenet(
                                 all_labels.cpu().numpy(),
                                 hierarchy_file=tiny_hierarchy_path,
                                 setup_if_missing=False
                             )
-                            coarse_labels_array = wordnet_labels
                             leaf_ids = set(np.unique(all_labels.cpu().numpy()).tolist())
                             hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
+                            # Aggregate to ~20 coarse classes for vis/confusion matrix
+                            coarse_labels_array, _ = get_labels_at_hierarchy_level(
+                                all_labels.cpu().numpy(), parent_child, target_num_classes=20
+                            )
                             if leaf_names:
                                 coarse_label_names = get_hierarchy_node_names(parent_child, leaf_names)
 
                     except Exception as e:
                         print(f"Warning: Failed to load WordNet labels: {e}")
                         print("Falling back to standard coarse labels (if available)")
+
+                # Use native coarse label names when WordNet didn't set them
+                if coarse_label_names is None:
+                    coarse_label_names = native_coarse_label_names
 
                 # Compute the (non-smoothened) pairwise distances
                 distance_matrix = compute_pairwise_distances(all_embeddings, self.manifold, version="default")
@@ -412,15 +418,14 @@ class AbstractModel(pl.LightningModule):
 
                 str_labels_array = np.array(str_labels) if str_labels else None
 
-                # For CIFAR-100, use native 20 superclass names for t-SNE visualization
+                # Build visualization labels (≤20 coarse categories for t-SNE/confusion)
                 vis_labels = None
-                dataset_name_for_vis = None
-                if hasattr(self.trainer, 'datamodule') and self.trainer.datamodule is not None:
-                    dm_hp = getattr(self.trainer.datamodule, 'hparams', None)
-                    if dm_hp and hasattr(dm_hp, 'dataset_name'):
-                        dataset_name_for_vis = dm_hp.dataset_name
-                if dataset_name_for_vis == "cifar100" and str_labels_array is not None:
+                if str_labels_array is not None and len(set(str(l) for l in str_labels_array)) <= 20:
+                    # Native coarse labels from get_class_names() (CIFAR-100, GTSRB, CUB-200, etc.)
                     vis_labels = str_labels_array
+                elif coarse_labels_array is not None and coarse_label_names is not None:
+                    # Hierarchy-derived coarse labels (ImageNet, TinyImageNet)
+                    vis_labels = np.array([coarse_label_names.get(int(l), str(l)) for l in coarse_labels_array])
 
                 evaluation_results = evaluation(
                     X=all_embeddings,

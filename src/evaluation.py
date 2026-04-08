@@ -248,56 +248,27 @@ def _compute_2d_embeddings(X_sampled, manifold):
 # Confusion matrix
 # ---------------------------------------------------------------------------
 
-def _create_confusion_matrix_plot(y_true, y_pred, title="Confusion Matrix", str_labels=None, hierarchy_file=None, coarse_label_names=None):
-    """Create a confusion matrix visualization, aggregating for large class counts."""
-    max_display_classes = 50
-    unique_true = np.unique(y_true)
-    n_true_classes = len(unique_true)
+def _create_confusion_matrix_plot(y_true, y_pred, title="Confusion Matrix", str_labels=None, coarse_label_names=None):
+    """Create a confusion matrix visualization.
 
-    y_true_display = y_true
-    y_pred_display = y_pred
-    aggregated = False
-
-    if n_true_classes > max_display_classes:
-        hierarchy_path = hierarchy_file or "./data/imagenet_wordnet_hierarchy.txt"
-        if Path(hierarchy_path).exists():
-            try:
-                from src.utils.imagenet_hierarchy import (
-                    load_imagenet_hierarchy,
-                    get_labels_at_hierarchy_level,
-                )
-                parent_child = load_imagenet_hierarchy(hierarchy_path, exclude_root=True)
-                y_true_display, _ = get_labels_at_hierarchy_level(
-                    np.asarray(y_true), parent_child, target_num_classes=max_display_classes
-                )
-                pred_to_agg = {}
-                for pred_label in np.unique(y_pred):
-                    mask = y_pred == pred_label
-                    most_common = Counter(y_true_display[mask]).most_common(1)[0][0]
-                    pred_to_agg[pred_label] = most_common
-                y_pred_display = np.array([pred_to_agg[p] for p in y_pred])
-                aggregated = True
-                title = f"{title} (aggregated to ~{len(np.unique(y_true_display))} categories)"
-            except Exception as e:
-                warning(f"Could not aggregate labels using hierarchy: {e}")
-
+    Expects coarse labels (≤20 categories) to be passed in directly via y_true/y_pred.
+    """
     # Use the union of true and predicted labels so the matrix is always square
-    all_labels = sorted(set(np.unique(y_true_display)) | set(np.unique(y_pred_display)))
-    cm = confusion_matrix(y_true_display, y_pred_display, labels=all_labels)
+    all_labels = sorted(set(np.unique(y_true)) | set(np.unique(y_pred)))
+    cm = confusion_matrix(y_true, y_pred, labels=all_labels)
     row_sums = cm.sum(axis=1)[:, np.newaxis]
     cm_normalized = np.divide(cm.astype("float"), row_sums, where=row_sums != 0, out=np.zeros_like(cm, dtype=float))
 
+    n_display = len(all_labels)
     fig, ax = plt.subplots(figsize=(12, 10))
     im = ax.imshow(cm_normalized, interpolation="nearest", cmap=plt.cm.Blues)
     ax.figure.colorbar(im, ax=ax)
-
-    n_display = len(all_labels)
 
     # Resolve label IDs to human-readable names
     max_label_len = 40
     if coarse_label_names is not None:
         label_names = [coarse_label_names.get(int(l), str(l)) for l in all_labels]
-    elif str_labels is not None and not aggregated:
+    elif str_labels is not None:
         label_names = []
         for label in all_labels:
             idx = np.where(y_true == label)[0]
@@ -307,7 +278,6 @@ def _create_confusion_matrix_plot(y_true, y_pred, title="Confusion Matrix", str_
                 label_names.append(str(label))
     else:
         label_names = [str(l) for l in all_labels]
-    # Truncate long names for readability on axes
     label_names = [n if len(n) <= max_label_len else n[:max_label_len - 1] + "\u2026" for n in label_names]
 
     fontsize = 8 if n_display <= 50 else 6

@@ -654,9 +654,9 @@ class ColorDataModule(pl.LightningDataModule):
         elif self.hparams.dataset_name in ("imagenet", "tiny_imagenet"):
             return self._get_imagenet_class_names()
         elif self.hparams.dataset_name == "gtsrb":
-            # Implementation for GTSRB class names would go here
-            # Simplified for brevity
-            return None
+            return self._get_gtsrb_class_names()
+        elif self.hparams.dataset_name == "cub200":
+            return self._get_cub200_class_names()
         else:
             return None
 
@@ -696,6 +696,98 @@ class ColorDataModule(pl.LightningDataModule):
                 return {int(k): (v[1].replace("_", " "), None) for k, v in class_index.items()}
         except Exception:
             return None
+
+    def _get_gtsrb_class_names(self) -> Dict[int, Tuple[str, Optional[str]]]:
+        """Return GTSRB class names with 6 coarse traffic sign categories."""
+        fine_names = [
+            "20 km/h", "30 km/h", "50 km/h", "60 km/h", "70 km/h",
+            "80 km/h", "End 80 km/h", "100 km/h", "120 km/h",
+            "No passing", "No passing >3.5t",
+            "Right-of-way", "Priority road", "Yield", "Stop",
+            "No vehicles", "No >3.5t", "No entry",
+            "General caution", "Left curve", "Right curve",
+            "Double curve", "Bumpy road", "Slippery road",
+            "Road narrows", "Road work", "Traffic signals",
+            "Pedestrians", "Children crossing", "Bicycles crossing",
+            "Ice/snow", "Wild animals", "End restrictions",
+            "Turn right", "Turn left", "Ahead only",
+            "Straight or right", "Straight or left", "Keep right",
+            "Keep left", "Roundabout", "End no passing",
+            "End no passing >3.5t",
+        ]
+        coarse_map: Dict[int, str] = {}
+        for i in (0, 1, 2, 3, 4, 5, 7, 8):
+            coarse_map[i] = "Speed Limits"
+        for i in (9, 10, 15, 16, 17):
+            coarse_map[i] = "Prohibitory"
+        for i in (6, 32, 41, 42):
+            coarse_map[i] = "Derestriction"
+        for i in (11, 12, 13, 14):
+            coarse_map[i] = "Priority"
+        for i in range(18, 32):
+            coarse_map[i] = "Warning"
+        for i in range(33, 41):
+            coarse_map[i] = "Mandatory"
+        return {i: (fine_names[i], coarse_map[i]) for i in range(43)}
+
+    def _get_cub200_class_names(self) -> Optional[Dict[int, Tuple[str, Optional[str]]]]:
+        """Return CUB-200 class names with ~13 coarse bird family categories."""
+        from src.datasets.cub200 import CUB200
+        try:
+            ds = CUB200(self.hparams.data_dir, split="train")
+        except Exception:
+            return None
+        if not ds.classes:
+            return None
+
+        # Map bird type keywords → coarse family categories
+        _type_to_coarse = {
+            "Albatross": "Seabirds", "Fulmar": "Seabirds", "Frigatebird": "Seabirds",
+            "Auklet": "Seabirds", "Puffin": "Seabirds", "Guillemot": "Seabirds",
+            "Jaeger": "Seabirds",
+            "Pelican": "Waterbirds", "Cormorant": "Waterbirds", "Grebe": "Waterbirds",
+            "Loon": "Waterbirds", "Merganser": "Waterbirds", "Mallard": "Waterbirds",
+            "Gadwall": "Waterbirds",
+            "Gull": "Gulls & Terns", "Tern": "Gulls & Terns",
+            "Hummingbird": "Hummingbirds", "Violetear": "Hummingbirds",
+            "Woodpecker": "Woodpeckers", "Flicker": "Woodpeckers",
+            "Kingfisher": "Woodpeckers",
+            "Crow": "Corvids", "Raven": "Corvids", "Jay": "Corvids",
+            "Nutcracker": "Corvids",
+            "Flycatcher": "Flycatchers", "Pewee": "Flycatchers",
+            "Kingbird": "Flycatchers", "Sayornis": "Flycatchers",
+            "Warbler": "Warblers", "Waterthrush": "Warblers",
+            "Yellowthroat": "Warblers", "Ovenbird": "Warblers",
+            "Chat": "Warblers", "Redstart": "Warblers",
+            "Sparrow": "Sparrows", "Junco": "Sparrows", "Towhee": "Sparrows",
+            "Finch": "Finches", "Bunting": "Finches", "Grosbeak": "Finches",
+            "Goldfinch": "Finches", "Tanager": "Finches", "Cardinal": "Finches",
+            "Blackbird": "Blackbirds & Orioles", "Cowbird": "Blackbirds & Orioles",
+            "Grackle": "Blackbirds & Orioles", "Oriole": "Blackbirds & Orioles",
+            "Bobolink": "Blackbirds & Orioles", "Meadowlark": "Blackbirds & Orioles",
+            "Starling": "Blackbirds & Orioles",
+            "Vireo": "Other Songbirds", "Shrike": "Other Songbirds",
+            "Wren": "Other Songbirds", "Nuthatch": "Other Songbirds",
+            "Creeper": "Other Songbirds", "Catbird": "Other Songbirds",
+            "Mockingbird": "Other Songbirds", "Thrasher": "Other Songbirds",
+            "Waxwing": "Other Songbirds", "Pipit": "Other Songbirds",
+            "Lark": "Other Songbirds", "Nighthawk": "Other Songbirds",
+            "Cuckoo": "Other Songbirds", "Ani": "Other Songbirds",
+            "Geococcyx": "Other Songbirds", "Widow": "Other Songbirds",
+            "Swallow": "Other Songbirds",
+        }
+
+        result: Dict[int, Tuple[str, Optional[str]]] = {}
+        for idx, class_name in enumerate(ds.classes):
+            # Class name format: "NNN.Bird_Name" → extract "Bird_Name"
+            name = class_name.split(".", 1)[-1].replace("_", " ")
+            coarse = None
+            for keyword, category in _type_to_coarse.items():
+                if keyword.lower() in class_name.lower():
+                    coarse = category
+                    break
+            result[idx] = (name, coarse if coarse is not None else "Other Songbirds")
+        return result
 
 
 class GrayScaleDataModule(pl.LightningDataModule):
