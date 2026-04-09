@@ -1,0 +1,148 @@
+## CUB-200-2011 with ImageNet-pretrained ResNet backbone
+## Uses supervised ImageNet weights (frozen encoder) + trains projection head
+## Then hyperbolic clustering on top
+
+architecture:
+  model_type: resnet50
+  latent_dim: 128
+  feature_scaling: True
+  projection_layer_dims: [512, 256, 128]
+  precision: float32
+  manifold_precision: float64
+  manifold_name: PoincareBall
+  curvature_magnitude: 1.0
+  hyperbolic_encoding: HyperbolicLinearPP
+  activation_function: swish
+  hyperbolic_clamping: 1.0
+  hyperbolic_smoothing: 50.0
+  hyperboloid_layer_learnable_scale: True
+  FHCNN_normalize: True
+  hyperbolic_decoding: Log_EuclideanLinear
+  feedforward_hidden_dims: [512, 256, 128]
+
+pretraining:
+  method: contrastive
+  augmentation: byol
+  epochs: 400
+  overwrite: False
+  learning_rate: 0.003
+  weight_decay: 1e-5
+  accumulate_gradients: 1
+  enable_checkpointing: False
+  load_supervised_weights: True
+  supervised: False
+  contrastive_loss:
+    enabled: True
+    weight: 1.0
+    temperature: 0.5
+  reconstruction_loss:
+    weight: 0.0
+  lr_scheduler:
+    type: warmup_cosine
+    interval: 40
+    cosine_min_factor: 0.01
+    patience: 20
+
+clustering:
+  epochs: 600
+  learning_rate: 1e-4
+  weight_decay: 1e-5
+  enable_checkpointing: False
+  accumulate_gradients: 1
+  freeze_encoder: True
+  lr_scheduler:
+    type: warmup_cosine
+    interval: 40
+    cosine_min_factor: 0.01
+    patience: 20
+  hyperbolic_loss:
+    start_weight: 1.0
+    end_weight: 5.0
+    weight_interval: 250
+    start_temperature: 0.2
+    end_temperature: 0.1
+    temperature_interval: 250
+    lca_version: ours
+    loss_version: normalized
+    sampling_strategy: importance
+    sampling_eps: 0.001
+    sampling_delta: 0.01
+    sampling_alpha: 0.2
+    uniform_sample_size: 10000
+    log_approximation_diff: False
+    use_backbone_knn_similarities: True
+    snn_k: 10
+    similarity_pruning:
+      version: null
+      threshold: 0.01
+      quantile: 0.2
+      nearest_neighbors: 10
+  contrastive_loss:
+    enabled: True
+    temperature: 0.5
+    weight: 0.1
+  reconstruction_loss:
+    weight: 0.0
+  regularizer:
+    enabled: False
+    weight: 0.05
+
+experiment:
+  seed: 42
+  num_workers: 16
+  batch_size: 128
+  log_interval: 10
+  optimizer: Adam
+  gradient_clip_value: 5.0
+
+evaluation_metrics:
+  delta_hyperbolicity: False
+  dendrogram_purity_single: False
+  dendrogram_purity_complete: True
+  dendrogram_purity_average: False
+  dendrogram_purity_ward: True
+  dendrogrampurity_use_root: False
+  agglomerative_clustering_single: False
+  agglomerative_clustering_complete: True
+  agglomerative_clustering_average: False
+  agglomerative_clustering_ward: True
+  nearest_neighbors_accuracy: True
+  spectral_clustering: True
+  visualization: True
+  kmeans: False
+  best_partition_complete: True
+  best_partition_average: False
+  best_partition_ward: True
+  best_partition_max_k: null
+  dasgupta_cost: False
+  visualization_sample_size: 5000
+  test_sample_size: 0
+  results_dir: './results'
+  use_wordnet_labels: False
+  wordnet_hierarchy_path: './data/cifar100_wordnet_hierarchy.txt'
+  imagenet_hierarchy_path: './data/imagenet_wordnet_hierarchy.txt'
+  wordnet_download_if_missing: True
+
+wandb:
+  enabled: True
+  project: hyper_clustering
+  entity: kevin-sidak-team
+  save_dir: ./logs
+  tags:
+    - cub200
+    - pretrained
+    - resnet50
+
+hydra:
+  run:
+    dir: ${wandb.save_dir}/hydra/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: ${wandb.save_dir}/hydra/${now:%Y-%m-%d_%H-%M-%S}
+  output_subdir: null
+  job:
+    chdir: False
+
+defaults:
+  - _self_
+  - dataset: cub200
+  - override hydra/job_logging: disabled
