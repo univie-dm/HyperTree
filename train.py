@@ -43,6 +43,15 @@ def main(cfg: DictConfig) -> None:
         else:
             raise ValueError(f"Precision {cfg.architecture.precision} not supported")
 
+        # cuDNN benchmark mode — biggest lever for conv-heavy multi-crop training.
+        # Lets cuDNN auto-tune the fastest conv algorithm for each unique input
+        # shape, critical for DINO's mixed 224+96 multi-crop sizes. Off by default
+        # in PyTorch. (Conv TF32 is already on by default in torch 2.9 via
+        # cudnn.conv.fp32_precision='tf32'; matmul TF32 is set above. Don't mix
+        # the legacy allow_tf32 API with the new one — torch 2.9 errors out.)
+        if cfg.experiment.get("cudnn_benchmark", True):
+            torch.backends.cudnn.benchmark = True
+
         if (cfg.pretraining.load_supervised_weights or cfg.pretraining.supervised) and \
            cfg.architecture.model_type not in ["resnet18", "resnet34", "resnet50", "resnet101", "resnet152"]:
             raise ValueError("Supervised and supervised weights can only be loaded for ResNet models")
@@ -80,13 +89,20 @@ def main(cfg: DictConfig) -> None:
         is_rank0 = int(os.environ.get("LOCAL_RANK", 0)) == 0
 
 
+        # Optional Lightning autocast precision for the pretraining stage only.
+        # Default = "32-true" (Lightning's own default). bf16-mixed gives a big
+        # H100 tensor-core speedup on conv-heavy DINO multi-crop. Hyperbolic ops
+        # are protected because PoincareBall._2manifold_dtype casts inputs back
+        # to its declared FP32 dtype inside expmap/logmap (poincare.py:338).
+        pretrain_precision = cfg.experiment.get("training_precision", "32-true")
         trainer = pl.Trainer(
             logger=logger,
             max_epochs=cfg.pretraining.epochs,
             accelerator="gpu",
             devices=n_devices,
             strategy="ddp_find_unused_parameters_true" if use_ddp else "auto",
-            deterministic=True if cfg.experiment.seed >= 0 else False,
+            precision=pretrain_precision,
+            deterministic=cfg.experiment.get("deterministic", False),
             enable_checkpointing=enable_pretrain_ckpt,
             default_root_dir=None,
             accumulate_grad_batches=pretrain_accum,
@@ -102,7 +118,16 @@ def main(cfg: DictConfig) -> None:
         datamodule, input_dim, _ = get_datamodule(cfg, stage="pretrain")
         pretrain_model = get_pretrain_model(cfg, input_dim)
 
-        if (not os.path.exists(f"data/models/{get_model_path(cfg)}.pt")
+        # Cross-dataset transfer: load pretrained weights from an explicit path (skips pretraining)
+        pretrained_model_path = cfg.pretraining.get("pretrained_model_path", None)
+        if pretrained_model_path is not None:
+            if is_rank0: print(f"Loading pretrained weights from: {pretrained_model_path}", flush=True)
+            saved = torch.load(pretrained_model_path, weights_only=False)
+            if isinstance(saved, dict):
+                pretrain_model.load_state_dict(saved)
+            else:
+                pretrain_model = saved
+        elif (not os.path.exists(f"data/models/{get_model_path(cfg)}.pt")
             or cfg.pretraining.overwrite):
             if is_rank0: print("Starting pretraining", flush=True)
             ckpt_path = None
@@ -156,7 +181,7 @@ def main(cfg: DictConfig) -> None:
             devices=n_devices,
             strategy="ddp_find_unused_parameters_true" if use_ddp else "auto",
             accumulate_grad_batches=accumulate_grad_batches,
-            deterministic=True if cfg.experiment.seed >= 0 else False,
+            deterministic=cfg.experiment.get("deterministic", False),
             enable_checkpointing=False,
             default_root_dir=None,
             gradient_clip_algorithm="norm"

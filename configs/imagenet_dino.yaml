@@ -5,7 +5,7 @@ architecture:
   model_type: resnet50
   latent_dim: 128
   feature_scaling: True
-  projection_layer_dims: [512, 256, 128]
+  projection_layer_dims: [1024, 512]
   precision: float32
   manifold_precision: float64
   manifold_name: PoincareBall

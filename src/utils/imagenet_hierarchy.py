@@ -27,6 +27,9 @@ WORDNET_HIERARCHY_URL = "https://raw.githubusercontent.com/cvjena/semantic-embed
 # Note: cvjena uses folder names directly, so we derive from the hierarchy leaves
 IMAGENET_SYNSETS_URL = "https://raw.githubusercontent.com/cvjena/semantic-embeddings/master/datasets/ilsvrc.py"
 
+# Full WordNet synset-to-name mapping (82K+ synsets)
+WORDNET_WORDS_URL = "https://image-net.org/data/words.txt"
+
 
 def download_file(url: str, save_path: str) -> str:
     """
@@ -54,6 +57,75 @@ def download_file(url: str, save_path: str) -> str:
         f.write(response.text)
     
     return str(save_path_obj)
+
+
+def download_wordnet_words(save_path: str = "./data/wordnet_words.txt") -> str:
+    """Download the full WordNet synset-to-name mapping from ImageNet.
+
+    The file maps all ~82K WordNet synsets to human-readable names.
+    Format: ``synset_id\\tname1, name2, ...`` per line.
+    """
+    save_path_obj = Path(save_path)
+    if save_path_obj.exists():
+        return str(save_path_obj)
+    return download_file(WORDNET_WORDS_URL, save_path)
+
+
+def load_wordnet_words(filepath: str = "./data/wordnet_words.txt") -> Dict[str, str]:
+    """Load synset_id -> human-readable name mapping.
+
+    Returns the *first* lemma name for each synset (the most common one).
+    """
+    mapping: Dict[str, str] = {}
+    with open(filepath, "r") as f:
+        for line in f:
+            parts = line.strip().split("\t", 1)
+            if len(parts) == 2:
+                synset_id = parts[0]
+                # Take the first name (before comma) for cleaner display
+                name = parts[1].split(",")[0].strip()
+                mapping[synset_id] = name
+    return mapping
+
+
+def load_node_synset_names(
+    hierarchy_path: str,
+    words_path: str = "./data/wordnet_words.txt",
+) -> Optional[Dict[int, str]]:
+    """Load proper WordNet names for all nodes in a numeric hierarchy.
+
+    Requires the companion ``.synsets`` file (written by
+    :func:`build_imagenet_hierarchy_file`) and the WordNet words file.
+
+    Returns ``None`` if the companion file is missing.
+    """
+    synsets_path = hierarchy_path + ".synsets"
+    if not Path(synsets_path).exists():
+        return None
+
+    # Download words.txt if needed
+    try:
+        download_wordnet_words(words_path)
+    except Exception:
+        return None
+    if not Path(words_path).exists():
+        return None
+
+    # Load node_id -> synset_id mapping
+    node_to_synset: Dict[int, str] = {}
+    with open(synsets_path, "r") as f:
+        for line in f:
+            parts = line.strip().split("\t")
+            if len(parts) == 2:
+                node_to_synset[int(parts[0])] = parts[1]
+
+    # Load synset_id -> name mapping
+    synset_to_name = load_wordnet_words(words_path)
+
+    return {
+        node_id: synset_to_name.get(synset_id, synset_id)
+        for node_id, synset_id in node_to_synset.items()
+    }
 
 
 def download_imagenet_synset_mapping(save_path: Optional[str] = None) -> str:
@@ -302,7 +374,13 @@ def build_imagenet_hierarchy_file(
                 if child_idx is None:
                     continue
                 f.write(f"{parent_idx} {child_idx}\n")
-    
+
+    # Write companion .synsets file mapping node_id -> synset_id
+    synsets_path = str(output_path_obj) + ".synsets"
+    with open(synsets_path, "w") as f:
+        for synset, idx in sorted(node_to_idx.items(), key=lambda x: x[1]):
+            f.write(f"{idx}\t{synset}\n")
+
     return str(output_path_obj)
 
 
@@ -512,83 +590,106 @@ def get_labels_at_hierarchy_level(
     target_num_classes: int = 50
 ) -> Tuple[np.ndarray, Dict[int, int]]:
     """
-    Map fine-grained labels to a higher hierarchy level with approximately target_num_classes.
-    
-    This is useful for visualization (e.g., confusion matrices) where showing all 1000
-    ImageNet classes would be unreadable. Instead, we aggregate to a level in the 
-    WordNet hierarchy that has around target_num_classes distinct categories.
-    
+    Map fine-grained labels to a higher hierarchy level with approximately
+    *target_num_classes* using a **top-down greedy split**.
+
+    Starting from the root(s), the algorithm repeatedly expands the active
+    node that covers the most leaf classes until the target is reached.  This
+    produces balanced, semantically meaningful superclasses (e.g. "animal",
+    "food", "artifact") instead of the overly abstract categories that a
+    uniform bottom-up approach yields.
+
     Parameters
     ----------
     fine_labels : np.ndarray
-        Array of fine-grained labels (0-999 for ImageNet)
+        Array of fine-grained labels (0-999 for ImageNet, 0-199 for
+        Tiny ImageNet).
     parent_child : Dict[int, List[int]]
-        Parent-child hierarchy dictionary
+        Parent-child hierarchy dictionary.
     target_num_classes : int
-        Approximate target number of classes for the output
-        
+        Approximate target number of classes for the output.
+
     Returns
     -------
     Tuple[np.ndarray, Dict[int, int]]
         - Coarse labels at the selected hierarchy level
         - Mapping from fine labels to coarse labels
     """
-    # Build child -> parent mapping
-    child_to_parent = {}
-    for parent, children in parent_child.items():
-        for child in children:
-            child_to_parent[child] = parent
-    
-    # Get unique fine labels that exist in the data
-    unique_fine = np.unique(fine_labels)
-    
-    # Start with fine labels and progressively go up the hierarchy
-    # until we reach approximately target_num_classes
-    current_mapping = {label: label for label in unique_fine}
-    
-    while True:
-        # Count unique classes at current level
-        current_classes = set(current_mapping.values())
-        n_classes = len(current_classes)
-        
-        if n_classes <= target_num_classes:
+    unique_fine = set(np.unique(fine_labels).tolist())
+
+    # Pre-compute leaf descendants for every node (cached).
+    _desc_cache: Dict[int, set] = {}
+
+    def _leaf_descendants(node: int) -> set:
+        if node in _desc_cache:
+            return _desc_cache[node]
+        if node not in parent_child:
+            _desc_cache[node] = {node}
+            return _desc_cache[node]
+        result: set = set()
+        for child in parent_child[node]:
+            result |= _leaf_descendants(child)
+        _desc_cache[node] = result
+        return result
+
+    # Find root nodes (parents that are not children of anyone).
+    all_children_set: set = set()
+    for ch in parent_child.values():
+        all_children_set.update(ch)
+    roots = set(parent_child.keys()) - all_children_set
+
+    # Active nodes partition the fine labels.  Start from the root(s).
+    active_nodes = set(roots)
+
+    # Greedily expand the most populated node until we reach the target.
+    while len(active_nodes) < target_num_classes:
+        # Score each expandable active node by how many fine labels it covers.
+        best_node = None
+        best_count = -1
+        for node in active_nodes:
+            if node not in parent_child:
+                continue  # leaf – cannot expand
+            count = len(_leaf_descendants(node) & unique_fine)
+            if count > best_count:
+                best_count = count
+                best_node = node
+
+        if best_node is None:
+            break  # nothing left to expand
+
+        children = parent_child[best_node]
+        new_count = len(active_nodes) - 1 + len(children)
+        if new_count > target_num_classes:
+            # Expanding would overshoot – stop here.
             break
-        
-        # Go one level up for all labels that have parents
-        new_mapping = {}
-        for fine_label, current_label in current_mapping.items():
-            if current_label in child_to_parent:
-                new_mapping[fine_label] = child_to_parent[current_label]
-            else:
-                # Already at root, keep current
-                new_mapping[fine_label] = current_label
-        
-        # Check if we made progress (some labels moved up)
-        if set(new_mapping.values()) == current_classes:
-            # No progress, we've reached roots for all
-            break
-            
-        current_mapping = new_mapping
-    
-    # Apply mapping to all labels
-    coarse_labels = np.array([current_mapping.get(label, label) for label in fine_labels])
-    
-    return coarse_labels, current_mapping
+
+        active_nodes.remove(best_node)
+        active_nodes.update(children)
+
+    # Build fine_label → active_node mapping.
+    label_to_active: Dict[int, int] = {}
+    for node in active_nodes:
+        for leaf in _leaf_descendants(node):
+            if leaf in unique_fine:
+                label_to_active[leaf] = node
+
+    coarse_labels = np.array([label_to_active.get(int(l), int(l)) for l in fine_labels])
+    return coarse_labels, label_to_active
 
 
 def get_hierarchy_node_names(
     parent_child: Dict[int, List[int]],
     leaf_names: Dict[int, str],
     max_examples: int = 3,
+    synset_node_names: Optional[Dict[int, str]] = None,
 ) -> Dict[int, str]:
     """
     Build human-readable names for all nodes in a hierarchy.
 
-    Leaf nodes use the provided ``leaf_names``.  Parent nodes are named by
-    listing up to ``max_examples`` representative leaf descendants (sorted
-    alphabetically), e.g. ``"apple/mushroom/orange/…(5)"``.
-
-    Works for both CIFAR-100 and ImageNet hierarchies.
+    Leaf nodes use the provided ``leaf_names``.  Parent nodes use proper
+    WordNet synset names when ``synset_node_names`` is provided (e.g.
+    ``"animal"``, ``"wheeled vehicle"``).  Otherwise falls back to listing
+    up to ``max_examples`` representative leaf descendants.
 
     Parameters
     ----------
@@ -597,7 +698,12 @@ def get_hierarchy_node_names(
     leaf_names : Dict[int, str]
         Mapping from leaf node ID to human-readable name.
     max_examples : int
-        Maximum number of leaf example names to show for parent nodes.
+        Maximum number of leaf example names to show for parent nodes
+        (only used when ``synset_node_names`` is not available).
+    synset_node_names : Optional[Dict[int, str]]
+        Mapping from node ID to proper WordNet synset name, as returned
+        by :func:`load_node_synset_names`.  When provided, parent nodes
+        use these names instead of concatenated leaf names.
 
     Returns
     -------
@@ -621,17 +727,21 @@ def get_hierarchy_node_names(
 
     node_names: Dict[int, str] = dict(leaf_names)
     for parent in parent_child:
-        leaves = _get_leaves(parent)
-        names_sorted = sorted({leaf_names[l] for l in leaves if l in leaf_names})
-        if not names_sorted:
-            node_names[parent] = str(parent)
-        elif len(names_sorted) <= max_examples:
-            node_names[parent] = "/".join(names_sorted)
+        # Prefer proper WordNet synset name for internal nodes
+        if synset_node_names and parent in synset_node_names:
+            node_names[parent] = synset_node_names[parent]
         else:
-            node_names[parent] = (
-                "/".join(names_sorted[:max_examples])
-                + f"/\u2026({len(names_sorted)})"
-            )
+            leaves = _get_leaves(parent)
+            names_sorted = sorted({leaf_names[l] for l in leaves if l in leaf_names})
+            if not names_sorted:
+                node_names[parent] = str(parent)
+            elif len(names_sorted) <= max_examples:
+                node_names[parent] = "/".join(names_sorted)
+            else:
+                node_names[parent] = (
+                    "/".join(names_sorted[:max_examples])
+                    + f"/\u2026({len(names_sorted)})"
+                )
     return node_names
 
 

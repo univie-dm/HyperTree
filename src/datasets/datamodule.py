@@ -482,6 +482,9 @@ class ColorDataModule(pl.LightningDataModule):
             num_workers=self.hparams.num_workers,
             pin_memory=True,
             persistent_workers=True if self.hparams.num_workers > 0 else False,
+            # Bigger in-flight buffer so a momentary worker stall doesn't stall the GPU.
+            # Critical for DINO multi-crop (8 views/sample → CPU augmentation is the bottleneck).
+            prefetch_factor=4 if self.hparams.num_workers > 0 else None,
         )
 
     def test_dataloader(self) -> DataLoader:

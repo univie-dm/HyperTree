@@ -13,7 +13,7 @@ from src.hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBa
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.hyperbolic_math.src.utils.math_utils import atanh
 from src.utils.wordnet_hierarchy import get_wordnet_labels_for_cifar100
-from src.utils.imagenet_hierarchy import get_wordnet_labels_for_imagenet, get_hierarchy_node_names, get_labels_at_hierarchy_level, setup_tiny_imagenet_hierarchy
+from src.utils.imagenet_hierarchy import get_wordnet_labels_for_imagenet, get_hierarchy_node_names, get_labels_at_hierarchy_level, setup_tiny_imagenet_hierarchy, load_node_synset_names
 
 
 class AbstractModel(pl.LightningModule):
@@ -90,10 +90,29 @@ class AbstractModel(pl.LightningModule):
         x_recon = self.decode(manifold_z)
         return x_recon, manifold_z
 
+    @staticmethod
+    def _gather_with_backprop(z: torch.Tensor) -> torch.Tensor:
+        """Gather tensors from all DDP ranks, keeping gradients for the local shard."""
+        if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
+            return z
+        world_size = torch.distributed.get_world_size()
+        if world_size == 1:
+            return z
+        # Gather from all ranks (no grad through remote copies)
+        gathered = [torch.zeros_like(z) for _ in range(world_size)]
+        torch.distributed.all_gather(gathered, z.contiguous())
+        # Overwrite the local shard so its gradients flow through
+        rank = torch.distributed.get_rank()
+        gathered[rank] = z
+        return torch.cat(gathered, dim=0)
+
     def compute_contrastive_loss(self, z_i: torch.Tensor, z_j: torch.Tensor, temperature: float = 0.1) -> torch.Tensor:
         """
         Compute simplified NT-Xent (normalized temperature-scaled cross entropy) loss
-        for hyperbolic or Euclidean embeddings. Memory-efficient implementation.
+        for hyperbolic or Euclidean embeddings.
+
+        Under DDP, embeddings are gathered across all ranks so every GPU sees the
+        full global batch of negatives.  Gradients only flow through the local shard.
 
         Args:
             z_i: Embeddings from original images, shape (batch_size, latent_dim)
@@ -103,9 +122,15 @@ class AbstractModel(pl.LightningModule):
         Returns:
             Contrastive loss value
         """
-        batch_size = z_i.shape[0]
-        z_i = z_i.view(batch_size, -1)
-        z_j = z_j.view(batch_size, -1)
+        local_batch_size = z_i.shape[0]
+        z_i = z_i.view(local_batch_size, -1)
+        z_j = z_j.view(local_batch_size, -1)
+
+        # Gather across GPUs so every rank sees all negatives
+        z_i = self._gather_with_backprop(z_i)
+        z_j = self._gather_with_backprop(z_j)
+        batch_size = z_i.shape[0]  # global batch after gather
+
         z = torch.cat([z_i, z_j], dim=0)  # Shape: (2*batch_size, latent_dim)
         # Compute pairwise geodesic distances
         distance_matrix = compute_pairwise_distances(z, self.manifold)
@@ -350,6 +375,10 @@ class AbstractModel(pl.LightningModule):
                             if not isinstance(setup_if_missing, bool):
                                 setup_if_missing = bool(setup_if_missing)
 
+                            # Rebuild hierarchy if .synsets companion is missing
+                            if not Path(imagenet_hierarchy_path + ".synsets").exists() and Path(imagenet_hierarchy_path).exists():
+                                Path(imagenet_hierarchy_path).unlink()
+
                             _, parent_child = get_wordnet_labels_for_imagenet(
                                 all_labels.cpu().numpy(),
                                 hierarchy_file=imagenet_hierarchy_path,
@@ -362,7 +391,8 @@ class AbstractModel(pl.LightningModule):
                                 all_labels.cpu().numpy(), parent_child, target_num_classes=20
                             )
                             if leaf_names:
-                                coarse_label_names = get_hierarchy_node_names(parent_child, leaf_names)
+                                synset_names = load_node_synset_names(imagenet_hierarchy_path)
+                                coarse_label_names = get_hierarchy_node_names(parent_child, leaf_names, synset_node_names=synset_names)
 
                         elif dataset_name == "tiny_imagenet":
                             tiny_hierarchy_path = self.hparams.evaluation_metrics.get(
@@ -371,15 +401,20 @@ class AbstractModel(pl.LightningModule):
                             if not isinstance(tiny_hierarchy_path, str):
                                 tiny_hierarchy_path = str(tiny_hierarchy_path)
 
+                            # Get data_dir for hierarchy setup
+                            data_dir = None
+                            if hasattr(self.trainer, 'datamodule') and self.trainer.datamodule is not None:
+                                dm_hparams = getattr(self.trainer.datamodule, 'hparams', None)
+                                if dm_hparams and hasattr(dm_hparams, 'data_dir'):
+                                    data_dir = dm_hparams.data_dir
+
+                            # Rebuild hierarchy if .synsets companion is missing
+                            if not Path(tiny_hierarchy_path + ".synsets").exists() and Path(tiny_hierarchy_path).exists() and data_dir:
+                                Path(tiny_hierarchy_path).unlink()
+
                             # Build hierarchy if missing
-                            if not Path(tiny_hierarchy_path).exists():
-                                data_dir = None
-                                if hasattr(self.trainer, 'datamodule') and self.trainer.datamodule is not None:
-                                    dm_hparams = getattr(self.trainer.datamodule, 'hparams', None)
-                                    if dm_hparams and hasattr(dm_hparams, 'data_dir'):
-                                        data_dir = dm_hparams.data_dir
-                                if data_dir:
-                                    setup_tiny_imagenet_hierarchy(data_dir, tiny_hierarchy_path)
+                            if not Path(tiny_hierarchy_path).exists() and data_dir:
+                                setup_tiny_imagenet_hierarchy(data_dir, tiny_hierarchy_path)
 
                             _, parent_child = get_wordnet_labels_for_imagenet(
                                 all_labels.cpu().numpy(),
@@ -393,7 +428,8 @@ class AbstractModel(pl.LightningModule):
                                 all_labels.cpu().numpy(), parent_child, target_num_classes=20
                             )
                             if leaf_names:
-                                coarse_label_names = get_hierarchy_node_names(parent_child, leaf_names)
+                                synset_names = load_node_synset_names(tiny_hierarchy_path)
+                                coarse_label_names = get_hierarchy_node_names(parent_child, leaf_names, synset_node_names=synset_names)
 
                     except Exception as e:
                         print(f"Warning: Failed to load WordNet labels: {e}")

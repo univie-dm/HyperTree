@@ -103,6 +103,11 @@ class HyperbolicResNet(AbstractModel):
         # Decoder
         self.decoder = None  # ResNet decoder not supported
 
+        # Replace classification head with identity to use pooled features (2048 for ResNet50, 512 for ResNet18)
+        backbone_dims = {"resnet18": 512, "resnet34": 512, "resnet50": 2048, "resnet101": 2048, "resnet152": 2048}
+        backbone_dim = backbone_dims[self.hparams.model_type]
+        self.encoder.fc = nn.Identity()
+
         # Modify encoder for CIFAR-10/100 (32x32 images)
         if self.hparams.input_size == 32:
             print("Modifying ResNet encoder for CIFAR-10/100 (32x32 images).", flush=True)
@@ -118,7 +123,7 @@ class HyperbolicResNet(AbstractModel):
                 param.requires_grad = False
 
         # Build projection head layers progressively
-        current_dim = 1000
+        current_dim = backbone_dim
         #projection_layers: list[nn.Module] = [] # old
         projection_layers: list[nn.Module] = [nn.BatchNorm1d(current_dim), self.activation_function] # test if better
         for dim in self.hparams.projection_layer_dims:
@@ -171,7 +176,14 @@ class HyperbolicResNet(AbstractModel):
         return None, manifold_z
 
     def _compute_euclidean_contrastive_loss(self, h_i: torch.Tensor, h_j: torch.Tensor, temperature: float) -> torch.Tensor:
-        """NT-Xent using cosine similarity on pre-hyperbolic backbone features."""
+        """NT-Xent using cosine similarity on pre-hyperbolic backbone features.
+
+        Under DDP, embeddings are gathered across all ranks so every GPU sees the
+        full global batch of negatives.
+        """
+        # Gather across GPUs for full negative set
+        h_i = self._gather_with_backprop(h_i)
+        h_j = self._gather_with_backprop(h_j)
         batch_size = h_i.shape[0]
         h = torch.cat([h_i, h_j], dim=0)  # (2N, d)
         h = F.normalize(h, p=2, dim=1)
@@ -204,27 +216,24 @@ class HyperbolicResNet(AbstractModel):
             dist_to_center = self.manifold.dist_0(z_aug_1).mean()
             self.metrics.setdefault("pretrain/dist_to_center", []).append(dist_to_center.detach().item())
         else:
-            h_aug_1, z_aug_1 = self.encode_with_backbone(x_aug_1)
-            h_aug_2, z_aug_2 = self.encode_with_backbone(x_aug_2)
+            # Backbone features only — skip hyperbolic head during pretraining.
+            # The hyperbolic head has enough capacity to minimize contrastive loss
+            # without the backbone improving (gradient absorption). Euclidean-only
+            # contrastive forces clean gradient through the backbone. The hyperbolic
+            # head is trained from scratch during the clustering stage.
+            h_aug_1 = self.rms(self.encoder(x_aug_1))
+            h_aug_2 = self.rms(self.encoder(x_aug_2))
 
-            if not torch.isfinite(z_aug_1).all() or not torch.isfinite(z_aug_2).all():
-                raise ValueError("Non-finite values encountered in contrastive embeddings.")
+            if not torch.isfinite(h_aug_1).all() or not torch.isfinite(h_aug_2).all():
+                raise ValueError("Non-finite values encountered in backbone features.")
 
-            # Hyperbolic contrastive on (aug_1, aug_2) — proper two-view SimCLR
-            contrastive_loss = self.compute_contrastive_loss(z_aug_1, z_aug_2, temperature=self.hparams.contrastive_temperature)
-
-            # Euclidean contrastive on pre-hyperbolic backbone features — faster, more stable gradient
             euclidean_contrastive_loss = self._compute_euclidean_contrastive_loss(
                 h_aug_1, h_aug_2, temperature=self.hparams.contrastive_temperature
             )
+            loss = self.hparams.contrastive_weight * euclidean_contrastive_loss
 
-            loss = self.hparams.contrastive_weight * (contrastive_loss + euclidean_contrastive_loss)
-
-            # Contrastive-specific metrics
-            self.metrics.setdefault("pretrain/contrastive_loss", []).append(contrastive_loss.detach().item())
             self.metrics.setdefault("pretrain/euclidean_contrastive_loss", []).append(euclidean_contrastive_loss.detach().item())
-            dist_to_center = self.manifold.dist_0(z_aug_1).mean()
-            self.metrics.setdefault("pretrain/dist_to_center", []).append(dist_to_center.detach().item())
+            z_aug_1 = h_aug_1  # backbone features for latent space stats below
 
         # Logging
         self.metrics.setdefault("pretrain/total_loss", []).append(loss.detach().item())  # type: ignore

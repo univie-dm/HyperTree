@@ -114,7 +114,7 @@ architecture:
   model_type: 'resnet50' # 'feedforward', 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152'
   feature_scaling: True
   feedforward_hidden_dims: [512, 256, 128] # only used if model_type is 'feedforward'
-  projection_layer_dims: [512, 256, 128] # contrastive projection head layers after encoder
+  projection_layer_dims: [1024, 512] # contrastive projection head layers after encoder
   latent_dim: 32 # Hyperboloid automatically uses latent_dim+1 (latent_dim refers to the dimension of the hyperbolic manifold)
   precision: 'float32' # 'float32', 'float64'
   manifold_precision: 'float64' # 'float32', 'float64'

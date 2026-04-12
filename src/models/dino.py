@@ -220,32 +220,21 @@ class DINOHyperbolicResNet(HyperbolicResNet):
         self._update_teacher()
         self._update_center(teacher_cat)
 
-        # Log DINO-only loss before adding hyperbolic terms
+        # Log DINO-only loss before adding Euclidean contrastive
         self.metrics.setdefault("pretrain/dino_loss", []).append(total_loss.detach().item())
 
-        # Hyperbolic contrastive loss on global crops — reuse backbone features from student forward
-        # (avoids redundant encoder passes that caused OOM)
-        if self.hparams.feature_scaling and not isinstance(self.manifold, Euclidean):
-            z_aug_1 = self.hyperbolic_encoding_layer(self.feature_scaling_layer(h_aug_1))
-            z_aug_2 = self.hyperbolic_encoding_layer(self.feature_scaling_layer(h_aug_2))
-        else:
-            z_aug_1 = self.hyperbolic_encoding_layer(h_aug_1)
-            z_aug_2 = self.hyperbolic_encoding_layer(h_aug_2)
-
-        contrastive_loss = self.compute_contrastive_loss(
-            z_aug_1, z_aug_2, temperature=self.hparams.contrastive_temperature
-        )
+        # Euclidean contrastive only — skip hyperbolic head during pretraining.
+        # Same rationale as SimCLR: the hyperbolic head absorbs gradient without
+        # improving the backbone. DINO self-distillation + Euclidean contrastive
+        # train the backbone; the hyperbolic head is trained during clustering.
         euclidean_contrastive_loss = self._compute_euclidean_contrastive_loss(
             h_aug_1, h_aug_2, temperature=self.hparams.contrastive_temperature
         )
         c_weight = self.hparams.contrastive_weight if self.hparams.contrastive_loss_enabled else 0.1
-        hyp_loss = c_weight * (contrastive_loss + euclidean_contrastive_loss)
-        total_loss = total_loss + hyp_loss
+        total_loss = total_loss + c_weight * euclidean_contrastive_loss
 
-        self.metrics.setdefault("pretrain/contrastive_loss", []).append(contrastive_loss.detach().item())
         self.metrics.setdefault("pretrain/euclidean_contrastive_loss", []).append(euclidean_contrastive_loss.detach().item())
-        dist_to_center = self.manifold.dist_0(z_aug_1).mean()
-        self.metrics.setdefault("pretrain/dist_to_center", []).append(dist_to_center.detach().item())
+        z_aug_1 = h_aug_1  # backbone features for latent space stats below
 
         # Logging
         self.metrics.setdefault("pretrain/total_loss", []).append(total_loss.detach().item())

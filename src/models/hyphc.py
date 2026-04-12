@@ -53,6 +53,8 @@ class HyperbolicHCModel(AbstractModel):
         use_backbone_knn_similarities: bool = False,
         snn_k: int = 10,
         freeze_encoder: bool = False,
+        unfreeze_backbone_from: str | None = None,
+        backbone_lr_factor: float = 0.1,
     ):
         super().__init__(
             # Architecture
@@ -119,13 +121,49 @@ class HyperbolicHCModel(AbstractModel):
             for param in self.encoder.parameters():  # type: ignore
                 param.requires_grad_(False)
 
+            # Selectively unfreeze backbone layers for fine-tuning
+            if unfreeze_backbone_from is not None:
+                resnet_backbone = self.encoder[0]  # type: ignore  # First module in Sequential is the ResNet
+                layer_names = ["layer1", "layer2", "layer3", "layer4"]
+                if unfreeze_backbone_from not in layer_names:
+                    raise ValueError(f"unfreeze_backbone_from must be one of {layer_names}, got '{unfreeze_backbone_from}'")
+                start_idx = layer_names.index(unfreeze_backbone_from)
+                for name in layer_names[start_idx:]:
+                    for param in getattr(resnet_backbone, name).parameters():
+                        param.requires_grad_(True)
+                print(f"Unfroze backbone from {unfreeze_backbone_from} onwards", flush=True)
+
         # Rejection sampling caches (re-estimated each training step)
         self.cached_acceptance_rate = 0.2
 
     def configure_optimizers(self) -> Any:
+        # Separate backbone params (unfrozen via unfreeze_backbone_from) from head params
+        # so backbone gets a lower learning rate
+        backbone_params = []
+        head_params = []
+        use_discriminative_lr = (
+            self.hparams.unfreeze_backbone_from is not None
+            and self.hparams.backbone_lr_factor != 1.0
+        )
+        for name, param in self.named_parameters():
+            if not param.requires_grad:
+                continue
+            if use_discriminative_lr and name.startswith("encoder.0."):
+                backbone_params.append(param)
+            else:
+                head_params.append(param)
+
+        if backbone_params:
+            param_groups = [
+                {"params": head_params},
+                {"params": backbone_params, "lr": self.hparams.learning_rate * self.hparams.backbone_lr_factor},
+            ]
+        else:
+            param_groups = [{"params": head_params}]
+
         if self.hparams.optimizer_name == "Adam":
             optimizer = torch.optim.Adam(
-                self.parameters(),
+                param_groups,
                 lr=self.hparams.learning_rate,
                 eps=1e-5,
                 weight_decay=self.hparams.weight_decay,
@@ -133,7 +171,7 @@ class HyperbolicHCModel(AbstractModel):
             )
         elif self.hparams.optimizer_name == "SGD":
             optimizer = torch.optim.SGD(
-                self.parameters(),
+                param_groups,
                 lr=self.hparams.learning_rate,
                 momentum=0.9,
                 weight_decay=self.hparams.weight_decay,

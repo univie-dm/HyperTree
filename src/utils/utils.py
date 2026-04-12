@@ -27,13 +27,20 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "optimizer": cfg.experiment.optimizer,
         "gradient_clip_value": cfg.experiment.gradient_clip_value,
         # Pretraining attributes
+        "pretrain_method": cfg.pretraining.get("method", "contrastive"),
+        "pretrain_augmentation": cfg.pretraining.get("augmentation", None),
         "pretrain_epochs": cfg.pretraining.epochs,
         "learning_rate": cfg.pretraining.learning_rate,
         "weight_decay": cfg.pretraining.weight_decay,
+        "accumulate_gradients_pretrain": cfg.pretraining.get("accumulate_gradients", 1),
         "use_contrastive_loss_pretrain": cfg.pretraining.contrastive_loss.enabled,
         "contrastive_weight_pretrain": cfg.pretraining.contrastive_loss.weight,
         "contrastive_temperature_pretrain": cfg.pretraining.contrastive_loss.temperature,
         "lr_scheduler_pretrain": cfg.pretraining.get("lr_scheduler", None),
+        # Multi-crop attributes (DINO and similar)
+        "n_local_crops": cfg.pretraining.get("n_local_crops", None),
+        "local_crop_size": cfg.pretraining.get("local_crop_size", None),
+        "dino_params": cfg.pretraining.get("dino", None),
         # Model attributes
         "architecture": cfg.architecture,
         # Dataset attributes
@@ -278,6 +285,8 @@ def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[Hyperb
         use_backbone_knn_similarities=cfg.clustering.hyperbolic_loss.get("use_backbone_knn_similarities", False),
         snn_k=cfg.clustering.hyperbolic_loss.get("snn_k", 10),
         freeze_encoder=cfg.clustering.get("freeze_encoder", False),
+        unfreeze_backbone_from=cfg.clustering.get("unfreeze_backbone_from", None),
+        backbone_lr_factor=cfg.clustering.get("backbone_lr_factor", 0.1),
     )
     return model
 
