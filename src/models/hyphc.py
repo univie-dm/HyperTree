@@ -744,9 +744,6 @@ class HyperbolicHCModel(AbstractModel):
                 backbone_features = self.rms(backbone_features)  # type: ignore
             snn_similarities = self.compute_snn_similarities(backbone_features, k=self.hparams.snn_k)
 
-        hyperbolic_loss = self.compute_hyperbolic_loss(manifold_z, hyperbolic_loss_temperature, similarities=snn_similarities)
-        # Log the hyperbolic loss
-        self.metrics.setdefault("clustering/hyperbolic_loss", []).append(hyperbolic_loss.detach().item())  # type: ignore
         ## Compute the current hyperbolic loss weight
         in_head_warmup = self.current_epoch < int(getattr(self.hparams, "head_warmup_epochs", 0))
         if in_head_warmup:
@@ -758,7 +755,14 @@ class HyperbolicHCModel(AbstractModel):
         else:
             hyperbolic_loss_weight = self.hparams.hyperbolic_loss_end_weight
         self.metrics["clustering/hyperbolic_loss_weight"] = hyperbolic_loss_weight
-        ## Add the weighted hyperbolic loss to the total loss
+
+        # Skip HypHC computation entirely when its weight is zero — avoids the
+        # Euclidean LCA error path and saves work when running ablations/warmups.
+        if hyperbolic_loss_weight == 0.0:
+            hyperbolic_loss = torch.zeros((), device=manifold_z.device)
+        else:
+            hyperbolic_loss = self.compute_hyperbolic_loss(manifold_z, hyperbolic_loss_temperature, similarities=snn_similarities)
+        self.metrics.setdefault("clustering/hyperbolic_loss", []).append(hyperbolic_loss.detach().item())  # type: ignore
         total_loss = hyperbolic_loss_weight * hyperbolic_loss
 
         # Reconstruction loss

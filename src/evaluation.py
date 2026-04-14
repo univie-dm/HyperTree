@@ -226,7 +226,7 @@ def _compute_2d_embeddings(X_sampled, manifold):
     if isinstance(manifold, Hyperboloid):
         # Convert to PoincareBall first for logmap_0
         poincare = PoincareBall(c=manifold.c.detach().clone(), dtype=manifold.dtype)
-        pts_poincare = poincare.from_hyperboloid(X_sampled.to(manifold.dtype))
+        pts_poincare = manifold.to_poincare(X_sampled.to(manifold.dtype))
         tangent = poincare.logmap_0(pts_poincare)
     elif isinstance(manifold, PoincareBall):
         tangent = manifold.logmap_0(X_sampled.to(manifold.dtype))
@@ -324,7 +324,7 @@ def _run_agglomerative(
             X_euc = X.detach().cpu().float().numpy()
         elif isinstance(manifold, Hyperboloid):
             poincare = PoincareBall(c=manifold.c.detach().clone(), dtype=manifold.dtype)
-            pts_poincare = poincare.from_hyperboloid(X.to(manifold.dtype))
+            pts_poincare = manifold.to_poincare(X.to(manifold.dtype))
             X_euc = poincare.logmap_0(pts_poincare).detach().cpu().float().numpy()
         elif isinstance(manifold, PoincareBall):
             X_euc = manifold.logmap_0(X.to(manifold.dtype)).detach().cpu().float().numpy()
@@ -386,7 +386,7 @@ def _get_euclidean_features(X: torch.Tensor, manifold: 'Manifold') -> np.ndarray
         return X.detach().cpu().float().numpy()
     elif isinstance(manifold, Hyperboloid):
         poincare = PoincareBall(c=manifold.c.detach().clone(), dtype=manifold.dtype)
-        pts_poincare = poincare.from_hyperboloid(X.to(manifold.dtype))
+        pts_poincare = manifold.to_poincare(X.to(manifold.dtype))
         return poincare.logmap_0(pts_poincare).detach().cpu().float().numpy()
     elif isinstance(manifold, PoincareBall):
         return manifold.logmap_0(X.to(manifold.dtype)).detach().cpu().float().numpy()
@@ -648,6 +648,11 @@ def evaluation(
                 distance_matrix, Y, k=k,
             )
 
+    # --- Recall@K (standard metric-learning definition: any-match in top-k) ---
+    if metrics.get("recall_at_k", False):
+        for k in (2, 4, 8, 10, 100):
+            results[f"recall_at_{k}"] = recall_at_k(distance_matrix, Y, k=k)
+
     # --- Spectral clustering ---
     if metrics.get("spectral_clustering", False):
         Y_np = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
@@ -847,6 +852,30 @@ def nearest_neighbors_accuracy(
                 counter += 1
         average_accuracy += counter / k
     return average_accuracy / num_samples
+
+
+def recall_at_k(
+    distance_matrix: Union[np.ndarray, torch.Tensor],
+    labels: Union[np.ndarray, torch.Tensor],
+    k: int = 1,
+) -> float:
+    """Metric-learning Recall@K: fraction of queries with at least one same-class
+    neighbor among the k nearest (self-match excluded).
+    """
+    if isinstance(labels, torch.Tensor):
+        labels = labels.detach().cpu().numpy()
+    if isinstance(distance_matrix, torch.Tensor):
+        distance_matrix = distance_matrix.detach().cpu().numpy()
+
+    num_samples = len(labels)
+    if num_samples < 2:
+        return 1.0
+
+    k = min(k, num_samples - 1)
+    nearest_indices = np.argsort(distance_matrix, axis=1)[:, 1 : k + 1]
+    neighbor_labels = labels[nearest_indices]
+    hits = (neighbor_labels == labels[:, None]).any(axis=1)
+    return float(hits.mean())
 
 
 # ---------------------------------------------------------------------------

@@ -146,6 +146,7 @@ evaluation_metrics:
   agglomerative_clustering_average: False
   agglomerative_clustering_ward: True
   nearest_neighbors_accuracy: True
+  recall_at_k: True
   spectral_clustering: True
   visualization: True
   kmeans: False
