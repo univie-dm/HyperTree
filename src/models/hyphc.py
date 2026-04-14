@@ -51,6 +51,11 @@ class HyperbolicHCModel(AbstractModel):
         regularize_to_origin_enabled: bool = False,
         regularizer_weight: float = 0.05,
         regularizer_type: str = "origin",  # "origin" | "uniformity" | "off"
+        # Head warmup (clustering stage): for the first N epochs, train the
+        # hyperbolic head only — HypHC weight forced to 0 and contrastive routed
+        # through the head (geodesic) to give it supervised signal before
+        # HypHC takes over. Backbone freeze is handled by freeze_encoder.
+        head_warmup_epochs: int = 0,
         # Backbone kNN SNN similarity parameters
         use_backbone_knn_similarities: bool = False,
         snn_k: int = 10,
@@ -743,7 +748,10 @@ class HyperbolicHCModel(AbstractModel):
         # Log the hyperbolic loss
         self.metrics.setdefault("clustering/hyperbolic_loss", []).append(hyperbolic_loss.detach().item())  # type: ignore
         ## Compute the current hyperbolic loss weight
-        if self.hparams.hyperbolic_loss_weight_interval > 0:
+        in_head_warmup = self.current_epoch < int(getattr(self.hparams, "head_warmup_epochs", 0))
+        if in_head_warmup:
+            hyperbolic_loss_weight = 0.0
+        elif self.hparams.hyperbolic_loss_weight_interval > 0:
             hyperbolic_loss_weight = self.hparams.hyperbolic_loss_start_weight + (
                 self.hparams.hyperbolic_loss_end_weight - self.hparams.hyperbolic_loss_start_weight
             ) * min(self.current_epoch / self.hparams.hyperbolic_loss_weight_interval, 1.0)
@@ -766,7 +774,10 @@ class HyperbolicHCModel(AbstractModel):
 
         # Contrastive loss: use (aug_1, aug_2) as the positive pair for proper two-view SimCLR
         if self.hparams.contrastive_weight > 0.0 and self.hparams.contrastive_loss_enabled:
-            if self.hparams.contrastive_euclidean:
+            # During head warmup, route contrastive through the hyperbolic head
+            # so its gradient trains the head (Euclidean path skips the head entirely).
+            use_euclidean_contrastive = self.hparams.contrastive_euclidean and not in_head_warmup
+            if use_euclidean_contrastive:
                 # Apply contrastive on pre-hyperbolic features — geodesic NT-Xent pushes
                 # negatives to the Poincaré boundary and destroys neighborhood structure.
                 h_aug_1 = self.rms(self.encoder(x_aug_1))  # type: ignore

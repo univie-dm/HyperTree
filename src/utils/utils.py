@@ -283,6 +283,7 @@ def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[Hyperb
         regularize_to_origin_enabled=cfg.clustering.regularizer.enabled,
         regularizer_weight=cfg.clustering.regularizer.weight,
         regularizer_type=cfg.clustering.regularizer.get("type", "origin"),
+        head_warmup_epochs=cfg.clustering.get("head_warmup_epochs", 0),
         # Backbone kNN SNN similarity parameters
         use_backbone_knn_similarities=cfg.clustering.hyperbolic_loss.get("use_backbone_knn_similarities", False),
         snn_k=cfg.clustering.hyperbolic_loss.get("snn_k", 10),

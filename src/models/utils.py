@@ -126,6 +126,7 @@ def get_hyperbolic_encoding_layer_by_name(
         )
     # PoincareBall layers
     elif layer_name == "HyperbolicLinearPP" and isinstance(manifold, PoincareBall):
+        # Kaiming scaling is handled inside the layer's __init__.
         layer = HyperbolicLinearPoincarePP(
             manifold=manifold,
             input_dim=input_dim,
@@ -135,8 +136,6 @@ def get_hyperbolic_encoding_layer_by_name(
             clamping_factor=clamping_factor,
             smoothing_factor=smoothing_factor,
         )
-        # Scale the already initialized standard normal weights
-        layer.weight.data *= (1.0 / np.sqrt(input_dim))
     else:
         raise ValueError(
             f"Unknown hyperbolic layer name: {layer_name}. "
