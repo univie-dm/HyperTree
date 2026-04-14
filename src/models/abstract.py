@@ -8,6 +8,59 @@ from pathlib import Path
 from typing import Tuple, Any
 from pytorch_lightning.loggers import WandbLogger
 
+
+class LARS(torch.optim.Optimizer):
+    """LARS (Layer-wise Adaptive Rate Scaling) optimizer.
+
+    Wraps SGD with per-layer learning rate scaling based on the ratio of
+    parameter norm to gradient norm. Essential for large-batch contrastive
+    learning (SimCLR, BYOL, etc.).
+
+    Reference: https://arxiv.org/abs/1708.03888
+    """
+
+    def __init__(self, params, lr: float = 1.0, momentum: float = 0.9,
+                 weight_decay: float = 1e-6, trust_coefficient: float = 0.001):
+        defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay,
+                        trust_coefficient=trust_coefficient)
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            wd = group['weight_decay']
+            momentum = group['momentum']
+            lr = group['lr']
+            trust = group['trust_coefficient']
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+
+                dp = p.grad
+                if wd != 0:
+                    dp = dp.add(p, alpha=wd)
+
+                # LARS local learning rate
+                p_norm = torch.norm(p)
+                g_norm = torch.norm(dp)
+                local_lr = trust * p_norm / g_norm if p_norm > 0 and g_norm > 0 else 1.0
+
+                # SGD with momentum
+                state = self.state[p]
+                if 'momentum_buffer' not in state:
+                    state['momentum_buffer'] = torch.clone(dp).detach()
+                else:
+                    state['momentum_buffer'].mul_(momentum).add_(dp)
+                p.add_(state['momentum_buffer'], alpha=-lr * local_lr)
+
+        return loss
+
 from src.evaluation import evaluation, build_hierarchy_clusters, write_results
 from src.hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
@@ -150,6 +203,22 @@ class AbstractModel(pl.LightningModule):
         loss = torch.nn.functional.cross_entropy(similarity_matrix, labels)
         return loss
 
+    def _compute_euclidean_contrastive_loss(self, h_i: torch.Tensor, h_j: torch.Tensor, temperature: float) -> torch.Tensor:
+        """NT-Xent with cosine similarity on Euclidean features — bounded, no boundary drift."""
+        h_i = self._gather_with_backprop(h_i)
+        h_j = self._gather_with_backprop(h_j)
+        batch_size = h_i.shape[0]
+        h = torch.cat([h_i, h_j], dim=0)
+        h = torch.nn.functional.normalize(h, p=2, dim=1)
+        sim = h @ h.T / temperature
+        mask = torch.eye(2 * batch_size, dtype=torch.bool, device=h.device)
+        sim = sim.masked_fill(mask, float("-inf"))
+        labels = torch.cat([
+            torch.arange(batch_size, 2 * batch_size, device=h.device),
+            torch.arange(0, batch_size, device=h.device),
+        ])
+        return torch.nn.functional.cross_entropy(sim, labels)
+
     def compute_supervised_contrastive_loss(
         self, z_i: torch.Tensor, z_j: torch.Tensor, labels: torch.Tensor, temperature: float = 0.1
     ) -> torch.Tensor:
@@ -213,6 +282,13 @@ class AbstractModel(pl.LightningModule):
             )
         elif self.hparams.optimizer_name == "SGD":
             optimizer = torch.optim.SGD(
+                self.parameters(),
+                lr=self.hparams.learning_rate,
+                momentum=0.9,
+                weight_decay=self.hparams.weight_decay,
+            )
+        elif self.hparams.optimizer_name == "LARS":
+            optimizer = LARS(
                 self.parameters(),
                 lr=self.hparams.learning_rate,
                 momentum=0.9,

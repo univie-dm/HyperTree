@@ -276,11 +276,13 @@ def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[Hyperb
         contrastive_loss_enabled=cfg.clustering.contrastive_loss.enabled,
         contrastive_temperature=cfg.clustering.contrastive_loss.temperature,
         contrastive_weight=cfg.clustering.contrastive_loss.weight,
+        contrastive_euclidean=cfg.clustering.contrastive_loss.get("euclidean", False),
         # Reconstruction Loss parameters
         recon_weight=cfg.clustering.reconstruction_loss.weight,
         # Regularizer parameters
         regularize_to_origin_enabled=cfg.clustering.regularizer.enabled,
         regularizer_weight=cfg.clustering.regularizer.weight,
+        regularizer_type=cfg.clustering.regularizer.get("type", "origin"),
         # Backbone kNN SNN similarity parameters
         use_backbone_knn_similarities=cfg.clustering.hyperbolic_loss.get("use_backbone_knn_similarities", False),
         snn_k=cfg.clustering.hyperbolic_loss.get("snn_k", 10),

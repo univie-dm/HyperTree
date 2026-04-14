@@ -9,7 +9,7 @@ architecture:
   feature_scaling: True
   projection_layer_dims: [1024, 512]
   precision: float32
-  manifold_precision: float64
+  manifold_precision: float32   # must match imagenet_simclr.yaml
   manifold_name: PoincareBall
   curvature_magnitude: 1.0
   hyperbolic_encoding: HyperbolicLinearPP
@@ -60,9 +60,9 @@ clustering:
     cosine_min_factor: 0.01
     patience: 20
   hyperbolic_loss:
-    start_weight: 1.0
+    start_weight: 0.0       # warmup from zero — prevents collapse from random hyperbolic head
     end_weight: 5.0
-    weight_interval: 250
+    weight_interval: 250    # ramps 0→5 over 250 epochs; contrastive alone stabilizes first
     start_temperature: 0.2
     end_temperature: 0.1
     temperature_interval: 250
@@ -84,12 +84,14 @@ clustering:
   contrastive_loss:
     enabled: True
     temperature: 0.5
-    weight: 0.1
+    weight: 1.0              # was 0.1 — too weak to stabilize hyperbolic head during warmup
+    euclidean: True          # apply on pre-hyperbolic features — geodesic NT-Xent destroys structure
   reconstruction_loss:
     weight: 0.0
   regularizer:
-    enabled: False
+    enabled: True            # prevent boundary collapse — penalizes mean dist to origin
     weight: 0.05
+    type: origin             # origin | uniformity (Yang et al. 2024 outer-shell isotropy)
 
 experiment:
   seed: 42

@@ -10,7 +10,7 @@ architecture:
   feature_scaling: True
   projection_layer_dims: [1024, 512]
   precision: float32
-  manifold_precision: float64
+  manifold_precision: float32   # FP64 is ~64x slower on H100/H200
   manifold_name: PoincareBall
   curvature_magnitude: 1.0
   hyperbolic_encoding: HyperbolicLinearPP
@@ -25,10 +25,10 @@ architecture:
 pretraining:
   method: contrastive
   augmentation: byol  # two-view SimCLR-style
-  epochs: 100
-  overwrite: False
-  learning_rate: 1.0e-3   # scaled for effective batch ~2048 (512/GPU * 4 GPUs)
-  weight_decay: 1.0e-5
+  epochs: 300
+  overwrite: True
+  learning_rate: 1.0       # LARS linear scaling: base 0.3 * 2048/256 ≈ 2.4; using 1.0 conservatively
+  weight_decay: 1.0e-6     # LARS uses lower weight decay than Adam
   accumulate_gradients: 1
   enable_checkpointing: True   # important — restartable across SLURM jobs
   load_supervised_weights: False
@@ -41,7 +41,7 @@ pretraining:
     weight: 0.0
   lr_scheduler:
     type: warmup_cosine
-    interval: 10            # warmup epochs
+    interval: 30            # warmup epochs — longer warmup for LARS high lr
     cosine_min_factor: 0.001
     patience: 20
 
@@ -97,8 +97,8 @@ experiment:
   num_workers: 8         # 4 GPUs * 8 = 32 workers; 16/GPU OOMs the 256G node
   batch_size: 512        # per-GPU, so effective = 512 * 4 = 2048
   log_interval: 10
-  optimizer: Adam
-  gradient_clip_value: 5.0
+  optimizer: LARS
+  gradient_clip_value: null   # LARS handles scaling per-layer; clip interferes
 
 evaluation_metrics:
   delta_hyperbolicity: False

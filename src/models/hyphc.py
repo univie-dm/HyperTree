@@ -7,7 +7,7 @@ from typing import Any, Tuple
 from lightning.pytorch.utilities import grad_norm
 
 from src.hyperbolic_math.src.manifolds import Euclidean
-from src.models.abstract import AbstractModel
+from src.models.abstract import AbstractModel, LARS
 from src.models.utils import get_dtype_from_precision
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 
@@ -44,11 +44,13 @@ class HyperbolicHCModel(AbstractModel):
         contrastive_loss_enabled: bool = False,
         contrastive_temperature: float = 0.5,
         contrastive_weight: float = 1.0,
+        contrastive_euclidean: bool = False,
         # Reconstruction Loss parameters
         recon_weight: float = 1.0,
         # Regularizer parameters
         regularize_to_origin_enabled: bool = False,
         regularizer_weight: float = 0.05,
+        regularizer_type: str = "origin",  # "origin" | "uniformity" | "off"
         # Backbone kNN SNN similarity parameters
         use_backbone_knn_similarities: bool = False,
         snn_k: int = 10,
@@ -171,6 +173,13 @@ class HyperbolicHCModel(AbstractModel):
             )
         elif self.hparams.optimizer_name == "SGD":
             optimizer = torch.optim.SGD(
+                param_groups,
+                lr=self.hparams.learning_rate,
+                momentum=0.9,
+                weight_decay=self.hparams.weight_decay,
+            )
+        elif self.hparams.optimizer_name == "LARS":
+            optimizer = LARS(
                 param_groups,
                 lr=self.hparams.learning_rate,
                 momentum=0.9,
@@ -757,19 +766,42 @@ class HyperbolicHCModel(AbstractModel):
 
         # Contrastive loss: use (aug_1, aug_2) as the positive pair for proper two-view SimCLR
         if self.hparams.contrastive_weight > 0.0 and self.hparams.contrastive_loss_enabled:
-            manifold_z_aug_1 = self.encode(x_aug_1)
-            manifold_z_aug_2 = self.encode(x_aug_2)
-            contrastive_loss = self.compute_contrastive_loss(manifold_z_aug_1, manifold_z_aug_2, temperature=self.hparams.contrastive_temperature)
+            if self.hparams.contrastive_euclidean:
+                # Apply contrastive on pre-hyperbolic features — geodesic NT-Xent pushes
+                # negatives to the Poincaré boundary and destroys neighborhood structure.
+                h_aug_1 = self.rms(self.encoder(x_aug_1))  # type: ignore
+                h_aug_2 = self.rms(self.encoder(x_aug_2))  # type: ignore
+                contrastive_loss = self._compute_euclidean_contrastive_loss(
+                    h_aug_1, h_aug_2, temperature=self.hparams.contrastive_temperature
+                )
+            else:
+                manifold_z_aug_1 = self.encode(x_aug_1)
+                manifold_z_aug_2 = self.encode(x_aug_2)
+                contrastive_loss = self.compute_contrastive_loss(manifold_z_aug_1, manifold_z_aug_2, temperature=self.hparams.contrastive_temperature)
             # Log the contrastive loss
             self.metrics.setdefault("clustering/contrastive_loss", []).append(contrastive_loss.detach().item())
             # Add the weighted contrastive loss to the total loss
             total_loss += self.hparams.contrastive_weight * contrastive_loss
 
-        # Prevent boundary collapse by penalizing the mean embedding distance to the origin
+        # Prevent boundary / dimensional collapse
         if self.hparams.regularize_to_origin_enabled:
-            mean_dist_to_origin = self.manifold.dist_0(manifold_z).mean()
             regularizer_weight: float = getattr(self.hparams, 'regularizer_weight', 0.05)  # type: ignore
-            total_loss += mean_dist_to_origin * regularizer_weight
+            reg_type: str = getattr(self.hparams, 'regularizer_type', 'origin')  # type: ignore
+            if reg_type == "origin":
+                # Pull embeddings toward origin — works but fights hierarchy depth
+                reg_loss = self.manifold.dist_0(manifold_z).mean()
+            elif reg_type == "uniformity":
+                # Wang & Isola uniformity on L2-normalized tangent vectors.
+                # Angular-only: leaves radius (hierarchy depth) free. Motivated by
+                # Yang et al. 2024 "outer shell isotropy" for hyperbolic contrastive.
+                tan = self.manifold.logmap_0(manifold_z)
+                tan = F.normalize(tan, p=2, dim=-1)
+                sq_pdist = torch.pdist(tan, p=2).pow(2)
+                reg_loss = sq_pdist.mul(-2.0).exp().mean().clamp_min(1e-12).log()
+            else:
+                reg_loss = torch.zeros((), device=manifold_z.device)
+            self.metrics.setdefault(f"clustering/reg_{reg_type}", []).append(reg_loss.detach().item())
+            total_loss += reg_loss * regularizer_weight
 
         # Logging - DETACH tensors to prevent memory leaks
         self.metrics.setdefault("clustering/total_loss", []).append(total_loss.detach().item())

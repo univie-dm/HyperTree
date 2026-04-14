@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=imnet_simclr
-#SBATCH --time=2-00:00:00
+#SBATCH --time=5-00:00:00
 #SBATCH -c 64
 #SBATCH --mem=500G
 #SBATCH --gres=gpu:4
@@ -20,7 +20,7 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 # ============================================================================
 # Two-stage fully self-supervised pipeline:
-#   Stage 1: SimCLR pretrain on full ImageNet, no labels (100 epochs)
+#   Stage 1: SimCLR pretrain on full ImageNet, no labels (300 epochs, LARS)
 #            4 H100/H200 GPUs, effective batch ~2048 (512/GPU)
 #            Checkpointing enabled — resumable across SLURM jobs
 #   Stage 2: Transfer SimCLR features to CUB-200 hyperbolic clustering

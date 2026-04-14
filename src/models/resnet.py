@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
 from typing import Tuple
@@ -174,27 +173,6 @@ class HyperbolicResNet(AbstractModel):
     def forward(self, x: torch.Tensor) -> Tuple[None, torch.Tensor]:
         manifold_z = self.encode(x)
         return None, manifold_z
-
-    def _compute_euclidean_contrastive_loss(self, h_i: torch.Tensor, h_j: torch.Tensor, temperature: float) -> torch.Tensor:
-        """NT-Xent using cosine similarity on pre-hyperbolic backbone features.
-
-        Under DDP, embeddings are gathered across all ranks so every GPU sees the
-        full global batch of negatives.
-        """
-        # Gather across GPUs for full negative set
-        h_i = self._gather_with_backprop(h_i)
-        h_j = self._gather_with_backprop(h_j)
-        batch_size = h_i.shape[0]
-        h = torch.cat([h_i, h_j], dim=0)  # (2N, d)
-        h = F.normalize(h, p=2, dim=1)
-        sim = h @ h.T / temperature  # (2N, 2N)
-        mask = torch.eye(2 * batch_size, dtype=torch.bool, device=h.device)
-        sim = sim.masked_fill(mask, float("-inf"))
-        labels = torch.cat([
-            torch.arange(batch_size, 2 * batch_size, device=h.device),
-            torch.arange(0, batch_size, device=h.device),
-        ])
-        return F.cross_entropy(sim, labels)
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug_1, x_aug_2, x, y = batch
