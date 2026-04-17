@@ -23,6 +23,7 @@ architecture:
 pretraining:
   method: contrastive
   augmentation: byol
+  byol_scale: [0.6,1.0]
   epochs: 1               # minimal — supervised weights are loaded, no real pretrain needed
   overwrite: False
   learning_rate: 1.0e-3

@@ -95,6 +95,7 @@ def get_datamodule(
             local_crop_size=cfg.pretraining.get("local_crop_size", 96),
             dino_global_scale=tuple(cfg.pretraining.get("dino_global_scale", [0.4, 1.0])),
             dino_local_scale=tuple(cfg.pretraining.get("dino_local_scale", [0.05, 0.4])),
+            byol_scale=tuple(cfg.pretraining.get("byol_scale", [0.2, 1.0])),
         )
         input_dim = cfg.dataset.resize * cfg.dataset.resize * cfg.dataset.channels
         is_image = True

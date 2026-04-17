@@ -103,6 +103,7 @@ class BYOLTransform:
         normalize_fn: transforms.Normalize,
         resize: int = 32,
         precision: torch.dtype = torch.float32,
+        scale: tuple = (0.2, 1.0),
     ):
         if dataset_name in ("imagenet", "inat18", "cub200"):
             gaussian_blur = [
@@ -126,7 +127,7 @@ class BYOLTransform:
         self.transform1 = transforms.Compose(
             [
                 transforms.RandomResizedCrop(
-                    size=(resize, resize), scale=(0.2, 1.0), antialias=True
+                    size=(resize, resize), scale=scale, antialias=True
                 ),
                 transforms.RandomHorizontalFlip(p=0.5),
                 transforms.RandomApply(
@@ -148,7 +149,7 @@ class BYOLTransform:
         self.transform2 = transforms.Compose(
             [
                 transforms.RandomResizedCrop(
-                    size=(resize, resize), scale=(0.2, 1.0), antialias=True
+                    size=(resize, resize), scale=scale, antialias=True
                 ),
                 transforms.RandomHorizontalFlip(p=0.5),
                 transforms.RandomApply(
@@ -237,6 +238,7 @@ class ColorDataModule(pl.LightningDataModule):
         local_crop_size: int = 96,
         dino_global_scale: tuple = (0.4, 1.0),
         dino_local_scale: tuple = (0.05, 0.4),
+        byol_scale: tuple = (0.2, 1.0),
     ):
         super().__init__()
         self.hparams: argparse.Namespace
@@ -402,6 +404,7 @@ class ColorDataModule(pl.LightningDataModule):
                 normalize_fn=normalize_fn,
                 resize=self.hparams.resize or 32,
                 precision=self.precision,
+                scale=self.hparams.byol_scale,
             )
 
         # --- Filtering and Subsetting ---

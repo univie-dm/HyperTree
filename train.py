@@ -127,11 +127,6 @@ def main(cfg: DictConfig) -> None:
                 pretrain_model.load_state_dict(saved)
             else:
                 pretrain_model = saved
-        elif cfg.pretraining.get("load_supervised_weights", False):
-            if is_rank0:
-                print("Supervised ImageNet weights loaded at model init; skipping pretrain stage", flush=True)
-                os.makedirs("data/models", exist_ok=True)
-                torch.save(pretrain_model.state_dict(), f"data/models/{get_model_path(cfg)}.pt")
         elif (not os.path.exists(f"data/models/{get_model_path(cfg)}.pt")
             or cfg.pretraining.overwrite):
             if is_rank0: print("Starting pretraining", flush=True)

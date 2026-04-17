@@ -52,7 +52,7 @@ P_TEMP=${PRETRAIN_TEMPS[$PT_IDX]}
 echo "=== Array Task ${SLURM_ARRAY_TASK_ID} ==="
 echo "model=${MODEL} | latent_dim=${L_DIM} | freeze_encoder=${FREEZE} | backbone_knn=${BK_KNN} | pretrain_temp=${P_TEMP}"
 
-python train.py --config-name tiny_imagenet_simclr \
+uv run python train.py --config-name tiny_imagenet_simclr \
     +slurm_id=${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID} \
     dataset=tiny_imagenet \
     experiment.seed=42 \
