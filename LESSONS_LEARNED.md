@@ -105,6 +105,24 @@ head without HypHC (e.g. geodesic NT-Xent on the head's outputs), or
 (b) unfrozen features so the backbone can reshape to the contrastive signal
 — contradicting the "fully frozen" winner pattern.
 
+## Paper-scope decisions
+
+### Baselines: SCAN, SeCu, hyperbolic metric learning — none report DP
+The paper comparison is against these three families on **Dendrogram Purity**.
+None of them report DP in their papers — they report NMI/ACC (SCAN, SeCu) or
+R@K (hyperbolic DML like Ermolov et al. 2022, HIER). So the baseline
+evaluation is **not a citation exercise — we have to run their released
+code/checkpoints, extract embeddings, and compute DP ourselves** via ward
+linkage + WordNet coarse labels in our `evaluation.py`. Plan for this as a
+real work item.
+
+### Dataset overlap constrains the DP story to CIFAR-100 + TinyImageNet
+SCAN/SeCu report CIFAR-10/100, STL-10, ImageNet. Hyperbolic DML is CUB/Cars.
+The intersection with "has a WordNet hierarchy we can build coarse labels
+from" is CIFAR-100 + TinyImageNet. CUB and Cars are fine-grained with no
+WordNet tree; iNat has its own taxonomy (not WordNet). For the DP paper,
+default to CIFAR-100 + TI; add ImageNet-1k only if compute budget allows.
+
 ## Workflow traps
 
 ### Double-scaling
@@ -122,6 +140,19 @@ working tree. When a fix targets a regression, always diff against the
 last-known-good commit to confirm the thing you're "fixing" is actually
 different.
 
+### Bare digits in `wandb.tags` crash on Pydantic validation
+`wandb.tags='[tiny_imagenet,dino,224,hyphc]'` passed through Hydra: the `224`
+is parsed as `int`, not `str`. Wandb's Pydantic v2 settings rejects it with
+`Input should be a valid string` on `run_tags.2`. Fix: rename any numeric
+tag to include a letter prefix (e.g. `res224`). Don't bother quoting the
+string in the bash source — Hydra re-parses.
+
+### 224×224 + ResNet50 + hyperbolic head OOMs at batch=256
+Frozen ImageNet ResNet50 + hyperbolic projection + HypHC soft-LCA pairwise
+distance matrix (in float64) at 224² and batch=256 hits OOM on 80GB H100
+*during clustering*, not pretraining. batch=64 fits. The soft-LCA pairwise
+distance cost is `O(B² × D)` in float64; scales badly with batch.
+
 ### `unfreeze_backbone_from` requires `freeze_encoder=True`
 The two hparams compose: `freeze_encoder=True` freezes everything, then
 `unfreeze_backbone_from=layer4` selectively re-enables gradients for
@@ -137,6 +168,76 @@ The two hparams compose: `freeze_encoder=True` freezes everything, then
 - **Yang et al. (2024) outer-shell isotropy** — angular uniformity
   regularizer on L2-normalized tangent vectors (Wang & Isola style).
   Implemented as `regularizer.type=uniformity` in `src/models/hyphc.py`.
+
+## HypHC tuning
+
+### HypHC start_temperature was ~5× too cold on TinyImageNet
+The zany-snow recipe used `start_temperature=0.2, end_temperature=0.1` (copied
+forward from CIFAR-100). On TI this cratered hierarchical DP. Sweep 531497
+tested three warmer variants at the same otherwise-winning recipe:
+
+| variant | st/et | ew | hDP_ward |
+|---|---|---|---|
+| baseline  | 0.2/0.1 | 5 | 0.404 |
+| warmer    | 0.5/0.3 | 5 | 0.717 |
+| **much_warmer** | **1.0/0.5** | **5** | **0.731** |
+| weaker_warmer | 0.5/0.3 | 1 | 0.724 |
+
+**Warmer HypHC lifts hDP 1.8× and takes TI into CIFAR territory.** Flat DP only
+moves from 0.096 → 0.104 (noise) because fine-class pairs still rarely share a
+pure subtree at R@1=0.29 — the win is hierarchy-specific.
+
+### start_temperature is the lever; end_weight is not
+`weaker_warmer` (ew=1) nearly matched `much_warmer` (ew=5). All three warmer
+variants tied to within 0.02 hDP regardless of end_weight. The dominant
+sensitivity is `start_temperature` — it sets how diffuse the soft-LCA is during
+the first epochs. Too cold = HypHC over-commits to noisy fine-grained pairs
+before the backbone knn structure is usable.
+
+### Re-validate HypHC temperature per-dataset, not transfer from CIFAR
+The CIFAR-100 winners used `start_temperature=0.2`. Transferring this to TI
+broke hDP until the hctemp sweep fixed it. Expect the same per-dataset tuning
+requirement on CUB, iNat, ImageNet — do not assume a CIFAR hyperparameter is
+portable.
+
+## Dataset / backbone findings
+
+### Flat DP is misleading on fine-grained datasets — use hierarchical DP
+TinyImageNet flat `dendrogram_purity_ward` ≈ 0.10 vs CIFAR-100's 0.31, a 3.2×
+gap that looked like pipeline failure. But `hierarchical_dendrogram_purity_ward`
+(same DP, computed against WordNet coarse labels) tells a different story:
+TI ≈ 0.49–0.53 vs CIFAR ≈ 0.62–0.77, only ~1.3× worse. Flat DP cratered because
+with 200 fine classes and R@1 ~0.27, no pair of distinct fine classes shares a
+pure subtree. **Always report `hierarchical_dendrogram_purity_*` and
+`all_dendrogram_purity_*` alongside flat DP on multi-class datasets** — flat DP
+on ≥200-class problems is a near-useless headline number and penalizes
+hierarchy-preserving embeddings for not also solving fine-grained retrieval.
+
+### DINO and SimCLR have opposite TinyImageNet profiles
+At 64×64, same ResNet50 backbone:
+- **SimCLR**: R@1 ≈ 0.27, flat DP_ward ≈ 0.10, **hDP_ward ≈ 0.49**
+- **DINO**:   R@1 ≈ 0.14, flat DP_ward ≈ 0.04, **hDP_ward ≈ 0.85**
+
+DINO is 1.7× better at hierarchy but half as good at fine discrimination. The
+multi-crop teacher-student objective pushes embeddings toward coarse/global
+structure; SimCLR's instance-discrimination pushes toward fine separability.
+For a hierarchy-focused paper, DINO backbones are the natural pick — flip the
+headline metric to hDP and DINO wins cleanly.
+
+### DINO at 64×64 is multi-crop-starved
+Standard DINO uses global=224 / local=96 (ratio ~2.3). At 64/32 the ratio is
+2.0 but the *absolute* sizes are 3.5× smaller, and the 32×32 locals carry
+almost no discriminative signal for the student. This is the likely cause of
+DINO's TI fine-grained collapse to R@1 ≈ 0.14. **Upsampling TI to 224 with
+local=96** (job 531502) is the standard fix.
+
+### Skipping pretraining to stack supervised ImageNet features
+Setting `pretraining.epochs=0` + `pretraining.load_supervised_weights=True`
+produces a clustering-only run on frozen torchvision ResNet50. Useful as a
+ceiling probe to isolate "backbone quality" vs "hyperbolic head" failure modes.
+Hash differs from SimCLR/DINO runs because `pretrain_epochs` and
+`load_supervised_weights` are in `get_model_path`. Not a fully-unsupervised
+setup, so not a paper-final result — diagnostic only.
 
 ## Evaluation
 
