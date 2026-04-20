@@ -111,7 +111,7 @@ class BYOLTransform:
                     [transforms.GaussianBlur(kernel_size=23, sigma=(0.1, 2.0))], p=0.1
                 )
             ]
-        elif dataset_name == "tiny_imagenet":
+        elif dataset_name in ("tiny_imagenet", "stl10"):
             gaussian_blur = [
                 transforms.RandomApply(
                     [transforms.GaussianBlur(kernel_size=7, sigma=(0.1, 2.0))], p=0.1
@@ -224,7 +224,7 @@ class ColorDataModule(pl.LightningDataModule):
     def __init__(
         self,
         dataset_name: Literal[
-            "cifar10", "cifar100", "cifar100_20", "gtsrb", "imagenet", "inat18", "tiny_imagenet", "cub200"
+            "cifar10", "cifar100", "cifar100_20", "gtsrb", "imagenet", "inat18", "tiny_imagenet", "cub200", "stl10"
         ] = "cifar10",
         data_dir: str = "./data",
         batch_size: int = 256,
@@ -250,6 +250,7 @@ class ColorDataModule(pl.LightningDataModule):
             "cifar100_20": datasets.CIFAR100,
             "gtsrb": datasets.GTSRB,
             "imagenet": datasets.ImageNet,
+            "stl10": datasets.STL10,
         }
         self.precision: torch.dtype
         if precision == "float32":
@@ -301,6 +302,10 @@ class ColorDataModule(pl.LightningDataModule):
             from src.datasets.cub200 import CUB200
             base_train = CUB200(self.hparams.data_dir, split="train", transform=None)
             base_test = CUB200(self.hparams.data_dir, split="test", transform=None)
+        elif self.hparams.dataset_name == "stl10":
+            from src.datasets.stl10 import STL10
+            base_train = STL10(self.hparams.data_dir, split="train", transform=None, download=True)
+            base_test = STL10(self.hparams.data_dir, split="test", transform=None, download=True)
         else:
             base_train = dataset_class(
                 self.hparams.data_dir, train=True, transform=None, download=True
@@ -341,6 +346,9 @@ class ColorDataModule(pl.LightningDataModule):
         elif self.hparams.dataset_name == "cub200":
             from src.datasets.cub200 import CUB200
             temp_dataset = CUB200(self.hparams.data_dir, split="train", transform=temp_transform)
+        elif self.hparams.dataset_name == "stl10":
+            from src.datasets.stl10 import STL10
+            temp_dataset = STL10(self.hparams.data_dir, split="train", transform=temp_transform, download=True)
         elif self.hparams.dataset_name == "gtsrb":
             # GTSRB uses `split` and supports download
             temp_dataset = dataset_class(
@@ -663,6 +671,20 @@ class ColorDataModule(pl.LightningDataModule):
             return self._get_gtsrb_class_names()
         elif self.hparams.dataset_name == "cub200":
             return self._get_cub200_class_names()
+        elif self.hparams.dataset_name == "stl10":
+            # STL10 order: airplane, bird, car, cat, deer, dog, horse, monkey, ship, truck
+            return {
+                0: ("airplane", "vehicle"),
+                1: ("bird", "animal"),
+                2: ("car", "vehicle"),
+                3: ("cat", "animal"),
+                4: ("deer", "animal"),
+                5: ("dog", "animal"),
+                6: ("horse", "animal"),
+                7: ("monkey", "animal"),
+                8: ("ship", "vehicle"),
+                9: ("truck", "vehicle"),
+            }
         else:
             return None
 
