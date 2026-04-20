@@ -10,45 +10,52 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=348G
-#SBATCH --array=0-3%2
+#SBATCH --array=0-15%8
 
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 export MASTER_PORT=$((20000 + (SLURM_JOB_ID + SLURM_ARRAY_TASK_ID * 97) % 45000))
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 # ============================================================================
-# iNaturalist-2018 h2h: hyperbolic vs Euclidean on a dataset with a genuine
-# 7-level WordNet-style taxonomy (kingdom > phylum > class > order > family >
-# genus > species, 8142 species). This is the flagship "why hyperbolic helps
-# on hierarchies" dataset for the paper.
+# iNat18 H2H sweep on VSC (zen4_0768_h100x4, 4xH100).
+# 4 conditions x 2 backbone_knn x 2 seeds = 16 clustering runs.
+# Only 4 unique DINO pretrains (2 manifolds x 2 seeds) are computed; the rest
+# load from cache via matching hash (pretraining.overwrite=False).
 #
-# Runs on Vienna Scientific Cluster (zen4_0768_h100x4 partition, 4xH100).
-# Pretraining: DINO, 100 epochs, config from configs/inat18_dino.yaml.
-# Expect *heavy* pretraining cost: first condition will compute the pretrain
-# and cache it; subsequent conditions on the same manifold can reuse via
-# pretraining.overwrite=False + matching hash.
+# Array decoding:
+#   task_id = seed_idx * 8  +  bk_idx * 4  +  cond_idx
+#   cond_idx (0..3)  -> see CONDS below
+#   bk_idx   (0..1)  -> backbone_knn: False, True
+#   seed_idx (0..1)  -> seeds 42, 43
 #
-# 4 conditions (1 seed each for cost). If condition 0 and 2 succeed we have
-# the core h2h story. Add seeds later if pretrain cache is warm.
-#   0  PoincareBall + HypHC(ew=5), cold schedule (st=0.2, et=0.1)  poincare_hyphc_cold
-#   1  PoincareBall + HypHC(ew=5), warm schedule (st=1.0, et=0.5)  poincare_hyphc_warm
-#   2  PoincareBall + HypHC(ew=0)                                   poincare_no_hyphc
-#   3  Euclidean    + HypHC(ew=0)                                   euclidean_baseline
-#
-# Note: dataset assumed staged at $DATA/inat18. Override dataset.data_dir below
-# if VSC stages data elsewhere.
+# Condition packing: "manifold:end_weight:start_temp:end_temp:tag"
+#   0  PoincareBall + HypHC(ew=5) warm schedule (st=1.0, et=0.5)
+#   1  PoincareBall + HypHC(ew=5) cold schedule (st=0.2, et=0.1)
+#   2  PoincareBall + no HypHC
+#   3  Euclidean    + no HypHC  (baseline)
 # ============================================================================
 
-case $SLURM_ARRAY_TASK_ID in
-  0) MANIFOLD=PoincareBall; HC_W=5.0; ST_T=0.2; ET_T=0.1; CND_TAG=poincare_hyphc_cold ;;
-  1) MANIFOLD=PoincareBall; HC_W=5.0; ST_T=1.0; ET_T=0.5; CND_TAG=poincare_hyphc_warm ;;
-  2) MANIFOLD=PoincareBall; HC_W=0.0; ST_T=0.2; ET_T=0.1; CND_TAG=poincare_no_hyphc   ;;
-  3) MANIFOLD=Euclidean;    HC_W=0.0; ST_T=0.2; ET_T=0.1; CND_TAG=euclidean_baseline  ;;
-esac
+CONDS=(
+  "PoincareBall:5.0:1.0:0.5:poincare_hyphc_warm"
+  "PoincareBall:5.0:0.2:0.1:poincare_hyphc_cold"
+  "PoincareBall:0.0:0.2:0.1:poincare_no_hyphc"
+  "Euclidean:0.0:0.2:0.1:euclidean_baseline"
+)
+SEEDS=(42 43)
+BK_VALS=(False True)
 
-echo "=== inat18_h2h task ${SLURM_ARRAY_TASK_ID}: ${CND_TAG} manifold=${MANIFOLD} hc_w=${HC_W} st=${ST_T} et=${ET_T} ==="
+COND_IDX=$((SLURM_ARRAY_TASK_ID % 4))
+BK_IDX=$(( (SLURM_ARRAY_TASK_ID / 4) % 2 ))
+SEED_IDX=$(( (SLURM_ARRAY_TASK_ID / 8) % 2 ))
 
-# Stage data to local SSD if available (edit path for your VSC setup)
+IFS=':' read -r MANIFOLD HC_W ST_T ET_T CND_TAG <<< "${CONDS[$COND_IDX]}"
+BK_KNN=${BK_VALS[$BK_IDX]}
+SEED=${SEEDS[$SEED_IDX]}
+BK_TAG=$([ "$BK_KNN" = "True" ] && echo "bk1" || echo "bk0")
+
+echo "=== inat18_h2h task ${SLURM_ARRAY_TASK_ID}: ${CND_TAG} seed=${SEED} bk=${BK_KNN} ==="
+
+# Stage data to local SSD if possible (adjust for your VSC setup)
 LOCAL_DATA="/tmp/inat18"
 if [ ! -d "$LOCAL_DATA" ] && [ -d "$DATA/inat18" ]; then
     echo "Copying iNat18 to local SSD..."
@@ -64,7 +71,7 @@ fi
 uv run python train.py --config-name inat18_dino \
     +slurm_id=${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID} \
     dataset.data_dir=${DATA_DIR} \
-    experiment.seed=42 \
+    experiment.seed=${SEED} \
     architecture.manifold_name=${MANIFOLD} \
     architecture.latent_dim=128 \
     architecture.manifold_precision=float64 \
@@ -81,11 +88,8 @@ uv run python train.py --config-name inat18_dino \
     clustering.hyperbolic_loss.end_weight=${HC_W} \
     clustering.hyperbolic_loss.start_temperature=${ST_T} \
     clustering.hyperbolic_loss.end_temperature=${ET_T} \
-    clustering.hyperbolic_loss.use_backbone_knn_similarities=True \
+    clustering.hyperbolic_loss.use_backbone_knn_similarities=${BK_KNN} \
     clustering.hyperbolic_loss.snn_k=10 \
     evaluation_metrics.dendrogrampurity_use_root=False \
     evaluation_metrics.test_sample_size=10000 \
-    wandb.tags='[inat18,h2h,vsc,'${CND_TAG}']'
-
-# Clean up local stage (optional)
-# rm -rf "$LOCAL_DATA"
+    wandb.tags='[inat18,h2h,vsc,'${CND_TAG}','${BK_TAG}',seed'${SEED}']'

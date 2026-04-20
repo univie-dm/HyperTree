@@ -10,7 +10,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=348G
-#SBATCH --array=0-5%3
+#SBATCH --array=0-23%12
 
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 export MASTER_PORT=$((20000 + (SLURM_JOB_ID + SLURM_ARRAY_TASK_ID * 97) % 45000))
@@ -27,28 +27,47 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 #        - STL-10 uses split='train'/'test'/'unlabeled' instead of train=True/False
 #   3. data/stl10_hierarchy.txt if we want WordNet hierarchical DP; otherwise
 #      evaluation_metrics.use_wordnet_labels=False and rely on flat DP.
-#
-# STL-10 is chosen here because: (a) small (13k labeled, 100k unlabeled),
-# (b) classic SSL benchmark, (c) 96x96 native resolution -- matches DINO
-# local_crop_size well. The 100k unlabeled pool is great for DINO pretraining.
-#
-# H2H conditions (3 conditions x 2 seeds = 6 runs):
-#   task_idx = seed_idx*3 + cond_idx
-#   seeds 42, 43; conds poincare_hyphc / poincare_no_hyphc / euclidean_baseline
 # ============================================================================
 
-SEEDS=(42 43)
-SEED_IDX=$((SLURM_ARRAY_TASK_ID / 3))
-COND_IDX=$((SLURM_ARRAY_TASK_ID % 3))
+# ============================================================================
+# STL-10 H2H sweep on VSC. STL-10 is small (13k labeled + 100k unlabeled) and
+# trains fast, so we can afford a full-grid sweep with 3 seeds.
+# 4 conditions x 2 backbone_knn x 3 seeds = 24 runs.
+# Only 6 unique SimCLR pretrains (2 manifolds x 3 seeds) are computed; the
+# rest load from cache.
+#
+# Array decoding:
+#   task_id = seed_idx * 8  +  bk_idx * 4  +  cond_idx
+#   cond_idx (0..3)  -> see CONDS below
+#   bk_idx   (0..1)  -> backbone_knn: False, True
+#   seed_idx (0..2)  -> seeds 42, 43, 44
+#
+# Condition packing: "manifold:end_weight:start_temp:end_temp:tag"
+#   0  PoincareBall + HypHC(ew=5) warm schedule (st=1.0, et=0.5)
+#   1  PoincareBall + HypHC(ew=5) cold schedule (st=0.2, et=0.1)
+#   2  PoincareBall + no HypHC
+#   3  Euclidean    + no HypHC  (baseline)
+# ============================================================================
+
+CONDS=(
+  "PoincareBall:5.0:1.0:0.5:poincare_hyphc_warm"
+  "PoincareBall:5.0:0.2:0.1:poincare_hyphc_cold"
+  "PoincareBall:0.0:0.2:0.1:poincare_no_hyphc"
+  "Euclidean:0.0:0.2:0.1:euclidean_baseline"
+)
+SEEDS=(42 43 44)
+BK_VALS=(False True)
+
+COND_IDX=$((SLURM_ARRAY_TASK_ID % 4))
+BK_IDX=$(( (SLURM_ARRAY_TASK_ID / 4) % 2 ))
+SEED_IDX=$(( (SLURM_ARRAY_TASK_ID / 8) % 3 ))
+
+IFS=':' read -r MANIFOLD HC_W ST_T ET_T CND_TAG <<< "${CONDS[$COND_IDX]}"
+BK_KNN=${BK_VALS[$BK_IDX]}
 SEED=${SEEDS[$SEED_IDX]}
+BK_TAG=$([ "$BK_KNN" = "True" ] && echo "bk1" || echo "bk0")
 
-case $COND_IDX in
-  0) MANIFOLD=PoincareBall; HC_W=5.0; CND_TAG=poincare_hyphc      ;;
-  1) MANIFOLD=PoincareBall; HC_W=0.0; CND_TAG=poincare_no_hyphc   ;;
-  2) MANIFOLD=Euclidean;    HC_W=0.0; CND_TAG=euclidean_baseline  ;;
-esac
-
-echo "=== stl10_h2h task ${SLURM_ARRAY_TASK_ID}: seed=${SEED} ${CND_TAG} ==="
+echo "=== stl10_h2h task ${SLURM_ARRAY_TASK_ID}: ${CND_TAG} seed=${SEED} bk=${BK_KNN} ==="
 
 # Stage data to local SSD if possible
 LOCAL_DATA="/tmp/stl10"
@@ -84,9 +103,10 @@ uv run python train.py \
     clustering.freeze_encoder=True \
     clustering.hyperbolic_loss.start_weight=0.0 \
     clustering.hyperbolic_loss.end_weight=${HC_W} \
-    clustering.hyperbolic_loss.start_temperature=1.0 \
-    clustering.hyperbolic_loss.end_temperature=0.5 \
-    clustering.hyperbolic_loss.use_backbone_knn_similarities=False \
+    clustering.hyperbolic_loss.start_temperature=${ST_T} \
+    clustering.hyperbolic_loss.end_temperature=${ET_T} \
+    clustering.hyperbolic_loss.use_backbone_knn_similarities=${BK_KNN} \
+    clustering.hyperbolic_loss.snn_k=10 \
     evaluation_metrics.dendrogrampurity_use_root=False \
     evaluation_metrics.use_wordnet_labels=False \
-    wandb.tags='[stl10,h2h,vsc,'${CND_TAG}',seed'${SEED}']'
+    wandb.tags='[stl10,h2h,vsc,'${CND_TAG}','${BK_TAG}',seed'${SEED}']'
