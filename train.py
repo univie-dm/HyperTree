@@ -115,6 +115,12 @@ def main(cfg: DictConfig) -> None:
             log_every_n_steps=None,
             callbacks=[checkpoint_callback] if checkpoint_callback else None,
         )
+        print(
+            f"[DDP] pretrain stage: world_size={trainer.world_size} "
+            f"global_rank={trainer.global_rank} local_rank={trainer.local_rank} "
+            f"strategy={type(trainer.strategy).__name__}",
+            flush=True,
+        )
         datamodule, input_dim, _ = get_datamodule(cfg, stage="pretrain")
         pretrain_model = get_pretrain_model(cfg, input_dim)
 
@@ -191,6 +197,12 @@ def main(cfg: DictConfig) -> None:
             if cfg.experiment.gradient_clip_value is not None
             else 1.0,
             plugins=[LightningEnvironment()] if is_slurm else [],
+        )
+        print(
+            f"[DDP] clustering stage: world_size={trainer.world_size} "
+            f"global_rank={trainer.global_rank} local_rank={trainer.local_rank} "
+            f"strategy={type(trainer.strategy).__name__}",
+            flush=True,
         )
         trainer.fit(clustering_model, datamodule)
         wandb.finish()
