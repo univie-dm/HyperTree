@@ -71,6 +71,7 @@ uv run python train.py \
     dataset.data_dir=${DATA_DIR} \
     experiment.seed=${SEED} \
     experiment.batch_size=256 \
+    experiment.num_workers=6 \
     experiment.log_interval=10 \
     architecture.model_type=resnet50 \
     architecture.latent_dim=128 \
@@ -95,6 +96,6 @@ uv run python train.py \
     clustering.hyperbolic_loss.use_backbone_knn_similarities=${BK_KNN} \
     clustering.hyperbolic_loss.snn_k=10 \
     evaluation_metrics.dendrogrampurity_use_root=False \
-    evaluation_metrics.test_sample_size=10000 \
+    evaluation_metrics.test_sample_size=0 \
     evaluation_metrics.use_wordnet_labels=False \
     wandb.tags='[inat18,simclr,h2h,vsc,'${CND_TAG}','${BK_TAG}',seed'${SEED}']'

@@ -72,6 +72,7 @@ uv run python train.py --config-name inat18_dino \
     +slurm_id=${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID} \
     dataset.data_dir=${DATA_DIR} \
     experiment.seed=${SEED} \
+    experiment.num_workers=6 \
     architecture.manifold_name=${MANIFOLD} \
     architecture.latent_dim=128 \
     architecture.manifold_precision=float64 \
@@ -91,5 +92,5 @@ uv run python train.py --config-name inat18_dino \
     clustering.hyperbolic_loss.use_backbone_knn_similarities=${BK_KNN} \
     clustering.hyperbolic_loss.snn_k=10 \
     evaluation_metrics.dendrogrampurity_use_root=False \
-    evaluation_metrics.test_sample_size=10000 \
+    evaluation_metrics.test_sample_size=0 \
     wandb.tags='[inat18,h2h,vsc,'${CND_TAG}','${BK_TAG}',seed'${SEED}']'
