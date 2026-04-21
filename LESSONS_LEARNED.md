@@ -249,6 +249,60 @@ alongside the existing `{k}_nearest_neighbors_accuracy` (which is
 *accuracy*@k, not recall, and identical at k=1). Use R@k to compare against
 DML benchmark tables (e.g. CVPR 2021's CUB R@1 = 58.9%).
 
+## H2H manifold comparison (TinyImageNet, STL-10)
+
+### TinyImageNet: PoincareBall + HypHC beats Euclidean by +0.25 hDP (3 seeds)
+`h2h_warm` recipe (SimCLR 800ep + clustering 600ep, warm HypHC st=1.0/et=0.5),
+3 seeds × 3 conditions:
+
+| condition | s42 | s43 | s44 | mean ± sd |
+|---|---|---|---|---|
+| **PoincareBall + HypHC(ew=5)** | 0.716 | 0.716 | 0.712 | **0.715 ± 0.002** |
+| PoincareBall (no HypHC)        | 0.527 | 0.496 | 0.527 | 0.517 ± 0.018 |
+| Euclidean (no HypHC)           | 0.606 | 0.392 | 0.386 | 0.461 ± 0.125 |
+
+Two surprises:
+1. **Poincaré+HypHC is almost seed-invariant (σ=0.002)** — this is a robust
+   story, not a cherry-pick.
+2. **Euclidean has huge seed variance (σ=0.125)** — seed 42 gave 0.606 which
+   fooled the first-read, seeds 43/44 are 0.39. This means any paper table
+   needs 3+ seeds for Euclidean baselines or we risk reporting an outlier as
+   the mean.
+
+HypHC adds +0.20 hDP over the no-HypHC Poincaré run; the hyperbolic manifold
+on its own (no HypHC) is comparable to Euclidean. **HypHC is carrying the
+hyperbolic advantage.** Flat DP and R@1 are indistinguishable across
+conditions (~0.10 / ~0.28); the entire story is hierarchical.
+
+### STL-10: Euclidean wins decisively (negative result for hyperbolic)
+24-run VSC sweep (3 seeds × 4 conditions × backbone_knn {0,1}), SimCLR 800ep +
+clustering 400ep. Mean hDP_ward:
+
+| condition | bk=0 | bk=1 |
+|---|---|---|
+| **euclidean_baseline** | **0.799** | **0.826** |
+| poincare_hyphc_cold    | 0.313 | 0.576 |
+| poincare_hyphc_warm    | 0.453 | 0.460 |
+| poincare_no_hyphc      | 0.341 | 0.470 |
+
+Euclidean leads the best Poincaré config (cold+bk=1) by +0.25 hDP. Consistent
+with the thesis: **hyperbolic geometry helps only when the label structure has
+a genuine multi-level hierarchy**. STL-10's 2-level (vehicle/animal) split
+doesn't give hyperbolic anything to grip, so the extra manifold machinery is
+pure overhead. Report this in the paper as the counterpoint — not every
+dataset benefits. Dataset-scope predictor: # of levels in the label hierarchy.
+
+### `backbone_knn=True` uniformly helps across conditions
+On STL-10, `use_backbone_knn_similarities=True` improved hDP in *every* of the
+8 condition pairs (cold+Poincaré +0.26, no_hyphc+Poincaré +0.13,
+warm+Poincaré +0.01, Euclidean +0.03). Default it to True unless the
+intervention is specifically about the similarity source.
+
+### HypHC warm schedule can be *worse* than cold on STL-10
+Opposite of TinyImageNet: on STL-10 cold (0.2/0.1) + bk=1 beats warm
+(1.0/0.5) + bk=1 by +0.12 hDP. Reinforces the per-dataset-tuning rule from the
+HypHC section — don't transfer temperature schedules across datasets.
+
 ## Open questions
 
 - Does `head_warmup_epochs=50` eliminate the dip? (job 524086, pending —

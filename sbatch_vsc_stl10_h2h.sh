@@ -17,21 +17,12 @@ export MASTER_PORT=$((20000 + (SLURM_JOB_ID + SLURM_ARRAY_TASK_ID * 97) % 45000)
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 # ============================================================================
-# !! PREREQUISITE -- STL-10 IS NOT YET WIRED INTO THE CODEBASE !!
-#
-# Before this script can run, the following must be added:
-#   1. configs/dataset/stl10.yaml  (resize=96, channels=3, data_dir=...)
-#   2. src/datasets/datamodule.py:
-#        - Add "stl10" to the Literal in __init__ (line ~227)
-#        - Map "stl10" -> torchvision.datasets.STL10 in _DATASETS (line ~248)
-#        - STL-10 uses split='train'/'test'/'unlabeled' instead of train=True/False
-#   3. data/stl10_hierarchy.txt if we want WordNet hierarchical DP; otherwise
-#      evaluation_metrics.use_wordnet_labels=False and rely on flat DP.
-# ============================================================================
-
-# ============================================================================
 # STL-10 H2H sweep on VSC. STL-10 is small (13k labeled + 100k unlabeled) and
 # trains fast, so we can afford a full-grid sweep with 3 seeds.
+# Dataset: configs/dataset/stl10.yaml + src/datasets/stl10.py wrapper.
+# Hierarchy: 2-level (fine class -> vehicle/animal) from
+# _get_class_names_and_coarse -- WordNet hierarchy file not needed, keep
+# evaluation_metrics.use_wordnet_labels=False.
 # 4 conditions x 2 backbone_knn x 3 seeds = 24 runs.
 # Only 6 unique SimCLR pretrains (2 manifolds x 3 seeds) are computed; the
 # rest load from cache.
