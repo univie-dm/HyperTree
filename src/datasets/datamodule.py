@@ -499,17 +499,12 @@ class ColorDataModule(pl.LightningDataModule):
         )
 
     def test_dataloader(self) -> DataLoader:
-        # Use the correct dataset for testing
-        dataset = self.test_dataset
-        
-        is_distributed = self.trainer is not None and self.trainer.world_size > 1
-        
-        # We use a sampler here too so each GPU validates a different chunk of data
-        sampler = DistributedSampler(dataset, shuffle=False) if is_distributed else None
-        
+        # No DistributedSampler: test_phase() runs only on rank 0 (gated by
+        # WandbLogger presence) and needs the full val set. Sharding it caused
+        # iNat18 to evaluate ~1 sample/class on rank 0, producing degenerate
+        # DP=1, NMI=1, 1-NN=0 metrics.
         return DataLoader(
-            dataset,
-            sampler=sampler,
+            self.test_dataset,
             batch_size=self.hparams.batch_size,
             shuffle=False,
             num_workers=self.hparams.num_workers,

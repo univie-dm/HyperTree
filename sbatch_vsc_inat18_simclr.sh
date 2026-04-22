@@ -98,4 +98,5 @@ uv run python train.py \
     evaluation_metrics.dendrogrampurity_use_root=False \
     evaluation_metrics.test_sample_size=0 \
     evaluation_metrics.use_wordnet_labels=False \
+    evaluation_metrics.spectral_clustering=False \
     wandb.tags='[inat18,simclr,h2h,vsc,'${CND_TAG}','${BK_TAG}',seed'${SEED}']'
