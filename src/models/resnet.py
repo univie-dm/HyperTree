@@ -46,6 +46,8 @@ class HyperbolicResNet(AbstractModel):
         # Supervised learning parameters
         load_supervised_weights: bool = False,
         supervised: bool = False,
+        # External checkpoint (e.g., DINO ResNet50 from Facebook)
+        pretrained_weights_path: str | None = None,
     ):
         super().__init__(
             # Architecture
@@ -117,7 +119,18 @@ class HyperbolicResNet(AbstractModel):
             print("Modifying ResNet encoder for 64x64 images (removing maxpool).", flush=True)
             self.encoder.maxpool = nn.Identity()  # type: ignore
 
-        if self.hparams.load_supervised_weights:
+        if self.hparams.pretrained_weights_path is not None:
+            print(f"Loading backbone weights from {self.hparams.pretrained_weights_path}", flush=True)
+            state = torch.load(self.hparams.pretrained_weights_path, map_location="cpu", weights_only=False)
+            if isinstance(state, dict) and "state_dict" in state:
+                state = state["state_dict"]
+            if isinstance(state, dict) and "model" in state and isinstance(state["model"], dict):
+                state = state["model"]
+            state = {k.replace("module.", "").replace("backbone.", ""): v for k, v in state.items()}
+            missing, unexpected = self.encoder.load_state_dict(state, strict=False)
+            print(f"Loaded external checkpoint: missing={len(missing)} unexpected={len(unexpected)}", flush=True)
+
+        if self.hparams.load_supervised_weights or self.hparams.pretrained_weights_path is not None:
             for param in self.encoder.parameters():
                 param.requires_grad = False
 

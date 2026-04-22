@@ -4,6 +4,55 @@ Running log of non-obvious findings from debugging the CUB-200 R@1 collapse
 and the CIFAR-100 sweeps. Read this before proposing fixes — several
 "obvious" root causes have already been ruled out.
 
+## Current state (2026-04-22)
+
+**In flight on local cluster (use `squeue -u $USER`):**
+- `533641` (array 0-15%4) — **ImageNet H2H**, frozen FB DINO ResNet50 + hyperbolic
+  head. 16 runs = 4 conditions × 2 bk × 2 seeds. First run `eager-deluge-1114`
+  already at clustering ep 37/50 with hDP_complete=0.403, hDP_ward=0.677. Wait
+  for rest.
+- `533759` — **SeCu baseline for hierarchical DP** (user-run, comparison
+  baseline).
+- `533763` (array 0-2%3) — **CIFAR-100 Euclidean d=16 × 3 seeds**. Fair
+  baseline for the `*-16-Ours` recipe table. Submitted this session; numbers
+  pending. Expected ~15h.
+- `533767` (array 0-8%3) — **ImageNet H2H at d=32** × 3 conditions × 3 seeds
+  (poincare_hyphc_cold, poincare_no_hyphc, euclidean_baseline; seeds 1/2/3;
+  bk=True fixed). Paper-framing sweep: abstract promises "exceptionally
+  low-dimensional" but the running d=128 sweep (533641) doesn't deliver.
+  CIFAR-100 showed +0.15 hDP_ward moving d=128 → d=16; d=32 for 1000
+  classes is the expected low-dim sweet spot. Frozen FB DINO, 50 clustering
+  epochs only, so ~a day of wallclock with %3 throttle. `533641` stays as
+  the cross-dim ablation. See `sbatch_imagenet_h2h_d32.sh`.
+
+**In flight on VSC:**
+- `sbatch_vsc_inat18_h2h.sh` (iNat18 DINO) and `sbatch_vsc_inat18_simclr.sh`
+  (SimCLR) — status unknown; previously blocked by disk-quota on
+  `/home/ks09437` when Lightning saved `last.ckpt`. User is adding a symlink
+  from `data/checkpoints/` to a larger filesystem. After symlink is in
+  place, corrupt `last.ckpt` files need deletion before resubmit:
+  `find data/checkpoints -name 'last.ckpt' -delete` and
+  `find data/checkpoints -name 'epoch=*.ckpt' -delete`. Then `sbatch`
+  both scripts again — eval now uses full val set (commit b093a1a).
+
+**Top-3 paper todos (order matters):**
+1. **Section 5.4 hierarchical-DP main table.** Writable *today* with the
+   numbers in this file: CIFAR-100 (`*-16-Ours` recipe row + ablation
+   recipe row), TinyImageNet, STL-10. Use iNat18/ImageNet `TBD` placeholders.
+   Primary metric hDP_ward.
+2. **LCA-rectification ablation.** Your rectified-LCA contribution (paper
+   Section 4.2.3) shows Δ<0.01 vs Chami's LCA on CIFAR-100 at d=16 (both
+   manifolds). To motivate the section you need `ours` vs `chami` on
+   TinyImageNet / iNat18 / ImageNet. Plan an ablation sweep.
+3. **Sections 5.1 (datasets) + 5.2 (impl details) + Figure 1** —
+   mechanical writeup, unblock reviewers.
+
+**Skip for now:** GTSRB (not in paper's target dataset list paper.md:349-353).
+CUB-200 SimCLR transfer *would* be a good paper addition but the Euclidean
+d=16 baseline is higher priority — submit CUB only after 533763 lands.
+
+
+
 ## Pathologies
 
 ### 1. Gradient absorption by the hyperbolic head
@@ -249,7 +298,59 @@ alongside the existing `{k}_nearest_neighbors_accuracy` (which is
 *accuracy*@k, not recall, and identical at k=1). Use R@k to compare against
 DML benchmark tables (e.g. CVPR 2021's CUB R@1 = 58.9%).
 
-## H2H manifold comparison (TinyImageNet, STL-10)
+## H2H manifold comparison (CIFAR-100, TinyImageNet, STL-10)
+
+### CIFAR-100: two recipes, very different numbers — use the d=16 recipe for the paper
+CIFAR-100 has two distinct sweep families on wandb. They disagree by +0.16
+hDP_ward, so the recipe matters as much as the manifold choice. Don't quote
+the H2H-sweep numbers as the paper main result.
+
+**Paper-main recipe (`*-16-Ours` / `*-16-Chami` runs, d=16):**
+SimCLR 800ep + clustering 300ep, latent_dim=**16**,
+contrastive active during clustering (weight=0.1, enabled=True),
+HypHC ramped `start_weight=1→end_weight=5` (not 0→5),
+temperature `0.2→0.1` (cold), seeds {1, 2, 3}.
+
+| manifold \\ LCA      | ours  s1/s2/s3            | chami s1/s2/s3            | mean hDP_ward | mean hDP_complete | mean 1-NN |
+|---------------------|---------------------------|---------------------------|:-------------:|:-----------------:|:---------:|
+| **PoincareBall**    | 0.906 / 0.902 / 0.896     | 0.906 / 0.902 / 0.897     | **0.901 ± 0.005** | **0.909 ± 0.004** | **0.589** |
+| Hyperboloid         | 0.848 / 0.881 / 0.881     | 0.870 / 0.881 / 0.880     | 0.874 ± 0.013     | 0.883 ± 0.008     | 0.534     |
+
+Key findings:
+1. **Poincaré beats Hyperboloid** by +0.03 hDP_ward and +0.05 1-NN at d=16.
+   Magnitude small but consistent across seeds and LCA variants.
+2. **LCA "ours" vs "chami" is a wash on CIFAR-100** (Δ < 0.01 on any metric,
+   in both manifolds). The paper's rectified LCA contribution does not
+   manifest on this dataset. Needs TinyImageNet / iNat18 / ImageNet numbers
+   to show it matters — flag as open question for experiments section.
+3. **Low dim + contrastive-during-clustering + HypHC-from-ep0** gives ~+0.15
+   hDP_ward over the H2H-sweep recipe below. Each knob contributes something,
+   but we have not isolated which one drives the gap.
+4. **No matching Euclidean d=16 baseline exists** — to claim
+   "hyperbolic beats Euclidean at low dim" we need Euclidean d=16 with the
+   exact same recipe. **Submitted as job 533763** (3 seeds × 1 Euclidean
+   condition, `sbatch_cifar100_euclidean_d16.sh`). Numbers pending; will
+   be filled in here once runs finish. Expected wallclock ~15h.
+
+**H2H-sweep recipe (legacy, `euclidean_baseline`/`poincare_hyphc`/
+`poincare_no_hyphc` tags, d=128):**
+SimCLR 800ep + clustering 600ep, latent_dim=128, freeze_encoder=True,
+contrastive off during clustering, HypHC 0→5, seeds {42,43,44}.
+
+| condition              | hDP_ward s42/s43/s44  | mean ± sd         | hDP_complete mean |
+|------------------------|-----------------------|:-----------------:|:-----------------:|
+| PoincareBall (no HypHC)| 0.751 / 0.742 / 0.750 | 0.747 ± 0.004     | 0.693             |
+| PoincareBall + HypHC   | 0.560 / 0.418 / 0.436 | 0.471 ± 0.077     | 0.696             |
+| Euclidean (no HypHC)   | 0.424 / 0.413 / 0.301 | 0.379 ± 0.068     | 0.300             |
+
+Useful as an ablation point showing (a) manifold alone clears Euclidean by
++0.37 even without HypHC, and (b) HypHC at d=128 with 0→5 ramp and
+freeze_encoder *hurts* ward-DP. The 0→5 warm-start HypHC ramp is what
+differs from the paper-main recipe; don't use this recipe for the main table.
+
+Flat 1-NN is indistinguishable across Poincaré conditions (0.553–0.566) and
+close to Euclidean (0.556–0.563) in the H2H sweep — hyperbolic lift is
+entirely in hierarchical metrics, matching the TinyImageNet pattern.
 
 ### TinyImageNet: PoincareBall + HypHC beats Euclidean by +0.25 hDP (3 seeds)
 `h2h_warm` recipe (SimCLR 800ep + clustering 600ep, warm HypHC st=1.0/et=0.5),

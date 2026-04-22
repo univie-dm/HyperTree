@@ -30,6 +30,7 @@ pretraining:
   enable_checkpointing: True
   load_supervised_weights: False
   supervised: False
+  pretrained_weights_path: null  # Path to external checkpoint (e.g., FB DINO ResNet50)
   # Multi-crop settings
   n_local_crops: 6
   local_crop_size: 96

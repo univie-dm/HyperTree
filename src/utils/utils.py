@@ -49,6 +49,7 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "dataset_subset": cfg.dataset.get("subset", None),
         "load_supervised_weights": cfg.pretraining.load_supervised_weights,
         "supervised": cfg.pretraining.supervised,
+        "pretrained_weights_path": cfg.pretraining.get("pretrained_weights_path", None),
     }
     return md5(str(attr).encode()).hexdigest()
 
@@ -234,6 +235,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
             contrastive_temperature=cfg.pretraining.contrastive_loss.temperature,
             load_supervised_weights=cfg.pretraining.load_supervised_weights,
             supervised=cfg.pretraining.supervised,
+            pretrained_weights_path=cfg.pretraining.get("pretrained_weights_path", None),
         )
     else:
         raise ValueError("Invalid model type")

@@ -34,6 +34,7 @@ pretraining:
     patience: 20 # Number of epochs
   load_supervised_weights: False
   supervised: False
+  pretrained_weights_path: null  # Path to external checkpoint (e.g., FB DINO ResNet50)
   # DINO multi-crop settings (used when method=dino)
   n_local_crops: 6
   local_crop_size: 96
