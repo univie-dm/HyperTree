@@ -449,3 +449,98 @@ HypHC section — don't transfer temperature schedules across datasets.
 - What is the true performance when ImageNet label leakage is removed?
   (requires 521970 → `configs/cub200_simclr_transfer.yaml`) — primary
   open question now.
+
+## 2026-04-24 additions
+
+### HIER env works with newer timm/torch — pinning unnecessary
+HIER's `environment.yml` pins `torch==1.8.1+cu111`, `timm==0.4.12`,
+`pytorch_metric_learning` unpinned. Installing into our `hyper` env gave us
+`timm 1.0.26` and `pytorch_metric_learning 2.9.0` — way newer. Job 534388
+(CUB sanity) still landed at R@1 ≈ 0.68-0.69, matching the paper's 0.70 (out
+of 0.701 published). Don't spin up a separate frozen-dep env for HIER unless
+a specific feature breaks; newer timm is fine for ResNet50 + Poincaré head.
+
+### HIER's CIFAR-100 run needs ~4h / 164G mem for 50k images × 100 epochs
+Our first sub at 64G hit OOM at epoch ≈1 (job 534398). Bumped to 164G and
+the rerun (534399) finished clean in 3:47h on 1×H100. CIFAR-100 with
+batch=90, 224² upsample, bn_freeze=True, fp16=True. Use 128-164G for any
+torchvision dataset ≥50k images through their pipeline.
+
+### HIER on CIFAR-100 (supervised) vs ours (unsupervised) — the paper story
+Ran HIER with emb=128, 100 epochs, full-class split (50k train + 10k eval,
+all 100 classes), seed 1. Piped best-epoch embeddings through
+`scripts/eval_baseline_embeddings.py` (new, Poincaré c=0.1). At epoch 55:
+
+- HIER: 1-NN = **0.813**, hDP_ward = 0.783, hDP_complete = 0.755.
+- Ours PoincaréBall d=16: 1-NN = 0.589, hDP_ward = **0.901**.
+
+HIER uses class labels and gets +0.22 on R@1. We use no labels and get +0.12
+on hDP_ward. Cleanest framing for the paper: supervised DML wins pure
+retrieval, unsupervised hyperbolic clustering wins hierarchy-preserving
+structure. Different optimization targets produce different dominant axes.
+
+### iNat Poincaré density collapse at `curvature_magnitude=1.0`
+Main VSC sweep (9 runs, 3 conds × 3 seeds, `sbatch_vsc_inat18_h2h_dino_frozen.sh`)
+produced 6 Poincaré runs (3 seeds × {warm HypHC, no HypHC}) — **all 6 collapsed
+to n@1 ≈ 0.001** by epoch 29-50. Same config but `manifold_name=Euclidean`
+gave n@1 ≈ 0.04. This is a Poincaré-specific failure: the only difference
+between the two configs is the manifold.
+
+Hypothesis: iNat has 8142 classes (vs ImageNet's 1000), so the class-density
+per unit Poincaré-volume is ~8× higher at the same latent_dim=128. The
+`HyperbolicLinearPP` projection head pushes all points to the boundary where
+tanh saturates and they become numerically indistinguishable. Lowering
+`curvature_magnitude` effectively flattens the ball (c→0 degenerates to
+Euclidean), pulling points away from boundary.
+
+**Rescue sweep ready**: `sbatch_vsc_inat18_h2h_rescue.sh` tests
+c ∈ {0.1, 0.3, 0.5} at d=128, 3 seeds each. HIER itself uses c=0.1 on
+Poincaré, so the low-end is a known-working value from a neighboring method.
+If even c=0.1 fails, the problem isn't curvature density and we need a
+different intervention (dim=256, different projection architecture, etc.).
+
+### Hydra struct-mode trap: `hyperbolic_smoothing` lives under `architecture`
+The sbatch `sbatch_cifar100_poincare_d{16,32}.sh` scripts originally had
+`clustering.hyperbolic_smoothing=50.0` which dies instantly with:
+
+```
+Could not override 'clustering.hyperbolic_smoothing'.
+Key 'hyperbolic_smoothing' is not in struct
+    full_key: clustering.hyperbolic_smoothing
+```
+
+Correct override is `architecture.hyperbolic_smoothing=50.0`. Every other
+config YAML (config.yaml:132, inat18_dino.yaml:16, imagenet_dino.yaml:16,
+etc.) has it under `architecture:`. Jobs 534414/534416 failed in 10-30s from
+this. Before submitting a new sbatch with `.yaml`-style dotted overrides,
+`grep` the actual config to confirm the key's parent namespace.
+
+### Frozen-backbone lower-bound infrastructure
+New pair of scripts:
+- `scripts/extract_frozen_backbone_embeddings.py` — loads any ResNet50
+  state_dict (strips module./backbone./model. prefixes), replaces fc with
+  Identity, forwards an eval split, saves `(x, y, idx)` in HIER-compatible
+  `.pt` format. Supports `--dataset ∈ {cifar100, imagenet, tiny_imagenet, inat18}`.
+- `scripts/eval_baseline_embeddings.py` — consumes the `.pt`, computes
+  Euclidean or Poincaré pairwise distances, builds WordNet hierarchy clusters
+  when a hierarchy file exists, runs `src/evaluation.py:evaluation()` with
+  our standard metrics, writes JSON to `results_baseline_embeddings/`.
+
+Same two scripts handle (a) frozen-DINO lower-bound rows, (b) SeCu/SCAN
+checkpoint re-eval, (c) HIER saved embeddings. One pipeline for all
+external baselines.
+
+### Running scripts/*.py from anywhere: prepend repo root to sys.path
+`uv run python scripts/foo.py` does NOT put the repo root in `sys.path` —
+Python puts `scripts/` first, and `from src.evaluation import ...` dies with
+`ModuleNotFoundError: No module named 'src'`. Fix: add
+`sys.path.insert(0, str(Path(__file__).resolve().parent.parent))` near the
+top of any script under `scripts/` that imports from `src.*`.
+
+### Login-node memory is too small for eval pipeline (10k × 10k distance matrix)
+Attempted to run `scripts/eval_baseline_embeddings.py` directly on the login
+node. Process got SIGKILLed (exit 137) before emitting any output. Login
+node has 15G total / ~6G free; CIFAR-100 test set is 10k × 10k float32
+pairwise = 400M, plus sklearn agglomerative + torch/scipy imports easily
+push past the limit. Run baseline eval under `sbatch` with ≥32G mem, not
+interactively. `sbatch_eval_hier_cifar100.sh` is the template.
