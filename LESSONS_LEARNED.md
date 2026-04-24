@@ -4,7 +4,7 @@ Running log of non-obvious findings from debugging the CUB-200 R@1 collapse
 and the CIFAR-100 sweeps. Read this before proposing fixes — several
 "obvious" root causes have already been ruled out.
 
-## Current state (2026-04-22)
+## Current state (2026-04-24)
 
 **In flight on local cluster (use `squeue -u $USER`):**
 - `533641` (array 0-15%4) — **ImageNet H2H**, frozen FB DINO ResNet50 + hyperbolic
@@ -207,6 +207,39 @@ The two hparams compose: `freeze_encoder=True` freezes everything, then
 `unfreeze_backbone_from=layer4` selectively re-enables gradients for
 `layer4` onward. Setting only `unfreeze_backbone_from` with
 `freeze_encoder=False` does nothing (everything is already trainable).
+
+### "HDP regressed on newer code" is almost always a config mismatch
+The `*-16-Ours` April-5 Poincaré runs (`ulzojs72` et al.) at `c0b4a5e` sit
+at hDP_complete ≈ 0.91 / hDP_ward ≈ 0.90. Recent CIFAR-100 clustering runs
+on `imagenet`-branch HEAD (`b093a1a8` and later) look ~0.10–0.25 lower and
+it's tempting to blame the 25-commit gap. It isn't the code:
+
+1. `c0b4a5e` is **dev's tip**, not main. `main` is at `0908b98` from
+   2025-11-29 (~5 months behind dev), so "should be the state of main"
+   misreads the graph — ulzojs72 is actually the most forward code of the
+   three.
+2. The big `src/evaluation.py` refactor between `c0b4a5e` and HEAD moved
+   WordNet hierarchy construction out of `hierarchical_dendrogram_purity`
+   and into `AbstractModel.on_test_epoch_end` via `build_hierarchy_clusters`.
+   The inner DP algorithm (linkage → merge traversal → `use_root` handling
+   → normalization) at `src/evaluation.py:1033-1081` is identical to dev's.
+   With `use_wordnet_labels=True` + `dendrogrampurity_use_root=True`,
+   CIFAR-100 gets the same multi-level WordNet hierarchy + root cluster in
+   both versions. The metric itself has not drifted.
+3. No one has re-run Poincaré d=16 800ep since April 5. The post-refactor
+   CIFAR-100 ld=16 runs (April 22, `b093a1a8`) are **Euclidean**, and the
+   April 21 Poincaré runs are **d=128**. Both are expected to be lower on
+   hDP from the H2H-sweep numbers above (Euclidean d=16 ≈ 0.78;
+   Poincaré d=128 ≈ 0.65–0.72).
+
+**Rule:** before blaming a hDP gap on code drift, `git log` the runs'
+commits and diff the config. A "regression" across a manifold swap or
+latent-dim change is not a regression. No Poincaré d=16 800ep rerun on
+HEAD exists — job `533763` is Euclidean d=16 (the fair baseline for
+the `*-16-Ours` table), not a code-regression test. If you actually want
+to rule out code drift on the Poincaré recipe, rerun it on HEAD with the
+ulzojs72 config (contrastive_weight=0.1, start_weight=1→end_weight=5,
+temp 0.2→0.1, alpha=0.2, smoothing=50).
 
 ## Related work that informed interventions
 
