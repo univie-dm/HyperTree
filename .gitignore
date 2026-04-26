@@ -1,6 +1,7 @@
 .aider*
 .env
-data
+data/*
+!data/inat18_taxonomy_hierarchy.txt
 images
 
 # Byte-compiled / optimized / DLL files
@@ -199,3 +200,4 @@ sbatch_config.yaml
 sweep.py
 sweep.yaml
 results/
+baselines/HIER-CVPR23
