@@ -470,6 +470,21 @@ class AbstractModel(pl.LightningModule):
                                 synset_names = load_node_synset_names(imagenet_hierarchy_path)
                                 coarse_label_names = get_hierarchy_node_names(parent_child, leaf_names, synset_node_names=synset_names)
 
+                        elif dataset_name == "inat18":
+                            inat_hierarchy_path = self.hparams.evaluation_metrics.get(
+                                "inat18_hierarchy_path", "./data/inat18_taxonomy_hierarchy.txt"
+                            )
+                            if not isinstance(inat_hierarchy_path, str):
+                                inat_hierarchy_path = str(inat_hierarchy_path)
+                            if Path(inat_hierarchy_path).exists():
+                                from src.utils.imagenet_hierarchy import load_imagenet_hierarchy
+                                parent_child = load_imagenet_hierarchy(inat_hierarchy_path, exclude_root=True)
+                                leaf_ids = set(np.unique(all_labels.cpu().numpy()).tolist())
+                                hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
+                            else:
+                                print(f"iNat18 hierarchy file not found: {inat_hierarchy_path}; "
+                                      f"run scripts/build_inat18_taxonomy.py to build.")
+
                         elif dataset_name == "tiny_imagenet":
                             tiny_hierarchy_path = self.hparams.evaluation_metrics.get(
                                 "tiny_imagenet_hierarchy_path", "./data/tiny_imagenet_wordnet_hierarchy.txt"

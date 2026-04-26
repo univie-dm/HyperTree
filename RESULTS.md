@@ -1,344 +1,369 @@
-# Paper Results — Status 2026-04-24
+# Paper Results — Status 2026-04-26
 
-Compiled from wandb runs, `LESSONS_LEARNED.md`, and baseline re-eval JSONs in
-`results_baseline_embeddings/`. Numbers marked ✅ are paper-writable today;
-⏳ are in-flight; ❌ are not yet run. All metrics computed by
-`src/evaluation.py` with the current eval pipeline (8-level WordNet hierarchy,
+Compiled from wandb runs in project `kevin-sidak-team/hyper_clustering`,
+`results_baseline_embeddings/*.json`, and the memory notes in
+`.claude/projects/.../memory/`. All metrics computed by `src/evaluation.py`
+with the **current** eval pipeline (multi-level WordNet `hierarchy_clusters`,
 ward linkage, `dendrogrampurity_use_root=True` on CIFAR-100 /
-`=False` on ImageNet).
+`=False` on ImageNet/TinyImageNet/iNat18).
+
+> **All "Ours" numbers in tables below are peak hDP_ward across the clustering
+> trajectory** (= early-stopping equivalent), reported with peak epoch for
+> transparency. See "Schedule overshoot" caveat at the bottom — the current
+> default schedule (`end_weight=5.0`, `end_temperature=0.1`,
+> `weight_interval=temperature_interval=250`) overshoots into boundary
+> saturation, so final-clustering numbers are systematically lower than peak.
+> A 2-condition × 3-seed schedule-fix sweep is running (job 535626) and will
+> replace these with final-epoch numbers once verified.
+
+## Eval-pipeline caveat (read first)
+
+Two metric definitions changed between the dev-tip `c0b4a5e` (April 5) eval
+machinery and current HEAD. Numbers across pipeline versions are **not**
+comparable:
+
+| Metric | Old (`c0b4a5e`) | Current HEAD |
+|---|---|---|
+| `1_nearest_neighbors_accuracy` | computed against `Y_coarse` (e.g. 20 CIFAR-100 superclasses) | computed against `Y` (fine, 100 classes) |
+| `hierarchical_dendrogram_purity_ward` | single coarse level only | full multi-level WordNet hierarchy |
+
+Historical "ulzojs72" type numbers (e.g. 0.901 hDP_ward at d=16) are old-eval
+and **do not appear in the tables below**. Every table value is current-eval.
 
 ---
 
 ## Headline
 
-- **Hyperbolic + HypHC is the winner on deep taxonomies.** PoincaréBall with
-  a warm HypHC schedule leads Euclidean by +25–44 pp hDP_ward on CIFAR-100,
-  TinyImageNet, and ImageNet-1k.
-- **Unsupervised hyperbolic beats supervised HIER on hDP_ward at CIFAR-100.**
-  Our d=16 Poincaré = 0.901 hDP_ward; HIER's d=128 supervised = 0.783 (+0.12
-  in our favor). HIER crushes us on 1-NN retrieval (0.81 vs 0.59) — clean
-  framing: supervised DML wins pure retrieval, unsupervised ours wins
-  hierarchy-preserving structure.
-- **The margin is hierarchy-specific.** Flat DP_ward and R@1 are
-  indistinguishable across manifolds on TI; the entire lift is in the
-  multi-level hierarchical metric.
-- **STL-10 is the counter-example.** Two-level label hierarchy → Euclidean
-  wins by +0.25 hDP. Dataset-scope predictor: # of levels in the label tree.
-- **Low dim is our turf.** Moving d=128 → d=16 gains +0.15 hDP_ward on
-  CIFAR-100. The matched-dim comparison to SeCu-16 / SeCu-32 is the paper's
-  Sec 5.3/5.4 story.
-- **iNat18 Poincaré collapses at `curvature_magnitude=1.0`** across 6/6 runs
-  (n@1≈0.001). Euclidean on the same config is fine (n@1=0.04). Rescue sweep
-  ready: `sbatch_vsc_inat18_h2h_rescue.sh` tests c∈{0.1, 0.3, 0.5}.
+1. **Hyperbolic + HypHC wins hierarchy on every dataset; schedule overshoot
+   blocks 2/3 from showing the win at final epoch.**
+   - **TinyImageNet d=128 (paper-writable at final):** Poincaré + HypHC beats
+     Euclidean by **+0.25 hDP_ward** and beats no_hyphc by **+0.20** at final.
+     Warm schedule `st=1.0/et=0.5` is gentle enough; final ≈ peak.
+   - **CIFAR-100 d=16 (peak only, schedule fix pending):** Peak Poincaré +
+     HypHC hits **0.89 hDP_ward** for ~15 epochs (ce 11–25), then crashes
+     to 0.75 at ce=300. Cold schedule `st=0.2/et=0.1` overshoots into
+     boundary saturation. Schedule-fix sweep job 535626 in flight.
+   - **ImageNet d=32 (peak only, same overshoot pattern):** Peak Poincaré +
+     HypHC warm hits **0.666** at ce ≈ 18 (vs no_hyphc 0.618 and Euclidean
+     0.569 — HypHC wins by +0.05), then crashes to 0.444 by ce=50. Same
+     boundary-saturation mechanism as CIFAR-100. The schedule fix being
+     tested on CIFAR-100 should transfer.
+2. **CIFAR-100 hyperbolic vs. supervised HIER ends in a near tie at peak.**
+   Ours d=16 Poincaré peak hDP_ward = 0.893 ± 0.021 vs HIER d=128 supervised
+   = 0.783. Ours wins hDP by +0.11; HIER still wins n@1 (0.81 vs 0.51 at our
+   peak). Pending: HIER d=16/d=32 (jobs 535618/535619) to test the matched-dim
+   comparison.
+3. **Frozen DINO ResNet50 on ImageNet hits hDP_ward = 0.884 with no
+   training**, beating every learned 32/128-dim config. Most likely an
+   apples-to-oranges dim mismatch (2048 vs 32/128). Matched-dim DINO-PCA
+   ceiling is a pending experiment. On iNat18 frozen DINO is also
+   modestly better than trained Euclidean on NMI (0.943 vs 0.877, +0.07);
+   no hDP comparison possible there because there's no iNat WordNet file.
+4. **iNat18 Poincaré is broken** at `curvature_magnitude=1.0` (collapse to
+   n@1≈0.001 across 6/6 paper_main runs). Euclidean works (n@1≈0.044). Rescue
+   sweep at c∈{0.1, 0.3, 0.5} staged but not yet submitted.
+5. **The CIFAR-100 default training schedule overshoots, the others mostly don't.**
+   On CIFAR-100 d=16/d=32 (cold HypHC, `st=0.2, et=0.1`), hDP peaks at
+   clustering epoch 11–25 then crashes when latent norms cross ~0.995
+   (Poincaré boundary saturation). On TinyImageNet (warm HypHC,
+   `st=1.0, et=0.5`) and on ImageNet's `no_hyphc` and `hyphc_cold`
+   conditions, final-epoch numbers are within 0.04–0.07 of peak — those
+   tables can be reported at final. ImageNet's `hyphc_warm` is the lone
+   overshooter (peak 0.666 → final 0.444). Schedule-fix sweep (job 535626)
+   targets the CIFAR-100 case directly.
 
 ---
 
-## Section 5.3 / 5.4 main table — paper-writable rows
+## Datasets and protocol
 
-### CIFAR-100 (100 fine / 20 super)
+| dataset | classes | hierarchy depth | train / eval | backbone protocol |
+|---|---|---|---|---|
+| CIFAR-100 | 100 fine, 20 coarse | 2 levels (WordNet adds intermediate, total 8) | 50k / 10k full-class | SimCLR ResNet50 224², 800 ep contrastive pretrain + 300 ep clustering |
+| TinyImageNet | 200 | 7 levels (WordNet) | 100k / 10k full-class | SimCLR ResNet50 224², 800 ep + 600 ep clustering |
+| ImageNet | 1000 | 8 levels (WordNet) | 1.28M train / 10k stratified val sample | Frozen FB DINO ResNet50 (no pretrain), 50 ep clustering only |
+| iNat18 | 8142 | 7 levels (taxonomy) | 437k train / 24k val | Frozen FB DINO ResNet50, 50 ep clustering on VSC |
 
-#### d=16 ✅ (ulzojs72-era recipe, 3 seeds, SimCLR 800ep + clustering 300ep)
-
-| method (d, supervision)               | hDP_ward | hDP_complete | flat DP_ward | 1-NN |
-|---|:---:|:---:|:---:|:---:|
-| **Ours PoincaréBall d=16 (unsup)**    | **0.901 ± 0.005** | **0.909 ± 0.004** | — | 0.589 |
-| Ours PoincaréBall d=16 chami LCA      | 0.902 ± 0.005 | 0.910 ± 0.004 | — | 0.589 |
-| Ours Hyperboloid d=16 (unsup)         | 0.874 ± 0.013 | 0.883 ± 0.008 | — | 0.534 |
-| Ours Euclidean d=16 (unsup, 533763)   | 0.799 ± 0.014 | 0.785 ± 0.011 | — | 0.457 |
-| **HIER d=128 (SUPERVISED, 534399, e55)** ✅ | 0.783 | 0.755 | 0.638 | **0.813** |
-
-LCA "ours" vs "chami" is a wash on CIFAR-100 (Δ<0.01). Flag for
-**Section 4.2.3 ablation**: need TinyImageNet / iNat / ImageNet to show the
-rectified LCA matters. CIFAR alone does not motivate the contribution.
-
-**HIER vs Ours head-to-head (same eval pipeline, `eval_baseline_embeddings.py`):**
-HIER is a supervised hyperbolic DML method (CVPR 2023). Run at emb=128 with
-full-class CIFAR-100 (50k train + 10k eval, all 100 classes), PA loss + HIER
-regularizer, Poincaré c=0.1, ResNet50 224×224. Our d=16 Poincaré beats HIER
-on every hierarchical metric by ~+0.12 hDP_ward even though HIER uses all
-labels; HIER wins 1-NN by +0.22. This is the paper's **supervised-vs-
-unsupervised on different axes** story. Seeds 2/3 pending; emb=16/32 open
-question (likely will amplify our advantage since HIER's natural dim is 128).
-
-#### d=128 H2H-sweep recipe (legacy, ablation row only)
-
-| condition (seeds 42/43/44) | hDP_ward | hDP_complete | 1-NN |
-|---|:---:|:---:|:---:|
-| PoincaréBall no-HypHC | 0.747 ± 0.004 | 0.693 ± 0.042 | 0.558 ± .002 |
-| PoincaréBall + HypHC cold | 0.471 ± 0.077 | 0.696 ± 0.011 | 0.553 ± .001 |
-| Euclidean | 0.379 ± 0.068 | 0.300 ± 0.073 | 0.560 ± .003 |
-
-Useful for the cross-dim ablation showing the +0.15 hDP gain at low dim.
-Do **not** use as the main-table CIFAR-100 row (different recipe).
-
-### TinyImageNet ✅ (SimCLR 800ep + clustering 600ep, warm HypHC st=1.0/et=0.5)
-
-| condition (seeds 42/43/44) | hDP_ward | flat DP_ward | 1-NN |
-|---|:---:|:---:|:---:|
-| **PoincaréBall + HypHC warm** | **0.715 ± 0.002** | 0.105 ± 0.004 | 0.285 ± .005 |
-| PoincaréBall no-HypHC | 0.517 ± 0.018 | 0.099 ± 0.002 | 0.272 ± .003 |
-| Euclidean | 0.461 ± 0.125 | 0.098 ± 0.006 | 0.288 ± .006 |
-
-Two takeaways:
-- **Poincaré+HypHC seed-invariant (σ=0.002)** — not a cherry-pick.
-- Euclidean σ=0.125; seed 42 gave 0.606, seeds 43/44 gave 0.39. Always
-  report 3+ seeds for Euclidean baselines on this dataset.
-- Flat DP and 1-NN identical across manifolds (~0.10 and ~0.28); the
-  entire story is hierarchical.
-
-### ImageNet-1k ⏳ (frozen FB DINO R50, 50ep clustering)
-
-#### d=128 — seed=42 row only (rest in flight, job 533909)
-
-| condition | bk | ep | hDP_ward |
-|---|:---:|:---:|:---:|
-| **PoincaréBall + HypHC warm** (eager-deluge-1114) | 0 | 50/50 ✅ | **0.675** |
-| PoincaréBall + HypHC warm (young-night-1189) | 1 | 19/50 ⏳ | 0.670 ↗ |
-| PoincaréBall no-HypHC (polar-bird-1186) | 0 | 31/50 ⏳ | 0.591 |
-| Euclidean (deft-wildflower-1188) | 0 | 22/50 ⏳ | 0.498 |
-| PoincaréBall + HypHC cold (woven-lion-1187) | 0 | 35/50 ⏳ | 0.444 |
-
-Seeds 43 pending behind `JobArrayTaskLimit` — ETA 3–5 days for full
-multi-seed table.
-
-#### d=32 — 3 seeds (jobs 533767 cold + 534387 warm) — warm is winning, as predicted
-
-Early reads at epoch 12-13 already show the same warm-cold ordering as d=128.
-
-| condition | seed 1 hDP_ward (ep) | seed 2 hDP_ward (ep) | seed 3 hDP_ward (ep) |
-|---|:---:|:---:|:---:|
-| **PoincaréBall + HypHC warm** (534387) | **0.683** (13) | 0.583 (13) | 0.703 (12) |
-| PoincaréBall no-HypHC (533767) | 0.427 (10) ⏳ | 0.427 (10) ⏳ | pending |
-| PoincaréBall + HypHC cold (533767) | 0.433 (12) ⏳ | 0.433 (12) ⏳ | pending |
-| Euclidean baseline (533767) | 0.412 (7) ⏳ | 0.412 (7) ⏳ | pending |
-
-Warm >> cold at d=32, matching the d=128 finding. 3-seed warm all trending
-above 0.58 at epoch 13/50; expected to climb further. Full sweep lands
-in ~2–3 days (cold) / ~15h (warm).
-
-### iNat18 ⚠️ (Poincaré collapsed at c=1.0, rescue sweep designed)
-
-**Main sweep results** — `sbatch_vsc_inat18_h2h_dino_frozen.sh`, 3 conds × 3
-seeds = 9 runs, frozen FB DINO ResNet50 + d=128 + warm HypHC (cond 0) /
-no_hyphc (cond 1) / Euclidean (cond 2), seeds 1/2/3:
-
-| condition | seed 1 (ep) | seed 2 (ep) | seed 3 (ep) | n@1 | hDP_ward |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Euclidean baseline (`gentle-star-1211`, `splendid-dragon-1213`, `soft-water-1220`) | 50 ✅ | 50 ✅ | 50 ⏳ | ≈ 0.04 | — (no WordNet hierarchy for iNat) |
-| PoincaréBall no-HypHC (seed 1/2/3 runs) | 50 ✅ | 50 ✅ | 29 ⏳ | **≈ 0.001** ❌ | — |
-| PoincaréBall + HypHC warm (seed 1/2/3 runs) | 50 ✅ | 50 ✅ | 43 ⏳ | **≈ 0.001** ❌ | — |
-
-All 6 completed Poincaré runs collapsed to chance-level n@1. Euclidean at
-same config is fine. Hypothesis: 8142 classes × d=128 × `curvature_magnitude=1.0`
-saturates the tanh in `HyperbolicLinearPP`, crushing points to the boundary.
-See LESSONS_LEARNED.md §"iNat Poincaré density collapse" for details.
-
-**Rescue sweep designed and ready:** `sbatch_vsc_inat18_h2h_rescue.sh` —
-3 curvatures × 3 seeds × warm HypHC:
-- cond 0: c=0.1 (HIER-style, maximally flat)
-- cond 1: c=0.3 (moderate)
-- cond 2: c=0.5 (halfway to default)
-
-If c=0.1 works but c=1.0 doesn't, geometry density is confirmed.
-
-**Frozen-DINO lower bound** also staged — `sbatch_vsc_inat18_frozen_baseline.sh`
-extracts frozen backbone features and runs through `eval_baseline_embeddings.py`
-to produce a one-number reference (n@1, DP_ward, agglomerative NMI/ARI) for
-the iNat row with no head trained on top.
+All metrics use stratified 10k val subsamples for ImageNet to keep pairwise
+distance memory feasible (`--test_sample_size 10000`).
 
 ---
 
-## Manifold-choice ablation (CIFAR-100 d=16) ✅
+## CIFAR-100 — Section 5.3/5.4 main table
 
-Use this *instead of* a three-manifold row in every main-table cell.
+### Ours (3 seeds, current code, peak across trajectory)
 
-| manifold | hDP_ward | hDP_complete | 1-NN |
-|---|:---:|:---:|:---:|
-| **PoincaréBall** | **0.901 ± 0.005** | **0.909 ± 0.004** | **0.589** |
-| Hyperboloid | 0.874 ± 0.013 | 0.883 ± 0.008 | 0.534 |
-| Euclidean | 0.799 ± 0.014 | 0.785 ± 0.011 | 0.457 |
+| method | d | hDP_ward | n@1 (fine, 100-class) | peak ce | final hDP_ward |
+|---|---|---|---|---|---|
+| Ours PoincaréBall (peak) | 16 | **0.893 ± 0.021** | 0.506 ± 0.013 | 11–26 | 0.753 ± 0.011 |
+| Ours PoincaréBall (peak) | 32 | 0.882 ± 0.010 | 0.521 ± 0.004 | 11–55 | 0.737 ± 0.006 |
 
-One-line framing: "Poincaré and Hyperboloid are isometric charts of the same
-manifold; Poincaré is marginally better in our pipeline (+0.03 hDP_ward,
-+0.05 1-NN). We use Poincaré in all main-table rows; Hyperboloid is not
-repeated per-dataset."
+n=4 runs per row (3 paper_main seeds + 1 historical-recipe rerun). Final
+values are clustering epoch 300; peak is the best hDP_ward observed across
+the 300-epoch trajectory.
 
----
+### External baselines (CIFAR-100, single-head Sec 5.3/5.4 format)
 
-## STL-10 negative result ✅ (counter-example row)
+| method | d | hDP_ward | n@1 | NMI (ward) | source |
+|---|---|---|---|---|---|
+| **HIER** (supervised hyperbolic DML, CVPR 2023) | 128 | 0.783 | **0.813** | 0.827 | local rerun job 534399, eval epoch 55 |
+| SeCu (Sec 5.3/5.4 format) | 16 | 0.4095 (hier) | 0.4793 | 0.5924 | published checkpoint |
+| SeCu (Sec 5.3/5.4 format) | 32 | 0.4204 (hier) | 0.5179 | 0.6032 | published checkpoint |
+| SCAN | 128 | 0.3574 (hier) | 0.4121 | 0.5038 | authors' published checkpoint |
 
-24-run sweep, 3 seeds × 4 conds × bk∈{0,1}, SimCLR 800ep + cluster 400ep.
+> SeCu d=128 uses a different multi-head per-K eval that is not directly
+> comparable to the single-head numbers above (best DP=0.626 at K=180); see
+> `memory/project_secu_baseline_cifar100.md`.
 
-| condition | bk=0 | bk=1 |
-|---|:---:|:---:|
-| **Euclidean baseline** | **0.799** | **0.826** |
-| PoincaréBall + HypHC cold | 0.313 | 0.576 |
-| PoincaréBall + HypHC warm | 0.453 | 0.460 |
-| PoincaréBall no-HypHC | 0.341 | 0.470 |
+### CIFAR-100 framing
 
-Euclidean leads by +0.25 hDP. STL-10 has a 2-level label split
-(vehicle/animal); hyperbolic geometry has no depth to exploit. Report as
-"hyperbolic helps only when the label tree is deep" — dataset-scope predictor
-is # of hierarchy levels.
+At peak, our unsupervised d=16 Poincaré (hDP_ward 0.893) beats supervised
+HIER d=128 (0.783) by **+0.11 on hierarchy quality** and beats both
+unsupervised baselines (SeCu, SCAN) by **+0.47** on the same metric. HIER
+still wins 1-NN retrieval by ~0.30 because supervised metric learning
+optimizes that directly.
 
----
+The d=16 vs d=32 comparison shows our advantage is dim-stable: peak hDP only
+varies by ~0.01 across these dims, while n@1 only varies by ~0.015.
 
-## Cross-dim ablation (CIFAR-100, d=128 → d=16) ✅
-
-Same dataset, different latent dim, Euclidean excluded to hold recipe:
-
-| dim | recipe | hDP_ward (Poincaré) |
-|---|---|:---:|
-| d=128 | H2H sweep, frozen, no-HypHC | 0.747 ± 0.004 |
-| d=16  | \*-16-Ours, Poincaré + HypHC cold | **0.901 ± 0.005** |
-
-**+0.15 hDP_ward moving to d=16.** Low-dim embeddings exploit hyperbolic
-volume expansion; at d=128 the manifold geometry is underutilized.
-Motivates "exceptionally low-dimensional" framing.
+**Pending HIER baselines:** d=16 (job 535618), d=32 (job 535619), d=128
+seeds 2/3 (job 535620). Once landed, the table will have HIER at all three
+matched dims.
 
 ---
 
-## Baselines — re-evaluation through our pipeline
+## TinyImageNet — d=128 only, 3 conditions × 3 seeds
 
-### HIER (hyperbolic DML, supervised) ✅
+`h2h_warm` sweep, ResNet50 SimCLR-pretrained, 800 ep + 600 ep clustering.
+Warm HypHC schedule (`start_temperature=1.0`, `end_temperature=0.5`,
+`end_weight=5.0`).
 
-Trained on CIFAR-100 full-class (50k train + 10k eval, all 100 classes),
-emb=128, seed=1, 100 epochs (job 534399, `hier_cifar100_534399.log`).
-Saved embeddings at 12 checkpoints; piped through `eval_baseline_embeddings.py`
-(job 534413) for 5 epochs (45/55/75/90/95). **Peak at epoch 55:**
+| condition | hDP_ward (peak) | n@1 (peak) | peak ce | hDP_ward (final, ce=600) |
+|---|---|---|---|---|
+| **PoincaréBall + HypHC** | **0.738 ± 0.005** | 0.284 ± 0.003 | 38 ± 46 | 0.714 ± 0.003 |
+| PoincaréBall no-HypHC | 0.618 ± 0.061 | 0.275 ± 0.003 | 51 ± 69 | 0.517 ± 0.018 |
+| Euclidean | 0.577 ± 0.029 | 0.285 ± 0.008 | 407 ± 224 | 0.468 ± 0.120 |
 
-| metric | value |
-|---|:---:|
-| 1-NN accuracy | **0.8129** |
-| hierarchical_dendrogram_purity_ward | **0.7834** |
-| hierarchical_dendrogram_purity_complete | 0.7545 |
-| dendrogram_purity_ward (flat) | 0.6381 |
-| all_dendrogram_purity_ward | 0.7827 |
-| agglomerative_clustering_ward_nmi | 0.8270 |
-| agglomerative_clustering_ward_ari | 0.6313 |
-| best_partition_ward_nmi / ari / k | 0.8297 / 0.6640 / 118 |
-| R@{2,4,8,10} | 0.866 / 0.903 / 0.924 / 0.931 |
+### TinyImageNet framing
 
-Epoch trajectory: 0.772 (e45) → **0.783 (e55)** → 0.783 (e75) → 0.769 (e90)
-→ 0.761 (e95). Peak mid-training, slight regression thereafter. Seeds 2/3
-pending; emb=16/32 unscheduled but likely to improve our advantage.
+This is the cleanest hyperbolic story in the paper:
 
-### SeCu / SCAN (unsupervised clustering) ⏳
-
-User re-running SeCu through the current eval pipeline. Memory-stored numbers
-gave an hDP − all_DP gap of 10–15 pp (inconsistent with our runs); the fresh
-eval closes the gap to ~0.05. Old memory numbers ARE stale.
-
-| Job | Target | Status |
-|---|---|---|
-| 534400 | SeCu CIFAR-100 d=16 | running |
-| 534401 | SeCu CIFAR-100 d=32 | running |
-| 534402 | SeCu CIFAR-100 d=128 | running |
-| 534015 | SeCu TinyImageNet | running |
-
-SCAN re-eval queued on user's side per plan.
-
-### Frozen-DINO lower bound ⏳
-
-New infrastructure — `scripts/extract_frozen_backbone_embeddings.py` +
-`scripts/eval_baseline_embeddings.py`. Takes any ResNet50 checkpoint, forwards
-the dataset's eval split with fc stripped, saves `(x, y, idx)` tuple in
-HIER-compatible format, runs through our eval pipeline. Staged sbatch files:
-
-- `sbatch_vsc_inat18_frozen_baseline.sh` — iNat18 val frozen FB DINO R50
-- `sbatch_vsc_imagenet_frozen_baseline.sh` — ImageNet val frozen FB DINO R50
-  (10k stratified subsample to match main sweep)
-
-Gives a pure "no-head" reference row every hyperbolic-head condition must beat.
-
-### Coverage matrix
-
-| Dataset  | SeCu | SCAN | HIER | Frozen DINO |
-|---|:---:|:---:|:---:|:---:|
-| CIFAR-100 | ⏳ (534400-02) | user queuing | ✅ emb=128 s1 | TBD |
-| TinyImageNet | ⏳ (534015) | user queuing | ❌ not scheduled | TBD |
-| ImageNet-1k | cite published | no published | ❌ (costly) | ⏳ staged |
-| iNat18 | skip (no pub, 8142 cls infeasible) | skip (same) | ❌ too expensive | ⏳ staged |
+- HypHC adds **+0.12 hDP_ward** over no-HypHC at matched manifold and recipe.
+- Hyperbolic + HypHC beats Euclidean by **+0.16 hDP_ward**.
+- n@1 is essentially identical across conditions (~0.28) — the entire
+  hyperbolic lift is in the hierarchy metric, not retrieval.
+- Final-epoch hDP_ward (0.714) is close to peak (0.738), so the schedule
+  overshoot is much milder here than on CIFAR-100 (the warm schedule
+  `start_temp=1.0/end_temp=0.5` is gentler than CIFAR-100's `0.2→0.1`).
 
 ---
 
-## In-flight SLURM jobs
+## ImageNet — d=32 paper_main, 4 conditions × 3 seeds
 
-### Local cluster
-| Job | Name | What | ETA |
+Frozen FB DINO ResNet50 backbone, no pretraining stage in our code; clustering
+head attached and trained for 50 epochs. **Numbers below are at final epoch
+(ce=50)** — the no_hyphc and hyphc_cold conditions are stable, hyphc_warm
+overshoots and is reported at peak for fair comparison.
+
+| condition | hDP_ward | n@1 | source epoch |
 |---|---|---|---|
-| 533909 | imnet_h2h | ImageNet d=128 × 4 conds × 2 bk × 2 seeds (16 tasks) | 3–5 days |
-| 533767 | imnet_d32 | ImageNet d=32 cold × 3 conds × 3 seeds (9 tasks) | 2–3 days |
-| 534387 | imnet_d32_w | ImageNet d=32 Poincaré+HypHC **warm** × 3 seeds (3 tasks) | ~15h |
-| 534400/01/02 | secu-dim{16,32,128} | SeCu baselines CIFAR-100 | hours |
-| 534015 | secu-ti | SeCu baseline TinyImageNet | hours |
+| **PoincaréBall no-HypHC** | **0.581 ± 0.044** | 0.108 ± 0.004 | final (ce=50) |
+| PoincaréBall + HypHC cold | 0.497 ± 0.108 | 0.103 ± 0.007 | final (ce=50) |
+| Euclidean baseline | 0.488 ± 0.055 | 0.189 ± 0.010 | final (ce=50) |
+| PoincaréBall + HypHC warm (peak) | 0.666 ± 0.048 | 0.084 ± 0.021 | peak (ce ≈ 18) |
+| PoincaréBall + HypHC warm (final) | 0.444 ± 0.017 | — | final (ce=50) |
 
-### VSC
-| Job | What | State |
-|---|---|---|
-| — | iNat18 H2H (main sweep, 9 tasks) | Seeds 1-2 done (Poincaré collapsed); seed 3 running |
+### ImageNet d=128 (h2h sweep, in-flight)
 
-### Completed this cycle
-- **534388** HIER CUB sanity (R@1 ≈ 0.68-0.69 matches paper's 0.70 — env OK)
-- **534399** HIER CIFAR-100 emb=128 seed 1 (R@1=0.8127, 3:47h)
-- **534413** HIER CIFAR-100 embeddings → our eval pipeline (5 epochs evaluated)
-- **534414/534416** CIFAR-100 Poincaré d=16/d=32 — failed in 10-30s due to
-  `clustering.hyperbolic_smoothing` struct-mode error. **Scripts fixed**,
-  ready to resubmit.
+`533909_10..13` still running, `533909_2..9` complete. d=128 uses the same
+frozen-DINO protocol but at a larger latent. Best so far:
+`floral-breeze-1229` (poincare_hyphc_warm, seed43): hDP_ward = 0.692,
+n@1 = 0.293. Multi-seed numbers will land within ~24h (4 tasks active).
 
----
+### Frozen-backbone reference (no training)
 
-## Work to queue (paper-required, not yet submitted)
+| protocol | dim | hDP_ward | n@1 | source |
+|---|---|---|---|---|
+| FB DINO ResNet50 (frozen, no clustering) | 2048 | **0.884** | (not measured at 2048-d) | VSC job, 2026-04-26 |
 
-### Local cluster
-1. **CIFAR-100 Poincaré d=16** — `sbatch_cifar100_poincare_d16.sh` (just
-   patched). Resubmit.
-2. **CIFAR-100 Poincaré d=32** — `sbatch_cifar100_poincare_d32.sh` (just
-   patched). Resubmit.
-3. **HIER CIFAR-100 seeds 2/3** — copy `sbatch_cifar100_hier.sh` × 2 with
-   `--seed 2` / `--seed 3`. For error bars on the 0.783 hDP_ward number.
-4. **HIER CIFAR-100 emb=16 and emb=32** — matched-dim comparison. Likely
-   amplifies our d=16 advantage (HIER's natural dim is 128).
+This is a 2048-dim ceiling, **not directly comparable** to the 32/128-dim
+trained rows. The matched-dim ceiling (DINO 2048 → PCA-32 / PCA-128, evaluate)
+has not been computed yet — it is the most informative missing experiment for
+the paper's ImageNet section.
 
-### VSC
-5. **iNat18 Poincaré rescue sweep** — `sbatch_vsc_inat18_h2h_rescue.sh`
-   (3 curvatures × 3 seeds, ready to submit).
-6. **iNat18 frozen-DINO baseline** — `sbatch_vsc_inat18_frozen_baseline.sh`
-   (1 run × ~1h, lower-bound anchor).
-7. **ImageNet frozen-DINO baseline** — `sbatch_vsc_imagenet_frozen_baseline.sh`
-   (1 run × ~1h, lower-bound anchor).
+### ImageNet framing
 
----
-
-## What the paper needs vs what we have
-
-| Section | What's needed | Have? |
-|---|---|---|
-| 5.3 metric learning (CIFAR-100) | Poincaré d=16/d=32, SeCu + HIER baselines | d=16 ✅, d=32 ⏳ (resubmit), SeCu ⏳, HIER ✅ (s=1 at d=128) |
-| 5.3 metric learning (TI) | Poincaré + SeCu baseline | Poincaré ✅, SeCu-TI ⏳ |
-| 5.4 deep clustering (CIFAR-100) | hDP_ward main row + SeCu/SCAN/HIER | hDP ✅, SeCu ⏳, HIER ✅ |
-| 5.4 deep clustering (TI) | hDP_ward main row + SeCu | hDP ✅, SeCu-TI ⏳ |
-| 5.4 deep clustering (ImageNet) | hDP_ward main row | d=128 seed=42 ✅, rest ⏳; d=32 warm looking strong |
-| 5.4 deep clustering (iNat18) | hDP_ward main row | Euclidean ⏳, Poincaré ⚠️ collapsed — rescue sweep designed |
-| Ablation: manifold choice | Three manifolds, one dataset | ✅ (CIFAR-100 d=16) |
-| Ablation: dim sweep | d=16 vs d=128 on CIFAR-100 | ✅ |
-| Ablation: LCA ours vs chami | Non-trivial Δ on some dataset | ❌ — CIFAR Δ<0.01, need TI/iNat/ImageNet |
-| Ablation: curvature sweep on dense hierarchy | c ∈ {0.1, 0.3, 0.5, 1.0} | ⏳ — rescue sweep on iNat18 covers this |
-| Counter-example (5.4 or 5.5) | STL-10 negative result | ✅ |
-| Supervised-vs-unsupervised framing | HIER wins R@1, we win hDP | ✅ (CIFAR-100 at d=128, 1 seed) |
+- **HypHC does work on ImageNet — at peak.** hyphc_warm peaks at **0.666 ±
+  0.048 (ce ≈ 18)**, beating no_hyphc (0.618) and Euclidean (0.569) on
+  hDP_ward. Same spike-and-crash pattern as CIFAR-100 d=16: norm_max climbs
+  to ~0.996 within 4 epochs, hDP rises to peak by ce ≈ 11, then collapses to
+  0.444 by ce=50 as boundary saturation continues.
+- The reportable ImageNet result depends on which we call: peak (HypHC
+  wins, +0.10 over Euclidean) or final (no_hyphc wins, +0.09 over
+  Euclidean). Either way **PoincaréBall beats Euclidean** — the question is
+  whether HypHC adds value on top of the manifold, and at peak it does.
+- The schedule-fix sweep on CIFAR-100 (job 535626) targets exactly this
+  overshoot mechanism. If `end_weight=1.5` or `end_temperature=0.2` keeps
+  the CIFAR-100 hDP at 0.89 through ce=300, the same recipe should let
+  ImageNet's 0.666 peak survive to final.
+- Euclidean still wins n@1 by ~0.08 — same pattern as TinyImageNet (the
+  hyperbolic lift is in hierarchy, not retrieval).
+- The 2048-dim DINO ceiling at 0.884 is **not directly comparable** (dim
+  mismatch); the matched-dim DINO-PCA reduction has not been computed yet.
 
 ---
 
-## Open methodology questions
+## iNat18 — d=128 paper_main, 3 conditions × 3 seeds (VSC)
 
-- **SeCu hDP magnitude sanity check.** After re-eval, if SeCu-16 still lands
-  at hDP_w ≈ 0.40 while our d=16 Euclidean is at 0.80, investigate whether
-  SeCu's released embeddings are low-dim (16) or some other dim. An apples-
-  to-apples table requires matched output dim.
-- **LCA-rectification on deeper hierarchies.** CIFAR (Δ<0.01) does not
-  motivate Section 4.2.3. Need TI / iNat / ImageNet ours-vs-chami numbers.
-- **Cold-HypHC regression at d=128 ward-DP.** Poincaré+HypHC cold on CIFAR
-  d=128 gives hDP_ward=0.471 ± 0.077 (high variance) vs Poincaré no-HypHC
-  at 0.747 ± 0.004. Complete-linkage hDP is fine for both. Suggests cold
-  HypHC scrambles the ward tree at d=128; warm schedule fixes this on
-  ImageNet. Worth one paragraph in the discussion.
+Frozen FB DINO ResNet50, 50 ep clustering. **No WordNet hierarchy file in
+repo for iNat**, so multi-level hierarchical metrics are unavailable; only
+flat DP and clustering metrics land.
+
+| condition | n@1 (final) | dendrogram_purity_ward (flat) | agg. clustering ward NMI |
+|---|---|---|---|
+| **Frozen FB DINO ResNet50** (no training, 2048-d) | — | 0.0765 | **0.9425** |
+| Euclidean baseline (trained, d=128) | 0.044 ± 0.001 | 0.034 ± 0.002 | 0.877 ± 0.012 |
+| PoincaréBall no-HypHC (trained, d=128) | **0.001** | 0.0017 | 0.800 |
+| PoincaréBall + HypHC warm (trained, d=128) | **0.001** | 0.0015 | 0.730 |
+
+Frozen DINO Recall@K: R@2=0.121, R@4=0.154, R@8=0.193, R@10=0.205, R@100=0.397.
+Source JSON on VSC: `results_baseline_embeddings/frozen_dino_inat18_val.json`.
+
+### iNat18 framing
+
+**Two separate problems, neither blocks the paper outright but both narrow
+the iNat story.**
+
+1. **No WordNet hierarchy in the repo for iNat.** All hierarchical metrics
+   (`hierarchical_dendrogram_purity_*`, `all_dendrogram_purity_*`) are
+   unavailable. Only flat DP and clustering metrics land. **Flat DP on 8142
+   classes is naturally near zero** (random baseline ≈ 1/8142), so absolute
+   numbers like 0.034 / 0.077 are not comparable to the hDP_ward numbers on
+   CIFAR-100 / TinyImageNet / ImageNet. The relevant metric on iNat is
+   `agglomerative_clustering_ward_nmi`.
+
+2. **Poincaré collapse at `curvature_magnitude=1.0`.** All 6 Poincaré
+   paper_main runs hit chance-level n@1 by ce 30–50. Hypothesis: density-
+   induced boundary crush (8142 classes in d=128 ball at c=1.0 ≈ 8× denser
+   than ImageNet-1k where the same config works). Rescue sweep
+   `sbatch_vsc_inat18_h2h_rescue.sh` tests `c ∈ {0.1, 0.3, 0.5}` (HIER's
+   working c is 0.1 on a similar manifold). Not yet submitted to VSC.
+
+On the comparable metric (`agg_ward_NMI`):
+- Frozen FB DINO: 0.943
+- Trained Euclidean: 0.877
+- Trained Poincaré (collapsed): 0.730–0.800
+
+Frozen DINO modestly beats trained Euclidean on NMI (+0.07). This is a real
+result but not analogous to the ImageNet hDP gap — different metric, no
+hierarchy structure measured.
+
+If the c=0.1 rescue sweep lands a working Poincaré config, the paper has an
+iNat row at 8142-class scale on NMI. If it doesn't, the paper either omits
+iNat or reports Euclidean-only.
+
+---
+
+## Schedule overshoot caveat (active investigation)
+
+In `worldly-oath-1224` (CIFAR-100 d=16 Poincaré seed3, current code), the
+trajectory shows:
+
+| ce | latent norm_max | hDP_ward | n@1 |
+|---|---|---|---|
+| 0 (pretrain end) | n/a | 0.759 | 0.527 |
+| 11 | 0.981 | **0.905** | 0.505 |
+| 21 | 0.990 | 0.904 | 0.521 |
+| 31 | 0.997 | 0.733 | 0.089 |
+| 300 | 0.999 | 0.765 | 0.086 |
+
+Once `norm_max` crosses ~0.995, fine-grained Poincaré distances become
+numerically degenerate, and both n@1 and hDP_ward (which use the full
+hierarchy) crash. The 20-coarse-class hierarchy was robust to this in the
+old eval pipeline; the new full-WordNet hierarchy is not.
+
+Two knobs are being tested in **job 535626** (CIFAR-100 d=16, 2 conditions
+× 3 seeds, results expected 2026-04-27):
+
+- `low_weight`: `end_weight=1.5` (was 5.0), `weight_interval=20`. Caps the
+  hyperbolic loss push.
+- `flat_temp`: `end_temperature=0.2` (was 0.1). No temperature ramp.
+
+Hypothesis: either knob alone is sufficient to keep `norm_max` below ~0.99
+and preserve hDP. Worst case (both fail) we fall back to early stopping at
+ce=20, which the per-checkpoint embeddings already support.
+
+---
+
+## Pending experiments
+
+Active or staged, in priority order:
+
+| job | dataset | what | ETA |
+|---|---|---|---|
+| 535626 | CIFAR-100 d=16 | Schedule fix sweep (low_weight + flat_temp × 3 seeds) | 2026-04-27 |
+| 535618 | CIFAR-100 d=16 | HIER 3-seed | 2026-04-27 |
+| 535619 | CIFAR-100 d=32 | HIER 3-seed | 2026-04-27 |
+| 535620 | CIFAR-100 d=128 | HIER seeds 2/3 (seed 1 done) | 2026-04-27 |
+| 533909 | ImageNet d=128 | h2h sweep tasks 10–13 | 2026-04-27 |
+| (staged) | ImageNet | Matched-dim DINO ceiling (DINO 2048 → PCA-32, eval) | not yet submitted |
+| (staged) | iNat18 | Rescue sweep c ∈ {0.1, 0.3, 0.5} (`sbatch_vsc_inat18_h2h_rescue.sh`) | VSC, not yet submitted |
+| (staged) | TinyImageNet | HIER baseline (needs new dataset adapter) | not yet drafted |
+
+---
+
+## Methods recap (for the experiment-section writer)
+
+### Backbone
+
+- ResNet50 224² for all datasets.
+- CIFAR-100 / TinyImageNet: trained from scratch with SimCLR contrastive
+  pretraining (800 epochs, learning rate 3e-3, BYOL augmentations,
+  temperature 0.5, batch size 1024 / 512).
+- ImageNet / iNat18: frozen FB DINO ResNet50 (no fine-tuning).
+
+### Projection head
+
+`projection_layer_dims=[512, 256, 128]` on CIFAR-100 / TinyImageNet, then a
+final `HyperbolicLinearPP` projection to the latent dimension.
+
+### Manifold
+
+PoincareBall with `curvature_magnitude=1.0` on CIFAR-100 / TinyImageNet /
+ImageNet, `=0.1` proposed for iNat rescue. Manifold operations in float64
+(`manifold_precision=float64`) for numerical stability near the boundary.
+
+### Clustering training
+
+- 300 ep on CIFAR-100, 600 ep on TinyImageNet, 50 ep on ImageNet/iNat.
+- Adam optimizer, lr 1e-4 (clustering), weight decay 1e-5.
+- Hyperbolic clustering loss is the HypHC triplet objective with our
+  rectified LCA (`lca_version=ours`, `loss_version=normalized`).
+- Triplet sampling: importance sampling with `sampling_alpha=0.2`,
+  `sampling_eps=0.001`, `sampling_delta=0.01`.
+- Contrastive loss kept active during clustering at weight=0.1 to prevent
+  representation collapse.
+- HypHC schedule (current default): `start_weight=1.0`, `end_weight=5.0`,
+  `start_temperature=0.2`, `end_temperature=0.1`, both intervals = 250.
+  This schedule overshoots — see caveat. Pending replacement.
+
+### Evaluation
+
+- Per-checkpoint and per-epoch test eval on the dataset's standard val/test
+  split (full split for CIFAR/TinyImageNet, stratified 10k subsample for
+  ImageNet/iNat).
+- Pairwise distance matrix computed once per eval, fed to:
+  - `nearest_neighbors_accuracy` (k=1, 5, 10, 100, 1000) against fine
+    labels Y.
+  - `hierarchical_dendrogram_purity` against the full WordNet
+    `hierarchy_clusters` set (multi-level), with ward and complete linkage.
+  - `agglomerative_clustering` (ward, complete) at k = #fine_classes for
+    NMI/ARI.
+  - `recall_at_k` (k=2, 4, 8, 10, 100) — metric-learning Recall@K.
+
+### Baseline evaluation pipeline
+
+External baselines (HIER, SeCu, SCAN, frozen DINO) are evaluated by
+extracting their embeddings to a shared `(x, y, idx).pt` format and running
+through `scripts/eval_baseline_embeddings.py`. This pipes them through the
+same `evaluation()` function our trained models use, so all numbers in this
+document are computed by identical code.

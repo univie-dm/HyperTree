@@ -130,9 +130,10 @@ evaluation_metrics:
   dasgupta_cost: False
   visualization_sample_size: 5000
   test_sample_size: 10000
-  use_wordnet_labels: False
+  use_wordnet_labels: True   # iNat uses its own taxonomy file, not WordNet, but the eval branch is gated on this flag
   wordnet_hierarchy_path: './data/cifar100_wordnet_hierarchy.txt'
   imagenet_hierarchy_path: './data/imagenet_wordnet_hierarchy.txt'
+  inat18_hierarchy_path: './data/inat18_taxonomy_hierarchy.txt'
   wordnet_download_if_missing: False
 
 wandb:
