@@ -201,3 +201,4 @@ sweep.py
 sweep.yaml
 results/
 baselines/HIER-CVPR23
+results_baseline_embeddings/

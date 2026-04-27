@@ -481,6 +481,11 @@ class AbstractModel(pl.LightningModule):
                                 parent_child = load_imagenet_hierarchy(inat_hierarchy_path, exclude_root=True)
                                 leaf_ids = set(np.unique(all_labels.cpu().numpy()).tolist())
                                 hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
+                                # Coarse labels gate the hierarchical_dendrogram_purity_* branch
+                                # in evaluation.py:560 — without them, only flat DP is logged.
+                                coarse_labels_array, _ = get_labels_at_hierarchy_level(
+                                    all_labels.cpu().numpy(), parent_child, target_num_classes=20
+                                )
                             else:
                                 print(f"iNat18 hierarchy file not found: {inat_hierarchy_path}; "
                                       f"run scripts/build_inat18_taxonomy.py to build.")
