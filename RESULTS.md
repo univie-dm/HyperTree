@@ -48,11 +48,12 @@ and **do not appear in the tables below**. Every table value is current-eval.
      0.569 — HypHC wins by +0.05), then crashes to 0.444 by ce=50. Same
      boundary-saturation mechanism as CIFAR-100. The schedule fix being
      tested on CIFAR-100 should transfer.
-2. **CIFAR-100 hyperbolic vs. supervised HIER ends in a near tie at peak.**
-   Ours d=16 Poincaré peak hDP_ward = 0.893 ± 0.021 vs HIER d=128 supervised
-   = 0.783. Ours wins hDP by +0.11; HIER still wins n@1 (0.81 vs 0.51 at our
-   peak). Pending: HIER d=16/d=32 (jobs 535618/535619) to test the matched-dim
-   comparison.
+2. **CIFAR-100 hyperbolic vs. supervised HIER (matched-dim, multi-seed):**
+   ours d=16 Poincaré peak hDP_ward = 0.893 ± 0.021 vs HIER d=16 peak =
+   0.845 ± 0.010 (3 seeds). Ours wins hierarchy by +0.05 even at matched
+   dim; HIER still wins n@1 (0.69 vs 0.51 at d=16). HIER hDP gently
+   decreases with dim (d=16: 0.845, d=32: 0.841, d=128: 0.813), same
+   pattern as ours. Both methods peak in the first ~15 epochs.
 3. **Use ce=0 hDP_ward (frozen backbone + random-init clustering head,
    evaluated through our pipeline) as the matched-architecture frozen
    anchor.** Same encoder, same projection-head architecture, same
@@ -97,7 +98,9 @@ config per dataset; baseline rows are external methods.
 | dataset | method | d | n@1 | R@2 | R@4 | R@8 | seeds |
 |---|---|---|---|---|---|---|---|
 | CIFAR-100 | **Ours** (peak Poincaré) | 16 | 0.506 ± 0.013 | 0.583 | 0.681 | 0.770 | 4 |
-| CIFAR-100 | HIER (supervised) | 128 | **0.813** | — | — | — | 1 |
+| CIFAR-100 | HIER (supervised, peak) | 16 | 0.692 ± 0.060 | 0.781 ± 0.046 | 0.845 ± 0.031 | 0.894 ± 0.019 | 3 |
+| CIFAR-100 | HIER (supervised, peak) | 32 | 0.758 ± 0.044 | 0.830 ± 0.031 | 0.880 ± 0.016 | 0.915 ± 0.008 | 3 |
+| CIFAR-100 | HIER (supervised, peak) | 128 | **0.742 ± 0.003** | 0.819 ± 0.000 | 0.872 ± 0.002 | 0.912 ± 0.001 | 3 |
 | CIFAR-100 | SeCu | 32 | 0.5090 ± 0.008 | 0.615 | 0.712 | 0.795 | 3 |
 | CIFAR-100 | SCAN | 128 | 0.4120 | 0.523 | 0.639 | 0.745 | 3 |
 | TinyImageNet | **Ours** Poincaré + HypHC | 128 | 0.284 ± 0.003 | — | — | — | 3 |
@@ -109,8 +112,16 @@ config per dataset; baseline rows are external methods.
 > † SeCu TI n@1 includes the collapsed seed=99 (random for 200 classes).
 > Reaggregate after seed=7 lands.
 >
-> **§5.3 missing:** R@k columns for all but CIFAR-100; HIER on TI/ImageNet;
-> any UHML (Yan 2021) row.
+> HIER CIFAR-100 numbers are peak across the 100-epoch trajectory (matching
+> our peak convention); peak typically lands at epoch 5–15. Source:
+> 48 eval JSONs in `results_baseline_embeddings/hier_c100_*.json`,
+> 3 seeds × {d=16, d=32, d=128}.
+>
+> **§5.3 missing:** R@k columns for non-CIFAR datasets; HIER on TI/ImageNet
+> (sbatches written 2026-04-28: `sbatch_tiny_imagenet_hier.sh`,
+> `sbatch_vsc_imagenet_hier.sh` — pending submission); UHML (Yan 2021) row
+> (CUB sanity sbatch written; full integration on our datasets requires
+> writing UHML adapters analogous to HIER's `baselines/hier_extensions/`).
 
 ### §5.4 Deep Clustering (hDP_ward, DP_ward, NMI, ARI)
 
@@ -118,7 +129,9 @@ config per dataset; baseline rows are external methods.
 |---|---|---|---|---|---|---|
 | CIFAR-100 | **Ours** Poincaré (peak) | 16 | **0.893 ± 0.021** | 0.755 ± 0.004 | **+0.138** | 4 |
 | CIFAR-100 | **Ours** Poincaré (final ce=300) | 16 | 0.753 ± 0.011 | 0.755 ± 0.004 | −0.002 | 4 |
-| CIFAR-100 | HIER (supervised) | 128 | 0.783 | — | — | 1 |
+| CIFAR-100 | HIER (supervised, peak) | 16 | 0.845 ± 0.010 | — | NMI 0.749 ± 0.053 | 3 |
+| CIFAR-100 | HIER (supervised, peak) | 32 | 0.841 ± 0.048 | — | NMI 0.790 ± 0.039 | 3 |
+| CIFAR-100 | HIER (supervised, peak) | 128 | 0.813 ± 0.016 | — | NMI 0.766 ± 0.003 | 3 |
 | CIFAR-100 | SeCu | 16 | 0.4156 ± 0.011 | — | — | 3 |
 | CIFAR-100 | SeCu | 32 | 0.4147 ± 0.012 | — | — | 3 |
 | CIFAR-100 | SCAN | 128 | 0.3531 | — | — | 3 |
@@ -226,7 +239,9 @@ Aggregated from `baselines/aggregate.md` (2026-04-28). hDP_ward column is
 
 | method | d | hDP_ward | n@1 (fine) | NMI (ward) | n seeds | source |
 |---|---|---|---|---|---|---|
-| **HIER** (supervised hyperbolic DML, CVPR 2023) | 128 | 0.783 | **0.813** | 0.827 | 1 | local rerun job 534399, eval epoch 55 |
+| **HIER** (supervised, peak) | 16 | 0.845 ± 0.010 | 0.692 ± 0.060 | 0.749 ± 0.053 | 3 | seeds 1/2/3, peak across 100ep trajectory |
+| **HIER** (supervised, peak) | 32 | 0.841 ± 0.048 | 0.758 ± 0.044 | 0.790 ± 0.039 | 3 | seeds 1/2/3, peak across 100ep trajectory |
+| **HIER** (supervised, peak) | 128 | 0.813 ± 0.016 | 0.742 ± 0.003 | 0.766 ± 0.003 | 3 | seeds 1/2/3, peak across 100ep trajectory |
 | SeCu | 16 | 0.4156 ± 0.0109 | 0.4686 ± 0.0099 | 0.5842 ± 0.0072 | 3 | published recipe, seeds {42, 56, 99} |
 | SeCu | 32 | 0.4147 ± 0.0119 | 0.5090 ± 0.0082 | 0.5983 ± 0.0045 | 3 | published recipe, seeds {42, 56, 99} |
 | SeCu | 128 | 0.3798 ± 0.0380 ‡ | 0.4754 ± 0.0591 | 0.5635 ± 0.0412 | 2 | published recipe, seeds {42, 99} |
@@ -245,17 +260,19 @@ Aggregated from `baselines/aggregate.md` (2026-04-28). hDP_ward column is
 ### CIFAR-100 framing
 
 At peak, our unsupervised d=16 Poincaré (hDP_ward 0.893) beats supervised
-HIER d=128 (0.783) by **+0.11 on hierarchy quality** and beats both
-unsupervised baselines (SeCu, SCAN) by **+0.47** on the same metric. HIER
-still wins 1-NN retrieval by ~0.30 because supervised metric learning
-optimizes that directly.
+HIER at every matched dim: HIER d=16 = 0.845 ± 0.010 (Δ +0.048), d=32 =
+0.841 ± 0.048 (Δ +0.041 vs ours d=32 = 0.882), d=128 = 0.813 ± 0.016. Our
+unsupervised method beats both unsupervised baselines (SeCu, SCAN) by
+**+0.47** on hDP. HIER still wins 1-NN retrieval (0.69–0.74 across dims
+vs ours 0.51) because supervised metric learning optimizes that directly.
 
 The d=16 vs d=32 comparison shows our advantage is dim-stable: peak hDP only
-varies by ~0.01 across these dims, while n@1 only varies by ~0.015.
+varies by ~0.01 across these dims, while n@1 only varies by ~0.015. HIER's
+hDP also gently decreases with dim, which is the same dim-shape as ours.
 
-**Pending HIER baselines:** d=16 (job 535618), d=32 (job 535619), d=128
-seeds 2/3 (job 535620). Once landed, the table will have HIER at all three
-matched dims.
+HIER multi-seed numbers above are aggregated from 48 eval JSONs in
+`results_baseline_embeddings/hier_c100_*.json` (3 seeds × {16, 32, 128} ×
+many epochs); per-seed best-epoch typically lands at e=5–15.
 
 ---
 
@@ -516,20 +533,22 @@ Active or staged, in priority order:
 |---|---|---|---|
 | 541955 | ImageNet d=128 | seed=44 H2H (8 tasks) | local, running, ETA ~24h |
 | 541956 | ImageNet d=16 | full H2H grid (16 tasks, seeds 42/43) | local, running, ETA ~5d |
-| (staged) | iNat18 | Frozen FB DINO baseline (`sbatch_vsc_inat18_frozen_baseline.sh`) | VSC, not yet submitted |
-| (staged) | ImageNet | Matched-dim DINO ceiling (DINO 2048 → PCA-32 / PCA-128, eval) | not yet drafted |
-| (staged) | TinyImageNet | HIER baseline (needs new dataset adapter) | not yet drafted |
+| (staged) | iNat18 | Diagnostic Sweep A (head/training axis: d=256, cw=1.0, lr=1e-5, Hyperboloid; 12 runs) — `sbatch_vsc_inat18_diag_sweep_a.sh` | VSC, written, pending submission |
+| (staged) | iNat18 | DINOv2 ViT-L/14 frozen baseline + matched-dim PCA — `sbatch_vsc_inat18_dinov2_frozen.sh` | VSC, written, pending submission |
+| (staged) | TinyImageNet | HIER baseline (3 seeds × d=128) — `sbatch_tiny_imagenet_hier.sh` | local, written, pending submission |
+| (staged) | ImageNet | HIER baseline (3 seeds × d=128) — `sbatch_vsc_imagenet_hier.sh` | VSC, written, pending submission |
+| (staged) | CUB | UHML (Yan 2021) sanity — `sbatch_uhml_cub_sanity.sh` | local, written, pending submission |
 | (staged) | TinyImageNet | SCAN baseline | not yet drafted |
-| (staged) | ImageNet | HIER baseline | not yet drafted |
-| (staged) | TI / ImageNet / iNat18 | LCA-rectification ablation (`ours` vs `chami`) | not yet drafted (Sec 4.2.3 motivator) |
+| (staged) | TI / ImageNet / iNat18 | LCA-rectification ablation (`ours` vs `chami`) | submitted (lca_abl_ti, lca_abl_imnet running) |
 | (staged) | ImageNet | Schedule-fix verification on hyphc_warm overshoot | not yet drafted |
 
 Already landed and incorporated above:
 - iNat18 rescue sweep c ∈ {0.1, 0.3, 0.5} (9 runs, finished 2026-04-28)
 - ImageNet d=128 H2H (16/16 finished)
 - ImageNet d=32 paper_main (12/12 finished)
-- HIER CIFAR-100 d=16/32/128 multi-seed (jobs 535618/19/620 — verify
-  before quoting; assumed landed but not re-aggregated here yet)
+- HIER CIFAR-100 d=16/32/128 multi-seed (3 seeds × 3 dims, aggregated
+  from 48 eval JSONs in `results_baseline_embeddings/hier_c100_*.json`
+  on 2026-04-28; numbers in §5.3/§5.4 are peak across trajectory)
 - SeCu CIFAR-100 d=16/32 multi-seed (n=3, see `baselines/aggregate.md`)
 - SCAN CIFAR-100 (n=3 deterministic checkpoint)
 
