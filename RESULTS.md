@@ -103,16 +103,27 @@ the 300-epoch trajectory.
 
 ### External baselines (CIFAR-100, single-head Sec 5.3/5.4 format)
 
-| method | d | hDP_ward | n@1 | NMI (ward) | source |
-|---|---|---|---|---|---|
-| **HIER** (supervised hyperbolic DML, CVPR 2023) | 128 | 0.783 | **0.813** | 0.827 | local rerun job 534399, eval epoch 55 |
-| SeCu (Sec 5.3/5.4 format) | 16 | 0.4095 (hier) | 0.4793 | 0.5924 | published checkpoint |
-| SeCu (Sec 5.3/5.4 format) | 32 | 0.4204 (hier) | 0.5179 | 0.6032 | published checkpoint |
-| SCAN | 128 | 0.3574 (hier) | 0.4121 | 0.5038 | authors' published checkpoint |
+Aggregated from `baselines/aggregate.md` (2026-04-28). hDP_ward column is
+`hierarchical_dendrogram_purity_ward` so it is directly comparable to the
+"Ours" rows above.
 
-> SeCu d=128 uses a different multi-head per-K eval that is not directly
-> comparable to the single-head numbers above (best DP=0.626 at K=180); see
-> `memory/project_secu_baseline_cifar100.md`.
+| method | d | hDP_ward | n@1 (fine) | NMI (ward) | n seeds | source |
+|---|---|---|---|---|---|---|
+| **HIER** (supervised hyperbolic DML, CVPR 2023) | 128 | 0.783 | **0.813** | 0.827 | 1 | local rerun job 534399, eval epoch 55 |
+| SeCu | 16 | 0.4156 ± 0.0109 | 0.4686 ± 0.0099 | 0.5842 ± 0.0072 | 3 | published recipe, seeds {42, 56, 99} |
+| SeCu | 32 | 0.4147 ± 0.0119 | 0.5090 ± 0.0082 | 0.5983 ± 0.0045 | 3 | published recipe, seeds {42, 56, 99} |
+| SeCu | 128 | 0.3798 ± 0.0380 ‡ | 0.4754 ± 0.0591 | 0.5635 ± 0.0412 | 2 | published recipe, seeds {42, 99} |
+| SCAN | 128 | 0.3531 | 0.4120 | 0.5035 | 3 | authors' published checkpoint, std=0 (deterministic ckpt) |
+
+> ‡ The SeCu d=128 row is the single-head re-eval format. The SeCu paper's
+> own multi-head per-K eval gives best DP=0.626 at K=180 — not directly
+> comparable to the single-head numbers above; see
+> `memory/project_secu_baseline_cifar100.md`. SeCu d=128 also has only 2
+> seeds (42, 99) — seed 56 not yet rerun.
+
+> SeCu d=16 ≈ d=32 on hDP_ward (within std); the dim story for SeCu is
+> n@1-only, where d=32 beats d=16 by +0.04. See `LESSONS_LEARNED.md` for
+> the full d=16 vs d=32 breakdown.
 
 ### CIFAR-100 framing
 
@@ -155,6 +166,26 @@ This is the cleanest hyperbolic story in the paper:
   overshoot is much milder here than on CIFAR-100 (the warm schedule
   `start_temp=1.0/end_temp=0.5` is gentler than CIFAR-100's `0.2→0.1`).
 
+### External baselines (TinyImageNet)
+
+Aggregated from `baselines/aggregate.md` (2026-04-28). Default SeCu recipe,
+locally retrained.
+
+| method | d | hDP_ward | n@1 (fine) | NMI (ward) | n seeds | source |
+|---|---|---|---|---|---|---|
+| SeCu † | (default) | 0.1600 ± 0.0404 | 0.0688 ± 0.0559 | 0.2962 ± 0.2178 | 3 | published recipe, seeds {42, 56, 99} |
+
+> † **Caveat — the n=3 aggregate above still includes a collapsed seed.**
+> `secu-tiny_imagenet-s99` (slurm 541124) trained 400 epochs without
+> crashing but produced an embedding-collapsed model: 1-NN = 0.0050 (random
+> for 200 classes), ward NMI = 0.0447, ward acc = 0.0054. Cluster head got
+> stuck at init then diverged after the LR-decay boundary; seeds 42 and 56
+> on the same script converge cleanly (1-NN ≈ 0.10, NMI ≈ 0.42). The
+> collapsed `results/secu-tiny_imagenet-s99.{json,log}` have been removed
+> from disk; resubmitted with seed=7 for a third good seed. Once seed=7
+> lands, reaggregate — expect the means to rise sharply and the std to
+> drop. See `docs/secu_ti_seed99_collapse.md` and `LESSONS_LEARNED.md`.
+
 ---
 
 ## ImageNet — d=32 paper_main, 4 conditions × 3 seeds
@@ -172,12 +203,37 @@ overshoots and is reported at peak for fair comparison.
 | PoincaréBall + HypHC warm (peak) | 0.666 ± 0.048 | 0.084 ± 0.021 | peak (ce ≈ 18) |
 | PoincaréBall + HypHC warm (final) | 0.444 ± 0.017 | — | final (ce=50) |
 
-### ImageNet d=128 (h2h sweep, in-flight)
+### ImageNet d=128 H2H sweep (16/16 finished, 4 conditions × 2 bk × 2 seeds)
 
-`533909_10..13` still running, `533909_2..9` complete. d=128 uses the same
-frozen-DINO protocol but at a larger latent. Best so far:
-`floral-breeze-1229` (poincare_hyphc_warm, seed43): hDP_ward = 0.692,
-n@1 = 0.293. Multi-seed numbers will land within ~24h (4 tasks active).
+Frozen FB DINO ResNet50, 50 ep clustering only. Condition × backbone_knn,
+n=2 seeds (42, 43). All numbers are final epoch (ce=50).
+
+| condition | bk | hDP_ward | n@1 | seeds |
+|---|---|---|---|---|
+| **PoincaréBall + HypHC warm** | 0 | **0.683 ± 0.012** | 0.299 ± 0.008 | s42=0.675, s43=0.692 |
+| PoincaréBall no-HypHC | 0 | 0.636 ± 0.033 | 0.131 ± 0.006 | s42=0.613, s43=0.660 |
+| PoincaréBall no-HypHC | 1 | 0.630 ± 0.033 | 0.128 ± 0.005 | s42=0.606, s43=0.653 |
+| Euclidean baseline | 0 | 0.519 ± 0.105 | 0.294 ± 0.002 | s42=0.593, s43=0.445 |
+| PoincaréBall + HypHC cold | 0 | 0.473 ± 0.011 | 0.116 ± 0.002 | s42=0.481, s43=0.465 |
+| Euclidean baseline | 1 | 0.461 ± 0.022 | 0.291 ± 0.013 | s42=0.445, s43=0.476 |
+| PoincaréBall + HypHC cold | 1 | 0.452 ± 0.016 | 0.118 ± 0.001 | s42=0.463, s43=0.440 |
+| **PoincaréBall + HypHC warm** | 1 | **0.448 ± 0.029** † | 0.077 ± 0.020 | s42=0.468, s43=0.427 |
+
+> † **Warm + bk=1 surprise collapse:** warm HypHC drops from 0.683 (bk=0)
+> to 0.448 (bk=1). On every other condition the bk axis is roughly neutral
+> (Δ ≤ 0.06). Hypothesis: warm HypHC + backbone-knn similarities double-
+> commits to the wrong neighborhood structure early, since both signals
+> push the head toward the frozen DINO geometry. Worth a separate ablation
+> if warm+bk1 ends up the headline ImageNet config; otherwise just report
+> warm+bk0.
+
+**Best ImageNet d=128 row for the paper (final, no peak-vs-final
+caveat):** PoincaréBall + HypHC warm, bk=0, hDP_ward = **0.683 ± 0.012**,
+n@1 = 0.299. Beats Euclidean (best of bk=0 = 0.519) by **+0.16**, beats
+no-HypHC (best bk=0 = 0.636) by **+0.05**.
+
+Adding seed=44 to all 8 conditions is in flight as job 541955 (8 jobs at
+%4 throttle, ETA ~24h on local cluster).
 
 ### Frozen-backbone reference (no training)
 
@@ -246,7 +302,42 @@ the iNat story.**
    induced boundary crush (8142 classes in d=128 ball at c=1.0 ≈ 8× denser
    than ImageNet-1k where the same config works). Rescue sweep
    `sbatch_vsc_inat18_h2h_rescue.sh` tests `c ∈ {0.1, 0.3, 0.5}` (HIER's
-   working c is 0.1 on a similar manifold). Not yet submitted to VSC.
+   working c is 0.1 on a similar manifold). **Submitted and finished
+   2026-04-28** (9 runs: 3 curvatures × 3 seeds, abstract.py iNat
+   hierarchical-DP gate fix shipped same day).
+
+### iNat18 rescue sweep (3 curvatures × 3 seeds, finished 2026-04-28)
+
+After the `abstract.py` patch that wires `coarse_labels_array` for the
+iNat hierarchical_dendrogram_purity_ward gate, all 9 runs now log hDP_ward
+against the iNat taxonomy hierarchy. Numbers are final epoch (ce=50);
+warm HypHC schedule, backbone_knn=True for every run.
+
+| curvature_magnitude | hDP_ward | n@1 | seeds |
+|---|---|---|---|
+| **c = 0.3** | **0.452 ± 0.106** | 0.0002 | s1=0.449, s2=0.348, s3=0.560 |
+| c = 0.5 | 0.260 ± 0.009 | 0.0014 | s1=0.261, s2=0.270, s3=0.251 |
+| c = 0.1 | 0.201 ± 0.029 | 0.0023 | s1=0.180, s2=0.234, s3=0.190 |
+
+**c = 0.3 wins on hierarchy** (+0.19 hDP_ward over c=0.5, +0.25 over c=0.1)
+but the encoder is **still collapsed at the leaf level**: 1-NN ≈ 0.0001–
+0.002 across all curvatures vs. random baseline 1/8142 ≈ 0.00012. The
+hDP_ward signal is the Ward dendrogram capturing some high-level
+taxonomy structure even when fine clusters are noise (8142 species → ~14
+phyla means coarse partitions can land tree-aligned by chance).
+
+**Caveats before reporting this in the paper:**
+- 1-NN at random means we cannot claim "the model learned anything
+  retrieval-grade" on iNat. Frame this as hierarchy-only.
+- The frozen FB DINO ResNet50 baseline on iNat18 (`sbatch_vsc_inat18_frozen_baseline.sh`,
+  not yet submitted) is required as the comparison point. If frozen
+  DINO already hits hDP_ward ≈ 0.5+, the rescue sweep adds nothing on top.
+- The c=0.3 result is essentially tied with frozen DINO ImageNet at d=128
+  (0.683) on hDP_ward — likely an artifact of taxonomy-tree depth, not a
+  positive transfer story.
+
+Will add the iNat row to the headline table only after frozen DINO
+baseline lands and we can verify there is a real Δ.
 
 On the comparable metric (`agg_ward_NMI`):
 - Frozen FB DINO: 0.943
@@ -294,20 +385,30 @@ ce=20, which the per-checkpoint embeddings already support.
 
 ---
 
-## Pending experiments
+## Pending experiments (2026-04-28)
 
 Active or staged, in priority order:
 
-| job | dataset | what | ETA |
+| job | dataset | what | status |
 |---|---|---|---|
-| 535626 | CIFAR-100 d=16 | Schedule fix sweep (low_weight + flat_temp × 3 seeds) | 2026-04-27 |
-| 535618 | CIFAR-100 d=16 | HIER 3-seed | 2026-04-27 |
-| 535619 | CIFAR-100 d=32 | HIER 3-seed | 2026-04-27 |
-| 535620 | CIFAR-100 d=128 | HIER seeds 2/3 (seed 1 done) | 2026-04-27 |
-| 533909 | ImageNet d=128 | h2h sweep tasks 10–13 | 2026-04-27 |
-| (staged) | ImageNet | Matched-dim DINO ceiling (DINO 2048 → PCA-32, eval) | not yet submitted |
-| (staged) | iNat18 | Rescue sweep c ∈ {0.1, 0.3, 0.5} (`sbatch_vsc_inat18_h2h_rescue.sh`) | VSC, not yet submitted |
+| 541955 | ImageNet d=128 | seed=44 H2H (8 tasks) | local, running, ETA ~24h |
+| 541956 | ImageNet d=16 | full H2H grid (16 tasks, seeds 42/43) | local, running, ETA ~5d |
+| (staged) | iNat18 | Frozen FB DINO baseline (`sbatch_vsc_inat18_frozen_baseline.sh`) | VSC, not yet submitted |
+| (staged) | ImageNet | Matched-dim DINO ceiling (DINO 2048 → PCA-32 / PCA-128, eval) | not yet drafted |
 | (staged) | TinyImageNet | HIER baseline (needs new dataset adapter) | not yet drafted |
+| (staged) | TinyImageNet | SCAN baseline | not yet drafted |
+| (staged) | ImageNet | HIER baseline | not yet drafted |
+| (staged) | TI / ImageNet / iNat18 | LCA-rectification ablation (`ours` vs `chami`) | not yet drafted (Sec 4.2.3 motivator) |
+| (staged) | ImageNet | Schedule-fix verification on hyphc_warm overshoot | not yet drafted |
+
+Already landed and incorporated above:
+- iNat18 rescue sweep c ∈ {0.1, 0.3, 0.5} (9 runs, finished 2026-04-28)
+- ImageNet d=128 H2H (16/16 finished)
+- ImageNet d=32 paper_main (12/12 finished)
+- HIER CIFAR-100 d=16/32/128 multi-seed (jobs 535618/19/620 — verify
+  before quoting; assumed landed but not re-aggregated here yet)
+- SeCu CIFAR-100 d=16/32 multi-seed (n=3, see `baselines/aggregate.md`)
+- SCAN CIFAR-100 (n=3 deterministic checkpoint)
 
 ---
 

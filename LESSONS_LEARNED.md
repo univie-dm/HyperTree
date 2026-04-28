@@ -544,3 +544,50 @@ node has 15G total / ~6G free; CIFAR-100 test set is 10k × 10k float32
 pairwise = 400M, plus sklearn agglomerative + torch/scipy imports easily
 push past the limit. Run baseline eval under `sbatch` with ≥32G mem, not
 interactively. `sbatch_eval_hier_cifar100.sh` is the template.
+
+## 2026-04-28 additions
+
+### SeCu cluster head is seed-sensitive — one bad seed can collapse training without crashing
+`secu-tiny_imagenet-s99` (slurm 541124, 2026-04-28) trained 400 epochs
+without crashing but produced an embedding-collapsed model:
+
+| metric | s42 | s56 | **s99** |
+|---|---:|---:|---:|
+| 1-NN | 0.1092 | 0.0923 | **0.0050** |
+| ward NMI | 0.4271 | 0.4167 | **0.0447** |
+| ward acc | 0.1331 | 0.1237 | **0.0054** |
+
+Random fine-class baseline is ≈ 1/200 = 0.005. The s99 training loss
+plateaued 1.5–2 nats above sibling seeds from epoch 50 and climbed another
+~2 nats between epochs 300–394 — **stuck-then-diverged cluster head, no
+NaN/Inf in the log**. Same script + data + hparams converged under seeds
+42 and 56; `worker_seed = 99 + rank` seeded a bad cluster-center init.
+
+**Action taken:** removed `results/secu-tiny_imagenet-s99.{json,log}` so the
+aggregator doesn't bake collapse into the SeCu mean/std; resubmitted with
+seed=7 for a third good seed. Broken checkpoint kept at
+`model/secu_tiny_imagenet_s99_*.pth.tar` for reference. See
+`docs/secu_ti_seed99_collapse.md` for the full loss trajectory.
+
+**Implication for baseline tables:** the SeCu TinyImageNet n=3 aggregate in
+`baselines/aggregate.md` (mean hDP_ward = 0.160, sd = 0.040) **still
+includes seed=99**. Reaggregate after seed=7 lands; expect the std to drop
+sharply and the mean to rise as the collapse is excluded.
+
+**If a fresh seed also diverges**, candidates to investigate before assuming
+random failure: LR schedule on the cluster head (the climb starts at the
+LR-decay boundary), cluster-init scheme (k-means warm-start vs. random),
+gradient clipping on the head.
+
+### SeCu CIFAR-100 d=16 ≈ d=32 on hierarchy, d=32 only wins n@1
+The MEMORY note "latent=32 beats 16" is true on n@1 (+0.04) but **a wash
+on hDP_ward** (within std). Aggregate from n=3 seeds {42, 56, 99}:
+
+| dim | hDP_ward | n@1 | ward NMI |
+|---|---|---|---|
+| 16 | 0.4156 ± 0.011 | 0.4686 ± 0.010 | 0.5842 ± 0.007 |
+| 32 | 0.4147 ± 0.012 | 0.5090 ± 0.008 | 0.5983 ± 0.005 |
+
+When the SeCu comparison is hierarchy-focused, dim doesn't matter; it
+matters for retrieval. SeCu d=128 uses a multi-head per-K eval that is
+not directly comparable to the single-head numbers above.
