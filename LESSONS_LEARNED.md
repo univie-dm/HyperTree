@@ -499,6 +499,39 @@ Poincaré, so the low-end is a known-working value from a neighboring method.
 If even c=0.1 fails, the problem isn't curvature density and we need a
 different intervention (dim=256, different projection architecture, etc.).
 
+**Rescue sweep result (finished 2026-04-28)**: 9 runs landed; on hDP_ward,
+**c=0.3 wins, not the HIER-borrowed c=0.1**:
+
+| c | hDP_ward (final ce=50) | n@1 |
+|---|---|---|
+| 0.3 | **0.452 ± 0.106** | 0.0002 |
+| 0.5 | 0.260 ± 0.009 | 0.0014 |
+| 0.1 | 0.201 ± 0.029 | 0.0023 |
+
+Two takeaways:
+1. **HIER's c=0.1 does not transfer.** Borrowing the curvature from a
+   neighboring supervised method on a different dataset turned out to be
+   the *worst* of the three. The "flatter ball ⇒ less boundary crush ⇒
+   better" intuition broke around c=0.3 and reversed below it; at c=0.1
+   the manifold is so close to Euclidean that the hyperbolic clustering
+   loss has no geometry to exploit. The sweet spot is dataset-specific
+   and has to be measured per dataset, not borrowed.
+2. **Hierarchy can recover even when retrieval can't.** All 9 rescue
+   runs are still leaf-collapsed: 1-NN ≈ 0.0001–0.002 vs random
+   1/8142 ≈ 0.00012. But the Ward dendrogram still captures coarse
+   taxonomy structure (8142 species → ~14 phyla), which is what hDP_ward
+   measures. So on extreme-scale label sets the hyperbolic head can
+   produce a tree-aligned partition without producing a discriminative
+   embedding. For the paper this means iNat is reportable as a
+   *hierarchy-only* result — claiming retrieval-grade learning at 8142
+   classes would be a misread of the metrics.
+
+Caveat before claiming a "win" on iNat: frozen FB DINO ResNet50 (no
+training) on the same eval pipeline needs to land first as a comparison
+point. If frozen DINO already hits hDP_ward ≈ 0.45+ at matched dim, the
+rescue sweep adds nothing on top and the row should be dropped or
+reframed as "trained does not beat frozen on iNat hierarchy."
+
 ### Hydra struct-mode trap: `hyperbolic_smoothing` lives under `architecture`
 The sbatch `sbatch_cifar100_poincare_d{16,32}.sh` scripts originally had
 `clustering.hyperbolic_smoothing=50.0` which dies instantly with:
