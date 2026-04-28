@@ -34,30 +34,38 @@ if [ ! -f "$DINO_CKPT" ]; then
     wget -O "$DINO_CKPT" https://dl.fbaipublicfiles.com/dino/dino_resnet50_pretrain/dino_resnet50_pretrain.pth
 fi
 
-LOCAL_DATA="/tmp/imagenet"
-if [ ! -d "$LOCAL_DATA/val" ] && [ -d "$DATA/imagenet/val" ]; then
-    echo "Copying ImageNet val to local SSD..."
-    mkdir -p "$LOCAL_DATA"
-    cp -r "$DATA/imagenet/val" "$LOCAL_DATA/"
-fi
-if [ -d "$LOCAL_DATA/val" ]; then
-    DATA_DIR=${LOCAL_DATA}
+# Reuse the 2048-D extraction from sbatch_vsc_imagenet_frozen_baseline.sh
+# (job 1146700 already produced this file). If it's missing, fall back to
+# extract — but stage the WHOLE imagenet/ tree, not just val/, because
+# torchvision.datasets.ImageNet needs ILSVRC2012_devkit_t12.tar.gz in root.
+OUT_2048="baselines/frozen_dino/imagenet_val_dino_r50.pt"
+
+if [ ! -f "${OUT_2048}" ]; then
+    LOCAL_DATA="/tmp/imagenet"
+    if [ ! -d "$LOCAL_DATA/val" ] && [ -d "$DATA/imagenet/val" ]; then
+        echo "Copying ImageNet (incl. devkit) to local SSD..."
+        mkdir -p "$LOCAL_DATA"
+        cp -r "$DATA/imagenet/." "$LOCAL_DATA/"
+    fi
+    if [ -d "$LOCAL_DATA/val" ]; then
+        DATA_DIR=${LOCAL_DATA}
+    else
+        DATA_DIR="$DATA/imagenet"
+    fi
+
+    echo "=== [1/3] extract frozen DINO 2048-d features on ImageNet val ==="
+    uv run python scripts/extract_frozen_backbone_embeddings.py \
+        --dataset imagenet \
+        --ckpt ${DINO_CKPT} \
+        --data_dir ${DATA_DIR} \
+        --split val \
+        --resize 224 \
+        --batch_size 256 \
+        --num_workers 12 \
+        --out ${OUT_2048}
 else
-    DATA_DIR="$DATA/imagenet"
+    echo "=== [1/3] reusing existing 2048-D features at ${OUT_2048} ==="
 fi
-
-OUT_2048="baselines/frozen_dino/imagenet_val_dino_r50_2048d.pt"
-
-echo "=== [1/3] extract frozen DINO 2048-d features on ImageNet val ==="
-uv run python scripts/extract_frozen_backbone_embeddings.py \
-    --dataset imagenet \
-    --ckpt ${DINO_CKPT} \
-    --data_dir ${DATA_DIR} \
-    --split val \
-    --resize 224 \
-    --batch_size 256 \
-    --num_workers 12 \
-    --out ${OUT_2048}
 
 for D in 32 128; do
     OUT_PCA="baselines/frozen_dino/imagenet_val_dino_r50_pca${D}d.pt"
