@@ -105,7 +105,9 @@ config per dataset; baseline rows are external methods.
 | CIFAR-100 | SCAN | 128 | 0.4120 | 0.523 | 0.639 | 0.745 | 3 |
 | TinyImageNet | **Ours** Poincaré + HypHC | 128 | 0.284 ± 0.003 | — | — | — | 3 |
 | TinyImageNet | SeCu † | (default) | 0.0688 ± 0.056 † | — | — | — | 3 |
+| TinyImageNet | SCAN | 128 | 0.037 ± 0.006 | 0.066 ± 0.007 | 0.113 ± 0.007 | 0.184 ± 0.010 | 3 |
 | ImageNet | **Ours** Poincaré + HypHC warm bk=0 | 128 | 0.299 ± 0.008 | — | — | — | 2 |
+| ImageNet | SCAN (released ckpt) | 128 | 0.513 | 0.610 | 0.696 | 0.769 | 1 |
 | ImageNet | Frozen DINO 2048-d (no train) | 2048 | — | — | — | — | 1 |
 | iNat18 | (collapsed at leaf level) | 128 | ≤ 0.002 | — | — | — | — |
 
@@ -118,10 +120,13 @@ config per dataset; baseline rows are external methods.
 > 3 seeds × {d=16, d=32, d=128}.
 >
 > **§5.3 missing:** R@k columns for non-CIFAR datasets; HIER on TI/ImageNet
-> (sbatches written 2026-04-28: `sbatch_tiny_imagenet_hier.sh`,
-> `sbatch_vsc_imagenet_hier.sh` — pending submission); UHML (Yan 2021) row
-> (CUB sanity sbatch written; full integration on our datasets requires
-> writing UHML adapters analogous to HIER's `baselines/hier_extensions/`).
+> (TI: local job 554382 OOM'd at ~50min on all 3 seeds at 164G — eval_10.pt
+> written but training crashed before epoch 100; resubmitted as job 559140
+> with 256G mem; ImageNet: VSC, queued/running); UHML (Yan 2021) row
+> (CUB sanity job 554383 failed instantly with `KeyError: VGG16-BN`
+> — UHML's models registry only knows `BN-Inception`; resubmitted as
+> job 559141; full integration on our datasets still requires writing
+> UHML adapters analogous to HIER's `baselines/hier_extensions/`).
 
 ### §5.4 Deep Clustering (hDP_ward, DP_ward, NMI, ARI)
 
@@ -140,10 +145,12 @@ config per dataset; baseline rows are external methods.
 | TinyImageNet | Ours Poincaré no-HypHC | 128 | 0.517 ± 0.018 | 0.464 ± 0.058 | +0.053 | 3 |
 | TinyImageNet | Ours Euclidean | 128 | 0.468 ± 0.120 | 0.487 ± 0.041 | −0.019 | 3 |
 | TinyImageNet | SeCu (incl. collapsed seed) | (default) | 0.160 ± 0.040 | — | — | 3 |
+| TinyImageNet | SCAN | 128 | 0.091 ± 0.003 | — | NMI 0.339 ± 0.008 | 3 |
 | ImageNet | **Ours** Poincaré + HypHC warm bk=0 (final) | 128 | **0.683 ± 0.012** | 0.467 ± 0.008 | **+0.217** | 2 |
 | ImageNet | Ours Poincaré no-HypHC bk=0 | 128 | 0.636 ± 0.033 | 0.429 ± 0.002 | +0.207 | 2 |
 | ImageNet | Ours Poincaré + HypHC cold bk=0 | 128 | 0.473 ± 0.011 | 0.448 ± 0.029 | +0.025 | 2 |
 | ImageNet | Ours Euclidean bk=0 | 128 | 0.519 ± 0.105 | 0.505 ± 0.088 | +0.014 | 2 |
+| ImageNet | SCAN (released ckpt) | 128 | 0.246 | — | NMI 0.722 / ARI 0.274 | 1 |
 | iNat18 | Ours Poincaré c=0.3 + HypHC warm | 128 | 0.452 ± 0.106 | 0.490 ± 0.096 | **−0.038** | 3 |
 | iNat18 | Ours Poincaré c=0.5 + HypHC warm | 128 | 0.260 ± 0.009 | 0.255 ± 0.013 | +0.005 | 3 |
 | iNat18 | Ours Poincaré c=0.1 + HypHC warm | 128 | 0.201 ± 0.029 | 0.176 ± 0.016 | +0.025 | 3 |
@@ -158,8 +165,10 @@ config per dataset; baseline rows are external methods.
 > contribution of clustering training. This replaces the dim-mismatched
 > "Frozen DINO 2048-D" comparison.
 >
-> **§5.4 missing:** SCAN on TI, HIER on TI/ImageNet, Chami end-to-end on
+> **§5.4 missing:** HIER on TI/ImageNet, Chami end-to-end on
 > any dataset (running), gHHC (paper.md says intractable — cite, don't run).
+> SCAN now landed for TI (3 seeds × d=128 retrain) and ImageNet (released
+> ckpt, n=1).
 
 ### §5.4 Dimensionality Ablation (Ours, hDP_ward by d)
 
@@ -198,7 +207,7 @@ baselines shrink with d.
 | §4.2.3 rectified LCA | **NO** | TI/ImageNet/iNat ablation submitted, awaiting results |
 | §4.2.4 scalability | YES | iNat (8142 classes) and ImageNet (1.28M images) trained — Chami's O(n²) explicitly intractable |
 | §5.3 metric learning | partial | R@k columns for non-CIFAR datasets, UHML baseline |
-| §5.4 deep clustering | partial | SCAN on TI, HIER on TI/ImageNet, Chami end-to-end (running) |
+| §5.4 deep clustering | partial | HIER on TI/ImageNet, Chami end-to-end (running); SCAN landed for TI (n=3) and ImageNet (released ckpt, n=1) |
 | §5.4 dim ablation | partial | TI d=16/d=32 (running), ImageNet d=16 (running) |
 | Manifold-agnostic claim | **NO** | Hyperboloid runs only exist on CIFAR-100 |
 
@@ -313,6 +322,7 @@ locally retrained.
 | method | d | hDP_ward | n@1 (fine) | NMI (ward) | n seeds | source |
 |---|---|---|---|---|---|---|
 | SeCu † | (default) | 0.1600 ± 0.0404 | 0.0688 ± 0.0559 | 0.2962 ± 0.2178 | 3 | published recipe, seeds {42, 56, 99} |
+| SCAN   | 128 | 0.0914 ± 0.0033 | 0.0372 ± 0.0063 | 0.3389 ± 0.0080 | 3 | published recipe, seeds {42, 56, 99} |
 
 > † **Caveat — the n=3 aggregate above still includes a collapsed seed.**
 > `secu-tiny_imagenet-s99` (slurm 541124) trained 400 epochs without
@@ -373,6 +383,19 @@ no-HypHC (best bk=0 = 0.636) by **+0.05**.
 
 Adding seed=44 to all 8 conditions is in flight as job 541955 (8 jobs at
 %4 throttle, ETA ~24h on local cluster).
+
+### External baselines (ImageNet)
+
+| method | d | hDP_ward | n@1 (fine) | NMI (ward) | ARI (ward) | n seeds | source |
+|---|---|---|---|---|---|---|---|
+| SCAN (released ckpt) | 128 | 0.2465 | 0.5128 | 0.7219 | 0.2739 | 1 | authors' published checkpoint, deterministic eval (50k val) |
+
+> SCAN ImageNet uses the official released checkpoint, evaluated through our
+> pipeline on the full 50k val split. Strong on retrieval (n@1 = 0.51, beats
+> our best by +0.21) and weak on hierarchy (hDP_ward = 0.246, our best
+> beats it by +0.44). Same axis split as TI and CIFAR-100 — clustering-
+> head methods optimize fine cluster separability; hyperbolic methods
+> optimize hierarchy.
 
 ### Frozen-backbone reference (matched-architecture ce=0 anchor)
 
@@ -483,6 +506,16 @@ training result to report under the current architecture. Options:
    architecture, longer pretrain, schedule change) before quoting any
    iNat row.
 
+**Follow-up (submitted 2026-04-29, VSC, results pending):**
+- `sbatch_vsc_inat18_diag_sweep_a.sh` — head/training axis at fixed c=0.3
+  (d=256, cw=1.0, lr=1e-5, Hyperboloid manifold, 4 conditions × 3 seeds).
+  Uses existing FB DINO ResNet50 features. Tests whether the regression
+  is a head/optimizer issue or a backbone capacity ceiling.
+- `sbatch_vsc_inat18_dinov2_frozen.sh` — DINOv2 ViT-L/14 features
+  (1024-d → PCA to {128, 256}) evaluated through the iNat hierarchy
+  pipeline. Tests whether a stronger pretrained backbone shifts the
+  ce=0 anchor enough to make training-on-top worthwhile.
+
 On the auxiliary metric (`agg_ward_NMI`):
 - Frozen FB DINO 2048-d: 0.943
 - Trained Euclidean d=128: 0.877
@@ -525,7 +558,7 @@ ce=20, which the per-checkpoint embeddings already support.
 
 ---
 
-## Pending experiments (2026-04-28)
+## Pending experiments (2026-04-29)
 
 Active or staged, in priority order:
 
@@ -533,12 +566,12 @@ Active or staged, in priority order:
 |---|---|---|---|
 | 541955 | ImageNet d=128 | seed=44 H2H (8 tasks) | local, running, ETA ~24h |
 | 541956 | ImageNet d=16 | full H2H grid (16 tasks, seeds 42/43) | local, running, ETA ~5d |
-| (staged) | iNat18 | Diagnostic Sweep A (head/training axis: d=256, cw=1.0, lr=1e-5, Hyperboloid; 12 runs) — `sbatch_vsc_inat18_diag_sweep_a.sh` | VSC, written, pending submission |
-| (staged) | iNat18 | DINOv2 ViT-L/14 frozen baseline + matched-dim PCA — `sbatch_vsc_inat18_dinov2_frozen.sh` | VSC, written, pending submission |
-| (staged) | TinyImageNet | HIER baseline (3 seeds × d=128) — `sbatch_tiny_imagenet_hier.sh` | local, written, pending submission |
-| (staged) | ImageNet | HIER baseline (3 seeds × d=128) — `sbatch_vsc_imagenet_hier.sh` | VSC, written, pending submission |
-| (staged) | CUB | UHML (Yan 2021) sanity — `sbatch_uhml_cub_sanity.sh` | local, written, pending submission |
-| (staged) | TinyImageNet | SCAN baseline | not yet drafted |
+| 559140 | TinyImageNet | HIER baseline (3 seeds × d=128) — `sbatch_tiny_imagenet_hier.sh` | local, queued; resubmit at 256G after 554382 OOM'd at 164G |
+| 559141 | CUB | UHML (Yan 2021) sanity — `sbatch_uhml_cub_sanity.sh` | local, queued; resubmit with `--net BN-Inception` after 554383 hit unknown-network KeyError |
+| (VSC) | ImageNet | HIER baseline (3 seeds × d=128) — `sbatch_vsc_imagenet_hier.sh` | submitted 2026-04-29 |
+| (VSC) | iNat18 | Diagnostic Sweep A (head/training axis: d=256, cw=1.0, lr=1e-5, Hyperboloid; 12 runs) — `sbatch_vsc_inat18_diag_sweep_a.sh` | submitted 2026-04-29 |
+| (VSC) | iNat18 | DINOv2 ViT-L/14 frozen baseline + matched-dim PCA — `sbatch_vsc_inat18_dinov2_frozen.sh` | submitted 2026-04-29 |
+| (landed) | TinyImageNet / ImageNet | SCAN baseline | TI 3-seed retrain + ImageNet released ckpt eval, see §5.3/§5.4 |
 | (staged) | TI / ImageNet / iNat18 | LCA-rectification ablation (`ours` vs `chami`) | submitted (lca_abl_ti, lca_abl_imnet running) |
 | (staged) | ImageNet | Schedule-fix verification on hyphc_warm overshoot | not yet drafted |
 

@@ -526,11 +526,29 @@ Two takeaways:
    *hierarchy-only* result — claiming retrieval-grade learning at 8142
    classes would be a misread of the metrics.
 
-Caveat before claiming a "win" on iNat: frozen FB DINO ResNet50 (no
-training) on the same eval pipeline needs to land first as a comparison
-point. If frozen DINO already hits hDP_ward ≈ 0.45+ at matched dim, the
-rescue sweep adds nothing on top and the row should be dropped or
-reframed as "trained does not beat frozen on iNat hierarchy."
+**ce=0 anchor reframes the win/loss.** Once the matched-architecture
+ce=0 anchor (frozen encoder + random-init clustering head, evaluated
+through our pipeline) was added per dataset, the c=0.3 "rescue win"
+turned out to be **a regression**: ce=0=0.490, final=0.452 (Δ=−0.038).
+c=0.1 and c=0.5 are within noise of their ce=0 anchors. So none of the
+three curvatures actually learn — they sit at or below their starting
+points. This is the deciding evidence that the bottleneck is not
+curvature: the head is starting from a tree-aligned configuration that
+training cannot improve on, regardless of c.
+
+**Follow-up sweeps submitted 2026-04-29 (VSC):**
+- `sbatch_vsc_inat18_diag_sweep_a.sh` — head/training axis sweep at
+  fixed c=0.3 (d=256, cw=1.0, lr=1e-5, Hyperboloid manifold, 4 conds ×
+  3 seeds). Same FB DINO features. Tests whether removing the Poincaré
+  boundary singularity (Hyperboloid) and increasing dim/head capacity
+  unblocks training. If this still doesn't beat ce=0, the bottleneck is
+  the backbone, not the head.
+- `sbatch_vsc_inat18_dinov2_frozen.sh` — DINOv2 ViT-L/14 frozen
+  baseline (1024-d, PCA to 128/256). DINOv2 was trained on LVD-142M
+  which contains many fine-grained species classes; FB DINO was trained
+  on ImageNet-1k, which has none. Establishes whether a stronger
+  backbone moves the ce=0 anchor enough that training-on-top has any
+  hope of yielding a positive Δ on iNat.
 
 ### Hydra struct-mode trap: `hyperbolic_smoothing` lives under `architecture`
 The sbatch `sbatch_cifar100_poincare_d{16,32}.sh` scripts originally had
@@ -611,6 +629,31 @@ sharply and the mean to rise as the collapse is excluded.
 random failure: LR schedule on the cluster head (the climb starts at the
 LR-decay boundary), cluster-init scheme (k-means warm-start vs. random),
 gradient clipping on the head.
+
+### SCAN TinyImageNet retrains and ImageNet released checkpoint — same n@1-vs-hierarchy split as CIFAR
+Three SCAN TinyImageNet retrains (seeds {42, 56, 99}, default recipe, d=128,
+results/scan-tiny_imagenet-s{42,56,99}.json) and one SCAN ImageNet eval from
+the authors' released checkpoint (results/scan-imagenet-released.json,
+50k val):
+
+| dataset | n@1 (fine) | hDP_ward | ward NMI | n seeds |
+|---|---|---|---|---|
+| SCAN TinyImageNet | 0.0372 ± 0.0063 | 0.0914 ± 0.0033 | 0.339 ± 0.008 | 3 |
+| SCAN ImageNet (released) | 0.5128 | 0.2465 | 0.7219 | 1 |
+
+Two findings:
+1. **SCAN TI is essentially leaf-collapsed.** n@1 = 0.037 vs random 1/200 =
+   0.005 (≈7× random) and hDP_ward = 0.091 — both far below SCAN's CIFAR-100
+   numbers (n@1 0.41, hDP_ward 0.35). The default recipe doesn't transfer
+   to 200 fine classes at this dim. Three seeds are very tight (σ ≈ 0.003
+   on hDP_ward), so this is reproducible, not a bad seed.
+2. **SCAN ImageNet keeps the n@1-vs-hDP split that holds across all
+   datasets.** SCAN released-ckpt n@1 = 0.51 beats our best ImageNet n@1
+   (Poincaré + HypHC warm bk=0 = 0.299) by **+0.21**, but our best
+   hDP_ward = 0.683 beats SCAN's 0.247 by **+0.44**. Same shape on
+   TI (we lead +0.62 on hDP, lose −0.25 on n@1 vs SCAN) and CIFAR-100.
+   Cluster-head methods optimize cluster separability and pick up fine
+   discrimination; hyperbolic-head methods optimize hierarchy.
 
 ### SeCu CIFAR-100 d=16 ≈ d=32 on hierarchy, d=32 only wins n@1
 The MEMORY note "latent=32 beats 16" is true on n@1 (+0.04) but **a wash

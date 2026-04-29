@@ -9,7 +9,7 @@
 #SBATCH --output=logs/imnet_sched_fix_%A_%a.out
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
-#SBATCH --mem=348G
+#SBATCH --mem=512G
 #SBATCH --array=0-5%3
 
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)

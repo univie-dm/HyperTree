@@ -25,7 +25,9 @@ module load miniforge
 # This sbatch:
 #   1. Clones the repo to baselines/UnHyperML/ (idempotent — re-runs no-op)
 #   2. Runs UHML's stock CUB training recipe with their default
-#      hyperparameters (--net VGG16-BN, --loss branch, --c 1.0, --K 2)
+#      hyperparameters (--net BN-Inception, --loss branch, --c 1.0, --K 2).
+#      UHML's models registry only knows BN-Inception (the original paper's
+#      backbone); 'VGG16-BN' was a misread of their CUB recipe.
 #   3. Saves checkpoints to logs/uhml/cub/
 #
 # Purpose: prove the UHML codebase trains in our environment before doing
@@ -59,11 +61,11 @@ fi
 
 mkdir -p ${REPO_ROOT}/logs/uhml/cub
 
-echo "=== [2/2] UHML CUB train (VGG16-BN, c=1.0, K=2, 600ep) ==="
+echo "=== [2/2] UHML CUB train (BN-Inception, c=1.0, K=2, 600ep) ==="
 uv run python train.py \
     --data cub \
     --data_root DataSet \
-    --net VGG16-BN \
+    --net BN-Inception \
     --loss branch \
     --hyperbolic True \
     --c 1.0 --K 2 --omega 0.1 \

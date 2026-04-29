@@ -2,7 +2,7 @@
 #SBATCH --job-name=hier_ti
 #SBATCH --time=20:00:00
 #SBATCH -c 16
-#SBATCH --mem=164G
+#SBATCH --mem=256G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint='nvidia-h100|nvidia-h200'
 #SBATCH --output=logs/hier_ti_%A_%a.log
