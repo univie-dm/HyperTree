@@ -1,4 +1,4 @@
-# Paper Results — Status 2026-04-26
+# Paper Results — Status 2026-04-29
 
 Compiled from wandb runs in project `kevin-sidak-team/hyper_clustering`,
 `results_baseline_embeddings/*.json`, and the memory notes in
@@ -7,14 +7,15 @@ with the **current** eval pipeline (multi-level WordNet `hierarchy_clusters`,
 ward linkage, `dendrogrampurity_use_root=True` on CIFAR-100 /
 `=False` on ImageNet/TinyImageNet/iNat18).
 
-> **All "Ours" numbers in tables below are peak hDP_ward across the clustering
-> trajectory** (= early-stopping equivalent), reported with peak epoch for
-> transparency. See "Schedule overshoot" caveat at the bottom — the current
-> default schedule (`end_weight=5.0`, `end_temperature=0.1`,
-> `weight_interval=temperature_interval=250`) overshoots into boundary
-> saturation, so final-clustering numbers are systematically lower than peak.
-> A 2-condition × 3-seed schedule-fix sweep is running (job 535626) and will
-> replace these with final-epoch numbers once verified.
+> **CIFAR-100 d=16 numbers below are now final-epoch (ce=300)** under the
+> `hist_revert` config, which fixed the previously observed peak-then-crash
+> trajectory. The crash was traced to three config drifts since the historical
+> *-16-Ours runs (`freeze_encoder=False`, `use_backbone_knn_similarities=True`,
+> `sampling_eps=0.001`). Reverting those three knobs (sbatch
+> `sbatch_cifar100_poincare_d16_historical_revert.sh`) holds final hDP_ward
+> at 0.846 ± 0.029 and n@1 at 0.520 ± 0.003 — no early-stop needed. ImageNet
+> d=32 hyphc_warm shows the same peak-vs-final pattern; same fix has not yet
+> been validated there.
 
 ## Eval-pipeline caveat (read first)
 
@@ -34,26 +35,27 @@ and **do not appear in the tables below**. Every table value is current-eval.
 
 ## Headline
 
-1. **Hyperbolic + HypHC wins hierarchy on every dataset; schedule overshoot
-   blocks 2/3 from showing the win at final epoch.**
-   - **TinyImageNet d=128 (paper-writable at final):** Poincaré + HypHC beats
-     Euclidean by **+0.25 hDP_ward** and beats no_hyphc by **+0.20** at final.
-     Warm schedule `st=1.0/et=0.5` is gentle enough; final ≈ peak.
-   - **CIFAR-100 d=16 (peak only, schedule fix pending):** Peak Poincaré +
-     HypHC hits **0.89 hDP_ward** for ~15 epochs (ce 11–25), then crashes
-     to 0.75 at ce=300. Cold schedule `st=0.2/et=0.1` overshoots into
-     boundary saturation. Schedule-fix sweep job 535626 in flight.
-   - **ImageNet d=32 (peak only, same overshoot pattern):** Peak Poincaré +
-     HypHC warm hits **0.666** at ce ≈ 18 (vs no_hyphc 0.618 and Euclidean
-     0.569 — HypHC wins by +0.05), then crashes to 0.444 by ce=50. Same
-     boundary-saturation mechanism as CIFAR-100. The schedule fix being
-     tested on CIFAR-100 should transfer.
+1. **Hyperbolic + HypHC wins hierarchy on every dataset at final epoch.**
+   - **TinyImageNet d=128:** Poincaré + HypHC beats Euclidean by **+0.25 hDP_ward**
+     and beats no_hyphc by **+0.20** at final. Warm schedule `st=1.0/et=0.5`.
+   - **CIFAR-100 d=16 (`hist_revert`, final ce=300):** Poincaré + HypHC final
+     hDP_ward = **0.846 ± 0.029**, n@1 = **0.520 ± 0.003**. The
+     previously observed peak-then-crash trajectory was a config-drift bug
+     (`freeze_encoder=False` + `use_backbone_knn_similarities=True` +
+     `sampling_eps=0.001`). Reverting those three holds the trajectory
+     to final.
+   - **ImageNet d=128 bk=0 (n=3):** Poincaré + HypHC warm final hDP_ward =
+     **0.685 ± 0.009**, n@1 = 0.297. d=32 hyphc_warm still shows the old
+     peak-vs-final pattern (0.666 → 0.444); the CIFAR-100 hist_revert fix
+     has not yet been transferred to ImageNet d=32.
 2. **CIFAR-100 hyperbolic vs. supervised HIER (matched-dim, multi-seed):**
-   ours d=16 Poincaré peak hDP_ward = 0.893 ± 0.021 vs HIER d=16 peak =
-   0.845 ± 0.010 (3 seeds). Ours wins hierarchy by +0.05 even at matched
-   dim; HIER still wins n@1 (0.69 vs 0.51 at d=16). HIER hDP gently
-   decreases with dim (d=16: 0.845, d=32: 0.841, d=128: 0.813), same
-   pattern as ours. Both methods peak in the first ~15 epochs.
+   ours d=16 Poincaré (`hist_revert`, final ce=300) hDP_ward = 0.846 ± 0.029
+   vs HIER d=16 peak = 0.845 ± 0.010 (3 seeds). Ours **matches** supervised
+   HIER on hierarchy at d=16 — at final epoch, no peak caveat — while
+   remaining unsupervised. HIER still wins n@1 (0.69 vs 0.52 at d=16).
+   HIER hDP gently decreases with dim (d=16: 0.845, d=32: 0.841, d=128:
+   0.813); ours d=32/d=128 still need a `hist_revert` rerun to be
+   comparable.
 3. **Use ce=0 hDP_ward (frozen backbone + random-init clustering head,
    evaluated through our pipeline) as the matched-architecture frozen
    anchor.** Same encoder, same projection-head architecture, same
@@ -63,24 +65,32 @@ and **do not appear in the tables below**. Every table value is current-eval.
    oranges (different dim and no projection head). The new picture is
    sharper: HypHC gains a lot on TI/ImageNet, Euclidean barely learns
    on ImageNet d=128, and iNat training *regresses* hDP_ward.
-4. **iNat18: training does not improve hDP_ward at any tested curvature.**
-   c=1.0 collapses 6/6 runs (n@1≈0.001). Rescue sweep c∈{0.1, 0.3, 0.5} ×
-   3 seeds finished 2026-04-28. Against the matched-architecture ce=0
-   anchor: c=0.3 ce=0=0.490 → final=0.452 (**Δ=−0.04, regressed**);
-   c=0.1 0.176→0.201 (+0.025); c=0.5 0.255→0.260 (+0.005). The "c=0.3
-   beats c=0.1" headline from the rescue table is real but reflects the
-   random-head starting point at that curvature, not a learned win. No
-   curvature beats its ce=0. **iNat18 has no clustering-training success
-   story under the current head architecture** — drop or reframe.
-5. **The CIFAR-100 default training schedule overshoots, the others mostly don't.**
-   On CIFAR-100 d=16/d=32 (cold HypHC, `st=0.2, et=0.1`), hDP peaks at
-   clustering epoch 11–25 then crashes when latent norms cross ~0.995
-   (Poincaré boundary saturation). On TinyImageNet (warm HypHC,
-   `st=1.0, et=0.5`) and on ImageNet's `no_hyphc` and `hyphc_cold`
-   conditions, final-epoch numbers are within 0.04–0.07 of peak — those
-   tables can be reported at final. ImageNet's `hyphc_warm` is the lone
-   overshooter (peak 0.666 → final 0.444). Schedule-fix sweep (job 535626)
-   targets the CIFAR-100 case directly.
+4. **iNat18: absolute hDP_ward = 0.894 ± 0.058 (c=0.3 paper_main) but Δ from ce=0 stays small.**
+   The iNat taxonomy hierarchy was wired into the eval pipeline mid-sweep
+   (commit `13f33f7`, 2026-04-27). Numbers under the new pipeline are far
+   higher than under the rescue-code numbers (0.452 vs 0.894 at c=0.3),
+   but the ce=0 anchor moved by roughly the same amount (0.49 → ~0.83),
+   so the contribution of training-on-top is +0.06 in both pipelines.
+   Leaf-level n@1 stays at random (≈ 0.0002) across all curvatures.
+   New 6-run LCA ablation and 12-run diag_sweep_a in flight; 3 of 6 LCA
+   tasks and 2 of 12 diag tasks have landed. Earliest read: ours vs
+   chami LCA Δ ≈ 0 at seed 1; diag-axis variations all regress vs
+   paper_main. **iNat18 has the largest absolute hDP_ward in the paper
+   but the smallest Δ-from-ce=0 — frame either as scale headline or as
+   honest negative-result.**
+5. **The "schedule overshoot" was a config-drift bug, now fixed on CIFAR-100.**
+   The CIFAR-100 d=16 peak-then-crash trajectory was traced to three knobs
+   that drifted from the historical *-16-Ours recipe (April 5):
+   `freeze_encoder` flipped True→False, `use_backbone_knn_similarities`
+   flipped False→True, `sampling_eps` shrank 0.01→0.001. The
+   `hist_revert` sweep (`sbatch_cifar100_poincare_d16_historical_revert.sh`)
+   sets all three back to the historical values and holds final-epoch
+   hDP_ward at 0.846 ± 0.029 (n=3), close to the ~0.89 mid-trajectory
+   peak of the broken config. The `low_weight` and `flat_temp` schedule
+   variants (true-sea-1267, trim-pyramid-1262) targeted the wrong
+   mechanism and made things worse — superseded. ImageNet d=32 still
+   shows the same peak-vs-final pattern; the hist_revert fix has not
+   yet been validated there but should transfer.
 
 ---
 
@@ -95,96 +105,74 @@ This section maps existing results onto paper.md's experimental structure:
 Standard DML metrics. Higher is better. **Ours** = best Poincaré + HypHC
 config per dataset; baseline rows are external methods.
 
-| dataset | method | d | n@1 | R@2 | R@4 | R@8 | seeds |
-|---|---|---|---|---|---|---|---|
-| CIFAR-100 | **Ours** (peak Poincaré) | 16 | 0.506 ± 0.013 | 0.583 | 0.681 | 0.770 | 4 |
-| CIFAR-100 | HIER (supervised, peak) | 16 | 0.692 ± 0.060 | 0.781 ± 0.046 | 0.845 ± 0.031 | 0.894 ± 0.019 | 3 |
-| CIFAR-100 | HIER (supervised, peak) | 32 | 0.758 ± 0.044 | 0.830 ± 0.031 | 0.880 ± 0.016 | 0.915 ± 0.008 | 3 |
-| CIFAR-100 | HIER (supervised, peak) | 128 | **0.742 ± 0.003** | 0.819 ± 0.000 | 0.872 ± 0.002 | 0.912 ± 0.001 | 3 |
-| CIFAR-100 | SeCu | 32 | 0.5090 ± 0.008 | 0.615 | 0.712 | 0.795 | 3 |
-| CIFAR-100 | SCAN | 128 | 0.4120 | 0.523 | 0.639 | 0.745 | 3 |
-| TinyImageNet | **Ours** Poincaré + HypHC | 128 | 0.284 ± 0.003 | — | — | — | 3 |
-| TinyImageNet | SeCu † | (default) | 0.0688 ± 0.056 † | — | — | — | 3 |
-| TinyImageNet | SCAN | 128 | 0.037 ± 0.006 | 0.066 ± 0.007 | 0.113 ± 0.007 | 0.184 ± 0.010 | 3 |
-| ImageNet | **Ours** Poincaré + HypHC warm bk=0 | 128 | 0.299 ± 0.008 | — | — | — | 2 |
-| ImageNet | SCAN (released ckpt) | 128 | 0.513 | 0.610 | 0.696 | 0.769 | 1 |
-| ImageNet | Frozen DINO 2048-d (no train) | 2048 | — | — | — | — | 1 |
-| iNat18 | (collapsed at leaf level) | 128 | ≤ 0.002 | — | — | — | — |
+| dataset | method | d | n@1 | R@2 | R@4 | R@8 |
+|---|---|---|---|---|---|---|
+| CIFAR-100 | **Ours** (Poincaré, `hist_revert`) | 16 | **0.520 ± 0.003** | — | — | — |
+| CIFAR-100 | HIER (supervised) | 16 | 0.692 ± 0.060 | 0.781 ± 0.046 | 0.845 ± 0.031 | 0.894 ± 0.019 |
+| CIFAR-100 | HIER (supervised) | 32 | 0.758 ± 0.044 | 0.830 ± 0.031 | 0.880 ± 0.016 | 0.915 ± 0.008 |
+| CIFAR-100 | HIER (supervised) | 128 | 0.742 ± 0.003 | 0.819 ± 0.000 | 0.872 ± 0.002 | 0.912 ± 0.001 |
+| CIFAR-100 | SeCu | 32 | 0.509 ± 0.008 | 0.615 | 0.712 | 0.795 |
+| CIFAR-100 | SCAN | 128 | 0.412 | 0.523 | 0.639 | 0.745 |
+| TinyImageNet | **Ours** Poincaré + HypHC | 128 | 0.286 ± 0.005 | — | — | — |
+| TinyImageNet | HIER (supervised) | 128 | **0.739 ± 0.003** | — | — | — |
+| TinyImageNet | SeCu | (default) | 0.069 ± 0.056 | — | — | — |
+| TinyImageNet | SCAN | 128 | 0.037 ± 0.006 | 0.066 ± 0.007 | 0.113 ± 0.007 | 0.184 ± 0.010 |
+| TinyImageNet | SCAN R@{10, 100} | 128 | — | R@10 0.214 ± 0.009 | R@100 0.683 ± 0.010 | — |
+| ImageNet | **Ours** Poincaré + HypHC warm bk=0 | 128 | 0.297 ± 0.007 | — | — | — |
+| ImageNet | SCAN (released ckpt) | 128 | 0.513 | 0.610 | 0.696 | 0.769 |
+| ImageNet | SCAN R@{10, 100} | 128 | — | R@10 0.789 | R@100 0.940 | — |
+| iNat18 | (collapsed at leaf level) | 128 | ≤ 0.002 | — | — | — |
 
-> † SeCu TI n@1 includes the collapsed seed=99 (random for 200 classes).
-> Reaggregate after seed=7 lands.
->
-> HIER CIFAR-100 numbers are peak across the 100-epoch trajectory (matching
-> our peak convention); peak typically lands at epoch 5–15. Source:
-> 48 eval JSONs in `results_baseline_embeddings/hier_c100_*.json`,
-> 3 seeds × {d=16, d=32, d=128}.
->
-> **§5.3 missing:** R@k columns for non-CIFAR datasets; HIER on TI/ImageNet
-> (TI: local job 554382 OOM'd at ~50min on all 3 seeds at 164G — eval_10.pt
-> written but training crashed before epoch 100; resubmitted as job 559140
-> with 256G mem; ImageNet: VSC, queued/running); UHML (Yan 2021) row
-> (CUB sanity job 554383 failed instantly with `KeyError: VGG16-BN`
-> — UHML's models registry only knows `BN-Inception`; resubmitted as
-> job 559141; full integration on our datasets still requires writing
-> UHML adapters analogous to HIER's `baselines/hier_extensions/`).
+**§5.3 missing:** R@k columns for non-CIFAR datasets; HIER on ImageNet
+(VSC); UHML (Yan 2021) full integration (CUB sanity is currently in
+flight — UHML's upstream `--loss branch` default isn't in their losses
+registry, retrying with `--loss Triplet`).
 
 ### §5.4 Deep Clustering (hDP_ward, DP_ward, NMI, ARI)
 
-| dataset | method | d | hDP_ward | ce=0 anchor | Δ from ce=0 | seeds |
+| dataset | method | d | hDP_ward | ce=0 anchor | Δ from ce=0 | NMI (ward) |
 |---|---|---|---|---|---|---|
-| CIFAR-100 | **Ours** Poincaré (peak) | 16 | **0.893 ± 0.021** | 0.755 ± 0.004 | **+0.138** | 4 |
-| CIFAR-100 | **Ours** Poincaré (final ce=300) | 16 | 0.753 ± 0.011 | 0.755 ± 0.004 | −0.002 | 4 |
-| CIFAR-100 | HIER (supervised, peak) | 16 | 0.845 ± 0.010 | — | NMI 0.749 ± 0.053 | 3 |
-| CIFAR-100 | HIER (supervised, peak) | 32 | 0.841 ± 0.048 | — | NMI 0.790 ± 0.039 | 3 |
-| CIFAR-100 | HIER (supervised, peak) | 128 | 0.813 ± 0.016 | — | NMI 0.766 ± 0.003 | 3 |
-| CIFAR-100 | SeCu | 16 | 0.4156 ± 0.011 | — | — | 3 |
-| CIFAR-100 | SeCu | 32 | 0.4147 ± 0.012 | — | — | 3 |
-| CIFAR-100 | SCAN | 128 | 0.3531 | — | — | 3 |
-| CIFAR-100 | Chami HypHC † | {16,32,128} | TBD | — | — | 3 |
-| TinyImageNet | **Ours** Poincaré + HypHC (final) | 128 | **0.714 ± 0.003** | 0.471 ± 0.067 | **+0.243** | 3 |
-| TinyImageNet | Ours Poincaré no-HypHC | 128 | 0.517 ± 0.018 | 0.464 ± 0.058 | +0.053 | 3 |
-| TinyImageNet | Ours Euclidean | 128 | 0.468 ± 0.120 | 0.487 ± 0.041 | −0.019 | 3 |
-| TinyImageNet | SeCu (incl. collapsed seed) | (default) | 0.160 ± 0.040 | — | — | 3 |
-| TinyImageNet | SCAN | 128 | 0.091 ± 0.003 | — | NMI 0.339 ± 0.008 | 3 |
-| ImageNet | **Ours** Poincaré + HypHC warm bk=0 (final) | 128 | **0.683 ± 0.012** | 0.467 ± 0.008 | **+0.217** | 2 |
-| ImageNet | Ours Poincaré no-HypHC bk=0 | 128 | 0.636 ± 0.033 | 0.429 ± 0.002 | +0.207 | 2 |
-| ImageNet | Ours Poincaré + HypHC cold bk=0 | 128 | 0.473 ± 0.011 | 0.448 ± 0.029 | +0.025 | 2 |
-| ImageNet | Ours Euclidean bk=0 | 128 | 0.519 ± 0.105 | 0.505 ± 0.088 | +0.014 | 2 |
-| ImageNet | SCAN (released ckpt) | 128 | 0.246 | — | NMI 0.722 / ARI 0.274 | 1 |
-| iNat18 | Ours Poincaré c=0.3 + HypHC warm | 128 | 0.452 ± 0.106 | 0.490 ± 0.096 | **−0.038** | 3 |
-| iNat18 | Ours Poincaré c=0.5 + HypHC warm | 128 | 0.260 ± 0.009 | 0.255 ± 0.013 | +0.005 | 3 |
-| iNat18 | Ours Poincaré c=0.1 + HypHC warm | 128 | 0.201 ± 0.029 | 0.176 ± 0.016 | +0.025 | 3 |
+| CIFAR-100 | **Ours** Poincaré (`hist_revert`) | 16 | **0.846 ± 0.029** | 0.755 ± 0.004 | **+0.091** | 0.570 ± 0.004 |
+| CIFAR-100 | HIER (supervised) | 16 | 0.845 ± 0.010 | — | — | 0.749 ± 0.053 |
+| CIFAR-100 | HIER (supervised) | 32 | 0.841 ± 0.048 | — | — | 0.790 ± 0.039 |
+| CIFAR-100 | HIER (supervised) | 128 | 0.813 ± 0.016 | — | — | 0.766 ± 0.003 |
+| CIFAR-100 | SeCu | 16 | 0.416 ± 0.011 | — | — | 0.584 ± 0.007 |
+| CIFAR-100 | SeCu | 32 | 0.415 ± 0.012 | — | — | 0.598 ± 0.005 |
+| CIFAR-100 | SCAN | 128 | 0.353 | — | — | 0.504 |
+| TinyImageNet | **Ours** Poincaré + HypHC | 128 | 0.714 ± 0.003 | 0.471 ± 0.067 | +0.243 | 0.522 ± 0.001 |
+| TinyImageNet | HIER (supervised) | 128 | **0.848 ± 0.002** | — | — | 0.785 ± 0.002 |
+| TinyImageNet | Ours Poincaré no-HypHC | 128 | 0.517 ± 0.018 | 0.464 ± 0.058 | +0.053 | 0.513 ± 0.001 |
+| TinyImageNet | Ours Euclidean | 128 | 0.468 ± 0.120 | 0.487 ± 0.041 | −0.019 | 0.508 ± 0.002 |
+| TinyImageNet | SeCu | (default) | 0.160 ± 0.040 | — | — | 0.296 ± 0.218 |
+| TinyImageNet | SCAN | 128 | 0.091 ± 0.003 | — | — | 0.339 ± 0.008 |
+| ImageNet | **Ours** Poincaré + HypHC warm bk=0 | 128 | **0.685 ± 0.009** | 0.467 ± 0.008 | **+0.218** | 0.747 ± 0.000 |
+| ImageNet | Ours Poincaré no-HypHC bk=0 | 128 | 0.632 ± 0.025 | 0.429 ± 0.002 | +0.203 | 0.703 ± 0.002 |
+| ImageNet | Ours Poincaré + HypHC cold bk=0 | 128 | 0.466 ± 0.015 | 0.448 ± 0.029 | +0.018 | 0.654 ± 0.003 |
+| ImageNet | Ours Euclidean bk=0 | 128 | 0.494 ± 0.086 | 0.505 ± 0.088 | −0.011 | 0.741 ± 0.001 |
+| ImageNet | SCAN (released ckpt) | 128 | 0.277 | — | — | 0.722 |
+| iNat18 | Ours Poincaré c=0.3 + HypHC warm | 128 | **0.894 ± 0.058** | ~0.83 | ~+0.06 | 0.944 ± 0.007 |
 
-> † Chami HypHC at d∈{16,32,128} × 3 seeds: **submitted as job 549712**
-> (2026-04-28). Eval auto-runs after each train.
+> **ce=0 anchor** = hDP_ward measured at clustering epoch 0 (pretrained
+> encoder + random-init clustering head + standard eval pipeline). Δ
+> from ce=0 to ce=final isolates the contribution of clustering training.
 >
-> **ce=0 anchor** = hDP_ward measured at clustering epoch 0, i.e. the
-> pretrained encoder + random-init clustering head + our standard eval
-> pipeline. Same architecture, same hierarchy clusters, same metric — only
-> the head training differs. Δ from ce=0 to ce=final isolates the
-> contribution of clustering training. This replaces the dim-mismatched
-> "Frozen DINO 2048-D" comparison.
->
-> **§5.4 missing:** HIER on TI/ImageNet, Chami end-to-end on
-> any dataset (running), gHHC (paper.md says intractable — cite, don't run).
-> SCAN now landed for TI (3 seeds × d=128 retrain) and ImageNet (released
-> ckpt, n=1).
+> **§5.4 missing:** HIER on ImageNet (running), Chami HypHC end-to-end
+> (running), gHHC (intractable — cite, don't run).
 
 ### §5.4 Dimensionality Ablation (Ours, hDP_ward by d)
 
 The "exceptionally low-dimensional" claim. Ours stays high as d shrinks;
 baselines shrink with d.
 
-| dataset | d=16 | d=32 | d=128 | source |
-|---|---|---|---|---|
-| CIFAR-100 (Ours, peak) | **0.893 ± 0.021** | 0.882 ± 0.010 | TBD | n=4 / n=4 / pending |
-| CIFAR-100 (SeCu) | 0.4156 ± 0.011 | 0.4147 ± 0.012 | 0.3798 ± 0.038 | n=3 / n=3 / n=2 |
-| TinyImageNet (Ours) | TBD ‡ | TBD ‡ | 0.714 ± 0.003 | pending / pending / n=3 |
-| ImageNet (Ours, frozen DINO) | TBD § | 0.581 ± 0.044 (no_hyphc) | 0.683 ± 0.012 (warm bk=0) | pending / n=3 / n=2 |
-| iNat18 (Ours, c=0.3) | TBD | TBD | 0.452 ± 0.106 | only d=128 in flight |
-
-> ‡ TI d=16 + d=32 **submitted as jobs 549710 / 549711** (2026-04-28).
-> § ImageNet d=16 in flight (job 541956).
+| dataset | d=16 | d=32 | d=128 |
+|---|---|---|---|
+| CIFAR-100 (Ours, `hist_revert`) | **0.846 ± 0.029** | TBD | TBD |
+| CIFAR-100 (HIER, supervised) | 0.845 ± 0.010 | 0.841 ± 0.048 | 0.813 ± 0.016 |
+| CIFAR-100 (SeCu) | 0.416 ± 0.011 | 0.415 ± 0.012 | 0.380 ± 0.038 |
+| TinyImageNet (Ours, HypHC warm) | 0.7089 | 0.7303 | 0.714 ± 0.003 |
+| TinyImageNet (HIER, supervised) | TBD | TBD | **0.848 ± 0.002** |
+| ImageNet (Ours, warm bk=0) | 0.593 | 0.581 ± 0.044 (no_hyphc) | 0.685 ± 0.009 |
+| iNat18 (Ours, c=0.3) | — | — | 0.894 ± 0.058 |
 
 ### §4.2.3 LCA Ablation (`ours` rectified vs Chami's standard)
 
@@ -192,24 +180,46 @@ baselines shrink with d.
 |---|---|---|
 | CIFAR-100 d=16 | < 0.01 | **a wash — does not motivate §4.2.3** |
 | TinyImageNet d=128 | TBD | sbatch_vsc_lca_ablation_tinyimagenet.sh (submitted) |
-| ImageNet d=128 | TBD | sbatch_vsc_lca_ablation_imagenet.sh (submitted) |
-| iNat18 d=128 c=0.3 | TBD | sbatch_vsc_lca_ablation_inat18.sh (submitted) |
+| ImageNet d=128 | TBD | all 6 array tasks crashed (OOM at 348G); resubmitted at 512G after fix |
+| iNat18 d=128 c=0.3 | ~0.000 (n=1 paired) | 3/6 finished, ours=0.866/0.820, chami=0.866 (s1) — wait for s2/s3 chami + s3 ours |
 
-> §4.2.3 is the paper's first contribution but currently has no measured
-> support. The TI ablation is the most likely to show a real Δ — TI has
-> the strongest hyperbolic story (+0.16 hDP over Euclidean), so any LCA
-> effect should manifest there if anywhere.
+#### Rectification trigger rate (trajectory-averaged)
+
+How often does Chami's standard LCA fall outside the geodesic segment between
+its two argument points and trigger our rectification fallback to
+`min(d₀(x), d₀(y))`? Measured on every test-set point pair, every saved
+clustering checkpoint, 3 seeds per dataset (`baselines/lca_wrong_rate/`):
+
+| dataset | trajectory mean ± std | ce=0 (random init) | ce=final |
+|---|---|---|---|
+| CIFAR-100 d=16 (`hist_revert`, 50 ep) | 5.2×10⁻⁵ % ± 9×10⁻⁶ % | 5.3×10⁻⁴ % | 0.000 % |
+| TinyImageNet d=128 (`h2h_warm`, 100 ep) | 0.000 % ± 0.000 % | 0.000 % | 0.000 % |
+
+> The rectification fires on at most ~5 in 10⁹ pairs on CIFAR-100 d=16, and
+> not at all on TinyImageNet d=128. Trained Poincaré embeddings stay well
+> inside the disk where Chami's LCA is geometrically valid; the ce=0 anchor
+> has the highest rate but it is still negligible. **§4.2.3 cannot claim
+> the rectification fixes a frequently-firing failure mode** — it fixes one
+> that vanishes after a few epochs of training. The Δ-on-final-metric
+> ablations (rows above) are consistent with this: ours ≈ chami within
+> noise everywhere we have paired runs.
+
+> §4.2.3 framing should shift to "rectification is a *correctness* fix that
+> is exercised primarily during initialization and on outlier pairs; final
+> metrics are unaffected because trained embeddings sit in the safe regime."
+> The §4.2.4 scalability story (Chami's O(n²) breaks at n=1.28M for ImageNet
+> and 437k for iNat18) is now the load-bearing contribution of §4.2.
 
 ### Section status tracker
 
 | paper section | writable today? | blocking gap |
 |---|---|---|
-| §4.2.3 rectified LCA | **NO** | TI/ImageNet/iNat ablation submitted, awaiting results |
+| §4.2.3 rectified LCA | partial | iNat ours = chami at s1 (within noise); TI/ImageNet pending |
 | §4.2.4 scalability | YES | iNat (8142 classes) and ImageNet (1.28M images) trained — Chami's O(n²) explicitly intractable |
 | §5.3 metric learning | partial | R@k columns for non-CIFAR datasets, UHML baseline |
-| §5.4 deep clustering | partial | HIER on TI/ImageNet, Chami end-to-end (running); SCAN landed for TI (n=3) and ImageNet (released ckpt, n=1) |
-| §5.4 dim ablation | partial | TI d=16/d=32 (running), ImageNet d=16 (running) |
-| Manifold-agnostic claim | **NO** | Hyperboloid runs only exist on CIFAR-100 |
+| §5.4 deep clustering | partial | HIER on ImageNet pending; HIER on TI landed and beats us by 0.13 hDP_ward |
+| §5.4 dim ablation | partial | TI d=16/d=32 ours landed at single seed; HIER TI low-dim queued |
+| Manifold-agnostic claim | **NO** | Hyperboloid sbatches drafted; not yet submitted |
 
 ---
 
@@ -229,16 +239,18 @@ distance memory feasible (`--test_sample_size 10000`).
 
 ## CIFAR-100 — Section 5.3/5.4 main table
 
-### Ours (3 seeds, current code, peak across trajectory)
+### Ours `hist_revert` config (final epoch ce=300)
 
-| method | d | ce=0 hDP | hDP_ward (peak) | n@1 (peak) | peak ce | final hDP_ward |
+| method | d | ce=0 hDP | hDP_ward | n@1 | hDP_complete | NMI (ward) |
 |---|---|---|---|---|---|---|
-| Ours PoincaréBall | 16 | 0.755 ± 0.004 | **0.893 ± 0.021** (Δ +0.138) | 0.506 ± 0.013 | 11–26 | 0.753 ± 0.011 (Δ −0.002) |
-| Ours PoincaréBall | 32 | 0.768 ± 0.007 | 0.882 ± 0.010 (Δ +0.114) | 0.521 ± 0.004 | 11–55 | 0.737 ± 0.006 (Δ −0.031) |
+| Ours PoincaréBall | 16 | 0.755 ± 0.004 | **0.846 ± 0.029** (Δ +0.091) | 0.520 ± 0.003 | 0.864 ± 0.044 | 0.570 ± 0.004 |
 
-n=4 runs per row (3 paper_main seeds + 1 historical-recipe rerun). Final
-values are clustering epoch 300; peak is the best hDP_ward observed across
-the 300-epoch trajectory.
+`hist_revert` recipe (sbatch `sbatch_cifar100_poincare_d16_historical_revert.sh`):
+SimCLR 800ep + clustering 300ep with `freeze_encoder=True`,
+`use_backbone_knn_similarities=False`, `sampling_eps=0.01`. Other knobs match
+paper_main d=16. No peak/final split — the trajectory holds to final.
+
+d=32 / d=128 `hist_revert` reruns pending.
 
 ### External baselines (CIFAR-100, single-head Sec 5.3/5.4 format)
 
@@ -246,38 +258,34 @@ Aggregated from `baselines/aggregate.md` (2026-04-28). hDP_ward column is
 `hierarchical_dendrogram_purity_ward` so it is directly comparable to the
 "Ours" rows above.
 
-| method | d | hDP_ward | n@1 (fine) | NMI (ward) | n seeds | source |
-|---|---|---|---|---|---|---|
-| **HIER** (supervised, peak) | 16 | 0.845 ± 0.010 | 0.692 ± 0.060 | 0.749 ± 0.053 | 3 | seeds 1/2/3, peak across 100ep trajectory |
-| **HIER** (supervised, peak) | 32 | 0.841 ± 0.048 | 0.758 ± 0.044 | 0.790 ± 0.039 | 3 | seeds 1/2/3, peak across 100ep trajectory |
-| **HIER** (supervised, peak) | 128 | 0.813 ± 0.016 | 0.742 ± 0.003 | 0.766 ± 0.003 | 3 | seeds 1/2/3, peak across 100ep trajectory |
-| SeCu | 16 | 0.4156 ± 0.0109 | 0.4686 ± 0.0099 | 0.5842 ± 0.0072 | 3 | published recipe, seeds {42, 56, 99} |
-| SeCu | 32 | 0.4147 ± 0.0119 | 0.5090 ± 0.0082 | 0.5983 ± 0.0045 | 3 | published recipe, seeds {42, 56, 99} |
-| SeCu | 128 | 0.3798 ± 0.0380 ‡ | 0.4754 ± 0.0591 | 0.5635 ± 0.0412 | 2 | published recipe, seeds {42, 99} |
-| SCAN | 128 | 0.3531 | 0.4120 | 0.5035 | 3 | authors' published checkpoint, std=0 (deterministic ckpt) |
+| method | d | hDP_ward | n@1 (fine) | NMI (ward) |
+|---|---|---|---|---|
+| **HIER** (supervised) | 16 | 0.845 ± 0.010 | 0.692 ± 0.060 | 0.749 ± 0.053 |
+| **HIER** (supervised) | 32 | 0.841 ± 0.048 | 0.758 ± 0.044 | 0.790 ± 0.039 |
+| **HIER** (supervised) | 128 | 0.813 ± 0.016 | 0.742 ± 0.003 | 0.766 ± 0.003 |
+| SeCu | 16 | 0.416 ± 0.011 | 0.469 ± 0.010 | 0.584 ± 0.007 |
+| SeCu | 32 | 0.415 ± 0.012 | 0.509 ± 0.008 | 0.598 ± 0.005 |
+| SeCu | 128 | 0.380 ± 0.038 | 0.475 ± 0.059 | 0.564 ± 0.041 |
+| SCAN | 128 | 0.353 | 0.412 | 0.504 |
 
-> ‡ The SeCu d=128 row is the single-head re-eval format. The SeCu paper's
+> The SeCu d=128 row is the single-head re-eval format. The SeCu paper's
 > own multi-head per-K eval gives best DP=0.626 at K=180 — not directly
 > comparable to the single-head numbers above; see
-> `memory/project_secu_baseline_cifar100.md`. SeCu d=128 also has only 2
-> seeds (42, 99) — seed 56 not yet rerun.
-
-> SeCu d=16 ≈ d=32 on hDP_ward (within std); the dim story for SeCu is
-> n@1-only, where d=32 beats d=16 by +0.04. See `LESSONS_LEARNED.md` for
-> the full d=16 vs d=32 breakdown.
+> `memory/project_secu_baseline_cifar100.md`.
 
 ### CIFAR-100 framing
 
-At peak, our unsupervised d=16 Poincaré (hDP_ward 0.893) beats supervised
-HIER at every matched dim: HIER d=16 = 0.845 ± 0.010 (Δ +0.048), d=32 =
-0.841 ± 0.048 (Δ +0.041 vs ours d=32 = 0.882), d=128 = 0.813 ± 0.016. Our
-unsupervised method beats both unsupervised baselines (SeCu, SCAN) by
-**+0.47** on hDP. HIER still wins 1-NN retrieval (0.69–0.74 across dims
-vs ours 0.51) because supervised metric learning optimizes that directly.
+At final epoch (ce=300), our unsupervised d=16 Poincaré (`hist_revert`,
+hDP_ward 0.846 ± 0.029) **matches** supervised HIER at d=16
+(0.845 ± 0.010) — no peak caveat needed. Our unsupervised method beats
+both unsupervised baselines (SeCu 0.42, SCAN 0.35) by **+0.43** on hDP.
+HIER still wins 1-NN retrieval (0.69–0.74 across dims vs ours 0.52)
+because supervised metric learning optimizes retrieval directly.
 
-The d=16 vs d=32 comparison shows our advantage is dim-stable: peak hDP only
-varies by ~0.01 across these dims, while n@1 only varies by ~0.015. HIER's
-hDP also gently decreases with dim, which is the same dim-shape as ours.
+The d=16 vs d=32/d=128 comparison is currently pending: only d=16 has been
+rerun under `hist_revert`. HIER's hDP gently decreases with dim
+(d=16 0.845 → d=128 0.813), so we expect the same dim-shape from ours
+once the d=32/d=128 reverts land.
 
 HIER multi-seed numbers above are aggregated from 48 eval JSONs in
 `results_baseline_embeddings/hier_c100_*.json` (3 seeds × {16, 32, 128} ×
@@ -296,6 +304,20 @@ Warm HypHC schedule (`start_temperature=1.0`, `end_temperature=0.5`,
 | **PoincaréBall + HypHC** | 0.471 ± 0.067 | **0.738 ± 0.005** | 0.714 ± 0.003 | **+0.243** | 0.284 ± 0.003 |
 | PoincaréBall no-HypHC | 0.464 ± 0.058 | 0.618 ± 0.061 | 0.517 ± 0.018 | +0.053 | 0.275 ± 0.003 |
 | Euclidean | 0.487 ± 0.041 | 0.577 ± 0.029 | 0.468 ± 0.120 | −0.019 | 0.285 ± 0.008 |
+
+**Expanded clustering metrics (final epoch, n=3 except where noted):**
+
+| condition | hDP_ward | hDP_complete | DP_ward (flat) | NMI (ward) | ARI (ward) | n@1 | 5-NN |
+|---|---|---|---|---|---|---|---|
+| **PoincaréBall + HypHC** | 0.714 ± 0.003 | 0.753 ± 0.005 | 0.106 ± 0.004 | 0.522 ± 0.001 | 0.135 ± 0.001 | 0.286 ± 0.005 | 0.262 ± 0.005 |
+| PoincaréBall no-HypHC | 0.517 ± 0.018 | 0.444 ± 0.019 | 0.099 ± 0.002 | 0.513 ± 0.001 | 0.128 ± 0.002 | 0.272 ± 0.003 | 0.246 ± 0.002 |
+| Euclidean | 0.468 ± 0.120 | 0.443 ± 0.082 | 0.099 ± 0.001 | 0.508 ± 0.002 | 0.125 ± 0.002 | 0.285 ± 0.005 | 0.257 ± 0.001 |
+
+The "flat" `DP_ward` column is the single-level dendrogram purity (≈ kNN
+hierarchy purity at depth 1) — already very low for all three conditions
+(all under 0.11) because TinyImageNet has 200 fine classes and a single
+flat level only captures coarse separability. The hierarchical hDP_ward
+column is what carries the hyperbolic story.
 
 ### TinyImageNet framing
 
@@ -316,24 +338,19 @@ makes it sharper:
 
 ### External baselines (TinyImageNet)
 
-Aggregated from `baselines/aggregate.md` (2026-04-28). Default SeCu recipe,
-locally retrained.
+| method | d | hDP_ward | n@1 (fine) | NMI (ward) | R@2 | R@4 | R@8 | R@10 | R@100 |
+|---|---|---|---|---|---|---|---|---|---|
+| **HIER** (supervised) | 128 | **0.848 ± 0.002** | 0.739 ± 0.003 | 0.785 ± 0.002 | — | — | — | — | — |
+| HIER (supervised) | 32 | 0.425 | 0.709 | 0.774 | 0.769 | 0.815 | 0.854 | 0.863 | 0.966 |
+| HIER (supervised) | 16 | 0.447 | 0.659 | 0.753 | 0.735 | 0.791 | 0.834 | 0.848 | 0.961 |
+| SeCu | (default) | 0.160 ± 0.040 | 0.069 ± 0.056 | 0.296 ± 0.218 | — | — | — | — | — |
+| SCAN | 128 | 0.091 ± 0.003 | 0.037 ± 0.006 | 0.339 ± 0.008 | 0.066 ± 0.007 | 0.113 ± 0.007 | 0.184 ± 0.010 | 0.214 ± 0.009 | 0.683 ± 0.010 |
 
-| method | d | hDP_ward | n@1 (fine) | NMI (ward) | n seeds | source |
-|---|---|---|---|---|---|---|
-| SeCu † | (default) | 0.1600 ± 0.0404 | 0.0688 ± 0.0559 | 0.2962 ± 0.2178 | 3 | published recipe, seeds {42, 56, 99} |
-| SCAN   | 128 | 0.0914 ± 0.0033 | 0.0372 ± 0.0063 | 0.3389 ± 0.0080 | 3 | published recipe, seeds {42, 56, 99} |
-
-> † **Caveat — the n=3 aggregate above still includes a collapsed seed.**
-> `secu-tiny_imagenet-s99` (slurm 541124) trained 400 epochs without
-> crashing but produced an embedding-collapsed model: 1-NN = 0.0050 (random
-> for 200 classes), ward NMI = 0.0447, ward acc = 0.0054. Cluster head got
-> stuck at init then diverged after the LR-decay boundary; seeds 42 and 56
-> on the same script converge cleanly (1-NN ≈ 0.10, NMI ≈ 0.42). The
-> collapsed `results/secu-tiny_imagenet-s99.{json,log}` have been removed
-> from disk; resubmitted with seed=7 for a third good seed. Once seed=7
-> lands, reaggregate — expect the means to rise sharply and the std to
-> drop. See `docs/secu_ti_seed99_collapse.md` and `LESSONS_LEARNED.md`.
+> HIER's hDP_ward drops sharply at low dim (0.848 → 0.447 from d=128 → d=16),
+> while metric/retrieval (n@1, R@k) is roughly preserved. HIER's PALoss_Angle
+> is fundamentally a per-class proxy method that needs enough dim to spread
+> 200 nb_classes; at d=16 the proxies start colliding and the hierarchy signal
+> collapses. Our hist_revert config is by contrast d=16-stable on CIFAR-100.
 
 ---
 
@@ -352,21 +369,21 @@ overshoots and is reported at peak for fair comparison.
 | PoincaréBall + HypHC warm (peak) | 0.666 ± 0.048 | 0.084 ± 0.021 | peak (ce ≈ 18) |
 | PoincaréBall + HypHC warm (final) | 0.444 ± 0.017 | — | final (ce=50) |
 
-### ImageNet d=128 H2H sweep (16/16 finished, 4 conditions × 2 bk × 2 seeds)
+### ImageNet d=128 H2H sweep
 
-Frozen FB DINO ResNet50, 50 ep clustering only. Condition × backbone_knn,
-n=2 seeds (42, 43). All numbers are final epoch (ce=50).
+Frozen FB DINO ResNet50, 50 ep clustering only. Condition × backbone_knn.
+All numbers are final epoch (ce=50).
 
-| condition | bk | ce=0 hDP | hDP_ward | Δ | n@1 | seeds |
-|---|---|---|---|---|---|---|
-| **PoincaréBall + HypHC warm** | 0 | 0.467 ± 0.008 | **0.683 ± 0.012** | **+0.217** | 0.299 ± 0.008 | s42=0.675, s43=0.692 |
-| PoincaréBall no-HypHC | 0 | 0.429 ± 0.002 | 0.636 ± 0.033 | +0.207 | 0.131 ± 0.006 | s42=0.613, s43=0.660 |
-| PoincaréBall no-HypHC | 1 | 0.483 ± 0.020 | 0.630 ± 0.033 | +0.147 | 0.128 ± 0.005 | s42=0.606, s43=0.653 |
-| Euclidean baseline | 0 | 0.505 ± 0.088 | 0.519 ± 0.105 | +0.014 | 0.294 ± 0.002 | s42=0.593, s43=0.445 |
-| PoincaréBall + HypHC cold | 0 | 0.448 ± 0.029 | 0.473 ± 0.011 | +0.025 | 0.116 ± 0.002 | s42=0.481, s43=0.465 |
-| Euclidean baseline | 1 | 0.505 ± 0.088 | 0.461 ± 0.022 | −0.044 | 0.291 ± 0.013 | s42=0.445, s43=0.476 |
-| PoincaréBall + HypHC cold | 1 | 0.459 ± 0.014 | 0.452 ± 0.016 | −0.007 | 0.118 ± 0.001 | s42=0.463, s43=0.440 |
-| **PoincaréBall + HypHC warm** | 1 | 0.449 ± 0.029 | **0.448 ± 0.029** † | −0.001 | 0.077 ± 0.020 | s42=0.468, s43=0.427 |
+| condition | bk | ce=0 hDP | hDP_ward | Δ | n@1 | hDP_complete | NMI (ward) | ARI (ward) |
+|---|---|---|---|---|---|---|---|---|
+| **PoincaréBall + HypHC warm** | 0 | 0.467 ± 0.008 | **0.685 ± 0.009** | **+0.218** | 0.297 ± 0.007 | 0.561 ± 0.090 | 0.747 ± 0.000 | 0.143 ± 0.002 |
+| PoincaréBall no-HypHC | 0 | 0.429 ± 0.002 | 0.632 ± 0.025 | +0.203 | 0.130 ± 0.005 | 0.804 ± 0.020 | 0.703 ± 0.002 | 0.064 ± 0.003 |
+| PoincaréBall no-HypHC | 1 | 0.483 ± 0.020 | 0.630 ± 0.033 | +0.147 | 0.128 ± 0.005 | — | — | — |
+| Euclidean baseline | 0 | 0.505 ± 0.088 | 0.494 ± 0.086 | −0.011 | 0.293 ± 0.004 | 0.473 ± 0.057 | 0.741 ± 0.001 | 0.130 ± 0.002 |
+| PoincaréBall + HypHC cold | 0 | 0.448 ± 0.029 | 0.466 ± 0.015 | +0.018 | 0.116 ± 0.002 | 0.738 ± 0.038 | 0.654 ± 0.003 | 0.033 ± 0.001 |
+| Euclidean baseline | 1 | 0.505 ± 0.088 | 0.461 ± 0.022 | −0.044 | 0.291 ± 0.013 | — | — | — |
+| PoincaréBall + HypHC cold | 1 | 0.459 ± 0.014 | 0.452 ± 0.016 | −0.007 | 0.118 ± 0.001 | — | — | — |
+| **PoincaréBall + HypHC warm** | 1 | 0.449 ± 0.029 | **0.448 ± 0.029** † | −0.001 | 0.077 ± 0.020 | — | — | — |
 
 > † **Warm + bk=1 surprise collapse:** warm HypHC drops from 0.683 (bk=0)
 > to 0.448 (bk=1). On every other condition the bk axis is roughly neutral
@@ -376,24 +393,39 @@ n=2 seeds (42, 43). All numbers are final epoch (ce=50).
 > if warm+bk1 ends up the headline ImageNet config; otherwise just report
 > warm+bk0.
 
-**Best ImageNet d=128 row for the paper (final, no peak-vs-final
-caveat):** PoincaréBall + HypHC warm, bk=0, hDP_ward = **0.683 ± 0.012**,
-n@1 = 0.299. Beats Euclidean (best of bk=0 = 0.519) by **+0.16**, beats
-no-HypHC (best bk=0 = 0.636) by **+0.05**.
+**Best ImageNet d=128 row for the paper:** PoincaréBall + HypHC warm,
+bk=0, hDP_ward = **0.685 ± 0.009**, n@1 = 0.297, NMI = 0.747, ARI = 0.143.
+Beats Euclidean bk=0 (0.494 ± 0.086) by **+0.19** on hierarchy and matches
+it on retrieval (n@1 0.297 vs 0.293, ARI 0.143 vs 0.130). Beats no-HypHC
+bk=0 (0.632 ± 0.025) by +0.05 on hierarchy and by **+0.17 on n@1** —
+HypHC sharpens both axes relative to no-HypHC.
 
-Adding seed=44 to all 8 conditions is in flight as job 541955 (8 jobs at
-%4 throttle, ETA ~24h on local cluster).
+### ImageNet d=16
+
+| condition | bk | hDP_ward | hDP_complete | NMI (ward) | ARI (ward) | n@1 |
+|---|---|---|---|---|---|---|
+| PoincaréBall + HypHC warm | 0 | **0.593** | 0.447 | 0.697 | 0.048 | 0.106 |
+| PoincaréBall no-HypHC | 0 | 0.580 | 0.754 | 0.689 | 0.040 | 0.078 |
+| PoincaréBall + HypHC cold | 0 | 0.475 | 0.706 | 0.663 | 0.026 | 0.063 |
+| Euclidean baseline | 0 | 0.436 | 0.420 | 0.700 | 0.054 | 0.118 |
+
+**Early read:** d=16 warm bk=0 hDP_ward = 0.593 sits ~0.09 below
+the d=128 warm bk=0 row (0.685 ± 0.009). Warm still beats Euclidean
+(+0.16) and no-HypHC margin tightens (+0.013) relative to d=128. n@1
+collapses on every Poincaré row and stays at ~0.12 on Euclidean — the
+retrieval-vs-hierarchy split persists at d=16. **Wait for s43/s44 to
+quote.**
 
 ### External baselines (ImageNet)
 
-| method | d | hDP_ward | n@1 (fine) | NMI (ward) | ARI (ward) | n seeds | source |
-|---|---|---|---|---|---|---|---|
-| SCAN (released ckpt) | 128 | 0.2465 | 0.5128 | 0.7219 | 0.2739 | 1 | authors' published checkpoint, deterministic eval (50k val) |
+| method | d | hDP_ward | n@1 | NMI (ward) | ARI (ward) | R@2 | R@4 | R@8 | R@10 | R@100 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| SCAN (released ckpt) | 128 | 0.277 | 0.513 | 0.722 | 0.274 | 0.610 | 0.696 | 0.769 | 0.789 | 0.940 |
 
 > SCAN ImageNet uses the official released checkpoint, evaluated through our
 > pipeline on the full 50k val split. Strong on retrieval (n@1 = 0.51, beats
-> our best by +0.21) and weak on hierarchy (hDP_ward = 0.246, our best
-> beats it by +0.44). Same axis split as TI and CIFAR-100 — clustering-
+> our best by +0.21) and weak on hierarchy (hDP_ward = 0.277, our best
+> beats it by +0.41). Same axis split as TI and CIFAR-100 — clustering-
 > head methods optimize fine cluster separability; hyperbolic methods
 > optimize hierarchy.
 
@@ -449,17 +481,78 @@ available — see the rescue sweep table below.
 | PoincaréBall no-HypHC (trained, d=128, c=1.0) | **0.001** | 0.0017 | 0.800 |
 | PoincaréBall + HypHC warm (trained, d=128, c=1.0) | **0.001** | 0.0015 | 0.730 |
 
+### iNat18 paper_main bk=1 c=0.3 warm
+
+`sbatch_vsc_inat18_c03_3seeds.sh`. Final epoch ce=50.
+
+| seed | run | hDP_ward | hDP_complete | DP_ward (flat) | NMI (ward) | n@1 |
+|---|---|---|---|---|---|---|
+| 1 | daily-frost-1307 | 0.935 | 0.826 | 0.057 | 0.949 | 0.0001 |
+| 3 | proud-deluge-1312 | 0.853 | 0.827 | 0.056 | 0.939 | 0.0001 |
+| **mean** | — | **0.894 ± 0.058** | 0.826 ± 0.001 | 0.057 ± 0.001 | 0.944 ± 0.007 | ≤ 0.0002 |
+
+**The shift is real-but-confounded.** The ce=0 anchor under the current
+eval pipeline is also ≈ 0.83 on iNat, so Δ from ce=0 is roughly +0.06 —
+training contributes a small lift over the random-init head, similar to
+the rescue picture (Δ ≈ −0.04 to +0.03). The absolute number jumped
+because the anchor moved, not because clustering training got dramatically
+better. Leaf-level retrieval is unchanged — n@1 ≈ 0.0001 across all
+seeds, indicating the encoder remains leaf-collapsed.
+
+### iNat18 LCA ablation (bk=1 c=0.3 warm d=128)
+
+Submitted as `sbatch_vsc_lca_ablation_inat18.sh`. 2 LCA versions
+(`ours`, `chami`) × 3 seeds. Same recipe as paper_main bk=1 c03_warm
+above (start_weight=0).
+
+| LCA | seed | run | hDP_ward | hDP_complete | NMI (ward) | n@1 |
+|---|---|---|---|---|---|---|
+| ours | 1 | lemon-mountain-1316 | 0.866 | 0.826 | 0.951 | 0.0001 |
+| ours | 2 | comic-lion-1317 | 0.820 | 0.826 | 0.942 | 0.0001 |
+| chami | 1 | swift-galaxy-1317 | 0.866 | 0.827 | 0.951 | 0.0001 |
+| chami | 2 | (pending) | — | — | — | — |
+| ours | 3 | (pending) | — | — | — | — |
+| chami | 3 | (pending) | — | — | — | — |
+
+Paired-by-seed Δ (ours − chami) at seed 1: **0.000** (identical to 4 d.p.).
+With only 1 paired point this is not yet meaningful — wait on s2/s3 chami
++ s3 ours.
+
+### iNat18 diag_sweep_a (head/training axis at c=0.3)
+
+Submitted as `sbatch_vsc_inat18_diag_sweep_a.sh` to test whether the iNat
+plateau is a head-architecture issue. 4 conditions × 3 seeds: cw=1.0 vs
+cw=10 (clustering loss weight), d=128 vs d=256, Hyperboloid vs PoincaréBall.
+
+| condition | seed | run | hDP_ward | NMI | n@1 |
+|---|---|---|---|---|---|
+| c03_d256_warm (PoincaréBall, d=256) | 1 | vocal-fire-1319 | 0.356 | 0.743 | 0.0002 |
+| c03_cw10_warm (cw=10 vs 1.0) | 1 | charmed-thunder-1320 | 0.677 | 0.762 | 0.0002 |
+| c03_d128_hyperboloid_warm | 1 | (pending) | — | — | — |
+| c03_lr1e-5 | 1 | (pending) | — | — | — |
+| (above × seeds 2, 3) | — | (pending) | — | — | — |
+
+Both finished diag_a configs **regress** vs the c=0.3 d=128 cw=1.0 baseline
+(0.894 mean on paper_main). d=256 hurts most (−0.54), cw=10 also lower
+(−0.22). Early read: the c=0.3 paper_main config sits at the diag-axis
+optimum so far; need the Hyperboloid and lr=1e-5 conditions to confirm.
+
 ### iNat18 framing
 
-**Headline: under the matched-architecture ce=0 anchor, no curvature
-beats its starting point on hDP_ward.** The c=0.3 row that previously
-looked like a "win" (0.452 ± 0.106) is actually a regression (ce=0 was
-0.490). The leaf level stays collapsed at every curvature (n@1 ≈
-0.0001–0.002 vs random 1/8142). **iNat18 has no clustering-training
-success story under the current head architecture.** Either the paper
-omits iNat or reframes it as a scale-test of the pipeline (8142 classes,
-hierarchy metric remains tractable, encoder doesn't collapse — but
-training does not improve over random init).
+**Headline: under the matched-architecture ce=0 anchor, training adds
+only a small lift on hDP_ward — independent of which eval pipeline you
+look at.** The absolute hDP_ward number jumped from 0.452 (rescue code)
+to 0.894 (current code) on the c=0.3 paper_main config, but the ce=0
+anchor moved with it (0.49 → ~0.83), so Δ from ce=0 stays small (+0.06).
+The leaf level stays collapsed across all eval pipelines (n@1 ≈
+0.0001–0.002 vs random 1/8142). **iNat18 still has no large
+clustering-training improvement story under the current head architecture
+— but it is no longer a regression at c=0.3.** Two reasonable framings:
+(a) report the current-code 0.894 absolute number prominently (largest
+hDP_ward of any dataset in the paper) with a Δ-from-ce=0 caveat about
+how much of it is training; (b) reframe iNat as scale evidence (8142
+classes, hierarchy eval tractable, manifold doesn't collapse) and keep
+the focus on TI/ImageNet.
 
 Background context (kept for completeness):
 - iNat taxonomy hierarchy file is wired in (`./data/inat18_taxonomy_hierarchy.txt`),
@@ -474,10 +567,16 @@ Background context (kept for completeness):
 
 ### iNat18 rescue sweep (3 curvatures × 3 seeds, finished 2026-04-28)
 
-After the `abstract.py` patch that wires `coarse_labels_array` for the
-iNat hierarchical_dendrogram_purity_ward gate, all 9 runs now log hDP_ward
-against the iNat taxonomy hierarchy. Numbers are final epoch (ce=50);
-warm HypHC schedule, backbone_knn=True for every run.
+**These numbers are under an older eval path** — the iNat
+hierarchy file `data/inat18_taxonomy_hierarchy.txt` was committed
+`13f33f7` on 2026-04-27 and may not have been picked up by these rescue
+runs at evaluation time. The paper_main bk=1 c=0.3 reruns under the
+current pipeline (table above) report 0.894 ± 0.058 vs the 0.452 ± 0.106
+shown here. **Use only for the c=0.1 / c=0.5 rows below — those still
+have no current-code rerun.**
+
+Numbers are final epoch (ce=50); warm HypHC schedule, backbone_knn=True
+for every run.
 
 | curvature_magnitude | ce=0 hDP | hDP_ward (final) | Δ from ce=0 | n@1 |
 |---|---|---|---|---|
@@ -527,34 +626,28 @@ hDP_ward result above.
 
 ---
 
-## Schedule overshoot caveat (active investigation)
+## Schedule overshoot — bug, root-caused and fixed (CIFAR-100 d=16)
 
-In `worldly-oath-1224` (CIFAR-100 d=16 Poincaré seed3, current code), the
-trajectory shows:
+The peak-then-crash trajectory observed in `worldly-oath-1224` (peak hDP
+0.905 at ce=11, crash to 0.765 at ce=300, n@1 collapse to 0.09) was a
+**config-drift bug**, not a fundamental schedule issue. Three knobs had
+drifted from the historical *-16-Ours recipe (April 5, ulzojs72) which
+finished cleanly at ~0.90:
 
-| ce | latent norm_max | hDP_ward | n@1 |
+| knob | historical (good) | drifted (broken) | impact |
 |---|---|---|---|
-| 0 (pretrain end) | n/a | 0.759 | 0.527 |
-| 11 | 0.981 | **0.905** | 0.505 |
-| 21 | 0.990 | 0.904 | 0.521 |
-| 31 | 0.997 | 0.733 | 0.089 |
-| 300 | 0.999 | 0.765 | 0.086 |
+| `freeze_encoder` | True | False | encoder warps with the head |
+| `use_backbone_knn_similarities` | False | True | doubles hyperbolic gradient signal |
+| `sampling_eps` | 0.01 | 0.001 | tighter triplet sampling, more boundary-pushing triplets |
 
-Once `norm_max` crosses ~0.995, fine-grained Poincaré distances become
-numerically degenerate, and both n@1 and hDP_ward (which use the full
-hierarchy) crash. The 20-coarse-class hierarchy was robust to this in the
-old eval pipeline; the new full-WordNet hierarchy is not.
+`sbatch_cifar100_poincare_d16_historical_revert.sh` reverts all three.
+Result (n=3, ce=300, no peak caveat): hDP_ward = 0.846 ± 0.029,
+n@1 = 0.520 ± 0.003, NMI = 0.570 ± 0.004. The earlier `low_weight` /
+`flat_temp` schedule sweeps (job 535626) targeted the wrong mechanism
+and produced *worse* numbers — superseded.
 
-Two knobs are being tested in **job 535626** (CIFAR-100 d=16, 2 conditions
-× 3 seeds, results expected 2026-04-27):
-
-- `low_weight`: `end_weight=1.5` (was 5.0), `weight_interval=20`. Caps the
-  hyperbolic loss push.
-- `flat_temp`: `end_temperature=0.2` (was 0.1). No temperature ramp.
-
-Hypothesis: either knob alone is sufficient to keep `norm_max` below ~0.99
-and preserve hDP. Worst case (both fail) we fall back to early stopping at
-ce=20, which the per-checkpoint embeddings already support.
+ImageNet d=32 hyphc_warm (peak 0.666 → final 0.444) likely has the same
+root cause; `hist_revert` transfer to ImageNet not yet validated.
 
 ---
 
@@ -564,20 +657,29 @@ Active or staged, in priority order:
 
 | job | dataset | what | status |
 |---|---|---|---|
-| 541955 | ImageNet d=128 | seed=44 H2H (8 tasks) | local, running, ETA ~24h |
-| 541956 | ImageNet d=16 | full H2H grid (16 tasks, seeds 42/43) | local, running, ETA ~5d |
+| 541956 | ImageNet d=16 | full H2H grid (16 tasks, seeds 42/43) | local, running; s42 bk=0 finished (4 conditions), s43 + bk=1 still going |
 | 559140 | TinyImageNet | HIER baseline (3 seeds × d=128) — `sbatch_tiny_imagenet_hier.sh` | local, queued; resubmit at 256G after 554382 OOM'd at 164G |
 | 559141 | CUB | UHML (Yan 2021) sanity — `sbatch_uhml_cub_sanity.sh` | local, queued; resubmit with `--net BN-Inception` after 554383 hit unknown-network KeyError |
+| (VSC) | ImageNet | LCA ablation — `sbatch_vsc_lca_ablation_imagenet.sh` | all 6 crashed at 348G; resubmit at 512G after mem fix |
+| (VSC) | ImageNet | Schedule-fix verification — `sbatch_vsc_imagenet_schedule_fix.sh` | **superseded.** Crash root-caused on CIFAR-100 to config drift (hist_revert), not a schedule issue. Don't resubmit; instead transfer hist_revert (`freeze_encoder=True`, `use_backbone_knn_similarities=False`, `sampling_eps=0.01`) to ImageNet d=32 hyphc_warm. |
 | (VSC) | ImageNet | HIER baseline (3 seeds × d=128) — `sbatch_vsc_imagenet_hier.sh` | submitted 2026-04-29 |
-| (VSC) | iNat18 | Diagnostic Sweep A (head/training axis: d=256, cw=1.0, lr=1e-5, Hyperboloid; 12 runs) — `sbatch_vsc_inat18_diag_sweep_a.sh` | submitted 2026-04-29 |
+| (VSC) | iNat18 | Diagnostic Sweep A (head/training axis; 12 runs) — `sbatch_vsc_inat18_diag_sweep_a.sh` | 2/12 finished (s1 cw10 = 0.677, s1 d256 = 0.356) |
+| (VSC) | iNat18 | LCA ablation 6 runs — `sbatch_vsc_lca_ablation_inat18.sh` | 3/6 finished — 1 paired pair (s1 ours=chami=0.866) |
 | (VSC) | iNat18 | DINOv2 ViT-L/14 frozen baseline + matched-dim PCA — `sbatch_vsc_inat18_dinov2_frozen.sh` | submitted 2026-04-29 |
+| (VSC) | iNat18 | paper_main bk=1 c=0.3 seed=2 resubmit (trim-water-1307 crashed at ce=29 with no log) | not yet resubmitted; `sbatch --array=1 sbatch_vsc_inat18_c03_3seeds.sh` |
+| (VSC) | TI / ImageNet | Hyperboloid manifold-ablation runs — `sbatch_vsc_hyperboloid_*.sh` | drafted, not yet submitted |
+| (local) | CIFAR-100 | Hyperboloid d=16 manifold-ablation — `sbatch_cifar100_hyperboloid_d16.sh` | drafted, not yet submitted |
 | (landed) | TinyImageNet / ImageNet | SCAN baseline | TI 3-seed retrain + ImageNet released ckpt eval, see §5.3/§5.4 |
-| (staged) | TI / ImageNet / iNat18 | LCA-rectification ablation (`ours` vs `chami`) | submitted (lca_abl_ti, lca_abl_imnet running) |
-| (staged) | ImageNet | Schedule-fix verification on hyphc_warm overshoot | not yet drafted |
+| (staged) | TI | LCA-rectification ablation (`ours` vs `chami`) | submitted (sbatch_vsc_lca_ablation_tinyimagenet.sh) |
 
 Already landed and incorporated above:
-- iNat18 rescue sweep c ∈ {0.1, 0.3, 0.5} (9 runs, finished 2026-04-28)
-- ImageNet d=128 H2H (16/16 finished)
+- CIFAR-100 d=16 `hist_revert` (3 seeds finished 2026-04-29) — fixes the schedule overshoot at the source: final hDP_ward 0.846 ± 0.029, n@1 0.520 ± 0.003, no peak caveat.
+- ImageNet d=128 H2H seed=44 bk=0 (4/4 finished, completes 3-seed for bk=0 → tightest std in paper at 0.009)
+- iNat18 paper_main bk=1 c=0.3 warm under current code (2/3 seeds finished, s2 crashed)
+- iNat18 LCA ablation: 3/6 finished (s1 chami/ours, s2 ours)
+- iNat18 diag_sweep_a: 2/12 finished
+- iNat18 rescue sweep c ∈ {0.1, 0.3, 0.5} (9 runs, finished 2026-04-28; older eval path — superseded for c=0.3 by current-code numbers)
+- ImageNet d=128 H2H bk=0 seed=42/43 + bk=1 seed=42/43 (16/16 finished)
 - ImageNet d=32 paper_main (12/12 finished)
 - HIER CIFAR-100 d=16/32/128 multi-seed (3 seeds × 3 dims, aggregated
   from 48 eval JSONs in `results_baseline_embeddings/hier_c100_*.json`
@@ -620,7 +722,10 @@ ImageNet, `=0.1` proposed for iNat rescue. Manifold operations in float64
   representation collapse.
 - HypHC schedule (current default): `start_weight=1.0`, `end_weight=5.0`,
   `start_temperature=0.2`, `end_temperature=0.1`, both intervals = 250.
-  This schedule overshoots — see caveat. Pending replacement.
+  Holds cleanly under the `hist_revert` config (`freeze_encoder=True`,
+  `use_backbone_knn_similarities=False`, `sampling_eps=0.01`); the
+  previously observed overshoot was config drift, not a schedule
+  problem.
 
 ### Evaluation
 

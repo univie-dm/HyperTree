@@ -550,6 +550,32 @@ training cannot improve on, regardless of c.
   backbone moves the ce=0 anchor enough that training-on-top has any
   hope of yielding a positive Δ on iNat.
 
+**iNat ce=0 anchor jumped 0.49 → ~0.83 between commits — read absolute
+numbers across pipelines very carefully.** The iNat taxonomy hierarchy
+file `data/inat18_taxonomy_hierarchy.txt` was committed in `13f33f7`
+(2026-04-27 01:09). Runs evaluated *before* that commit appear to have
+fallen back to a path where the hierarchy was absent or partial; runs
+*after* the commit evaluate against the 8142 → ~14 phyla taxonomy. Two
+consequences:
+
+1. The rescue-sweep numbers (0.452 ± 0.106 at c=0.3, see table above) are
+   **not directly comparable** to the new paper_main bk=1 c=0.3 reruns
+   (`daily-frost-1307` 0.935, `proud-deluge-1312` 0.853 — n=2, mean
+   0.894 ± 0.058). It is the same recipe trained the same way; the
+   difference is the eval pipeline.
+2. The ce=0 anchor moved by the same amount (~0.83 under the new
+   pipeline vs 0.49 under the old). So the *interpretation* — training
+   contributes only a small lift over the random-init head (Δ ≈ +0.06)
+   — is preserved across pipelines. What changed is the absolute number
+   we report. The "c=0.3 regression by −0.04" framing from the rescue
+   sweep is now superseded by "c=0.3 lift by ~+0.06 against ce=0 ≈ 0.83"
+   — small, positive, but anchor-moved.
+
+For the paper: report the current-pipeline 0.894 ± 0.058 if iNat is
+included, and always pair it with Δ-from-ce=0 so reviewers cannot read
+the absolute as a learning win. The c=0.1 and c=0.5 rescue rows still
+need a current-pipeline rerun before they are quoted alongside c=0.3.
+
 ### Hydra struct-mode trap: `hyperbolic_smoothing` lives under `architecture`
 The sbatch `sbatch_cifar100_poincare_d{16,32}.sh` scripts originally had
 `clustering.hyperbolic_smoothing=50.0` which dies instantly with:

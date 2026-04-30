@@ -1,4 +1,5 @@
 import numpy as np
+import os
 import torch
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
@@ -405,6 +406,21 @@ class AbstractModel(pl.LightningModule):
 
                 all_embeddings = torch.cat(embeddings, dim=0)
                 all_labels = torch.cat(labels, dim=0)
+
+                # Optional embedding dump (for offline geometry analyses, e.g.
+                # LCA wrong-rate measurement). Gated by HYP_DUMP_EMB env var.
+                # If set, treat as a *prefix* (directory + filename stem) and
+                # save one .pt per eval, named `{prefix}_ce{epoch}.pt`. This
+                # gives a per-checkpoint trajectory for the §4.2.3 analysis.
+                _dump_prefix = os.environ.get("HYP_DUMP_EMB")
+                if _dump_prefix:
+                    os.makedirs(os.path.dirname(_dump_prefix) or ".", exist_ok=True)
+                    _dump_path = f"{_dump_prefix}_ce{self.current_epoch}.pt"
+                    torch.save(
+                        (all_embeddings.detach().cpu(), all_labels.detach().cpu(), torch.arange(len(all_labels))),
+                        _dump_path,
+                    )
+                    print(f"[dump_emb] saved test embeddings to {_dump_path}")
 
                 # Build WordNet hierarchy for DP and coarse labels for visualization
                 coarse_label_names = None
