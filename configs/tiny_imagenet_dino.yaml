@@ -143,7 +143,7 @@ evaluation_metrics:
 wandb:
   enabled: True
   project: hyper_clustering
-  entity: kevin-sidak-team
+  entity: anon
   save_dir: ./logs
   tags:
     - tiny_imagenet

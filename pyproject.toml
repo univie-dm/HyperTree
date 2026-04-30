@@ -1,7 +1,7 @@
 [project]
 name = "hyperbolic-clustering"
 version = "0.1.0"
-description = "Add your description here"
+description = "Hyperbolic hierarchical clustering with self-supervised pretraining"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
