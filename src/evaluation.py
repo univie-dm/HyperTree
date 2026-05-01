@@ -583,6 +583,19 @@ def evaluation(
             dp_score = dendrogram_purity(distance_matrix, Y, dp_linkage, use_root=dp_use_root)
             results[f"dendrogram_purity_{dp_linkage}"] = dp_score
 
+    # --- HRC sibling triplet (M_b, leaf-only) ---
+    if metrics.get("hrc_sibling_triplet", False) and hierarchy_clusters is not None:
+        results["hrc_sibling_triplet"] = hrc_sibling_triplet_accuracy(
+            distance_matrix, Y, hierarchy_clusters,
+            num_triplets=int(metrics.get("hrc_num_triplets", 200_000)),
+        )
+
+    # --- HRC origin-depth (M_o, leaf-only) ---
+    if metrics.get("hrc_origin_depth", False) and hierarchy_clusters is not None:
+        hrc_o = hrc_origin_depth_correlation(X, Y, manifold, hierarchy_clusters)
+        results["hrc_origin_depth_spearman"] = hrc_o["spearman"]
+        results["hrc_origin_depth_monotonic"] = hrc_o["monotonic"]
+
     # --- Agglomerative clustering ---
     for linkage_name in ("single", "complete", "average", "ward"):
         if metrics.get(f"agglomerative_clustering_{linkage_name}", False):
@@ -940,6 +953,161 @@ def dendrogram_purity(
         del cluster_label_counts[node2_id]
 
     return total_purity_sum / num_same_class_pairs
+
+
+# ---------------------------------------------------------------------------
+# HRC (Hierarchical Representation Capability) metrics — leaf-only adaptation
+# of Tan et al. 2024 "Why are HNNs Effective?" (M_b sibling, M_o origin).
+# ---------------------------------------------------------------------------
+
+def _immediate_parent_clusters(
+    hierarchy_clusters: list[set[int]],
+    leaf_ids: set[int],
+) -> dict[int, frozenset[int]]:
+    """For each leaf, the smallest cluster (≥2 leaves) that contains it.
+
+    This is the leaf-only analogue of the "immediate parent" relation —
+    siblings(c) := immediate_parent_cluster(c) \\ {c}.
+    """
+    sized = sorted(
+        ({frozenset(c) for c in hierarchy_clusters if len(c) >= 2}),
+        key=len,
+    )
+    out: dict[int, frozenset[int]] = {}
+    for c in leaf_ids:
+        for cluster in sized:
+            if c in cluster:
+                out[c] = cluster
+                break
+    return out
+
+
+def _leaf_depths(
+    hierarchy_clusters: list[set[int]],
+    leaf_ids: set[int],
+) -> dict[int, int]:
+    """Depth(c) = number of (non-trivial, non-root) clusters containing c.
+
+    A purely structural definition: deeper leaves sit inside more nested
+    ancestor clusters. Independent of any embedding.
+    """
+    sets = [frozenset(c) for c in hierarchy_clusters if len(c) >= 2]
+    return {c: sum(1 for s in sets if c in s) for c in leaf_ids}
+
+
+def hrc_sibling_triplet_accuracy(
+    distance_matrix: torch.Tensor,
+    labels: np.ndarray | torch.Tensor,
+    hierarchy_clusters: list[set[int]],
+    num_triplets: int = 200_000,
+    rng: np.random.Generator | None = None,
+) -> float:
+    """Leaf-only adaptation of the sibling metric M_b (Tan et al. 2024).
+
+    For triplets (a, p, n) where a, p are samples whose classes share an
+    immediate parent in the hierarchy and n is a sample whose class does not,
+    return the fraction satisfying d(a, p) < d(a, n).
+    """
+    labels_np = np.asarray(labels.cpu() if isinstance(labels, torch.Tensor) else labels)
+    leaf_ids = set(int(l) for l in np.unique(labels_np))
+    parent_clusters = _immediate_parent_clusters(hierarchy_clusters, leaf_ids)
+    if not parent_clusters:
+        return float("nan")
+
+    by_class: dict[int, np.ndarray] = {
+        int(c): np.where(labels_np == c)[0] for c in leaf_ids
+    }
+    if rng is None:
+        rng = np.random.default_rng(0)
+
+    dist_np = distance_matrix.cpu().numpy() if isinstance(distance_matrix, torch.Tensor) else np.asarray(distance_matrix)
+
+    eligible_classes = [c for c in leaf_ids if c in parent_clusters and len(parent_clusters[c]) >= 2]
+    if not eligible_classes:
+        return float("nan")
+    eligible_arr = np.array(eligible_classes, dtype=np.int64)
+
+    wins = 0
+    total = 0
+    for _ in range(num_triplets):
+        c_a = int(rng.choice(eligible_arr))
+        sib_classes = [s for s in parent_clusters[c_a] if s != c_a and s in by_class]
+        non_sib_classes = [s for s in leaf_ids if s not in parent_clusters[c_a]]
+        if not sib_classes or not non_sib_classes:
+            continue
+        c_p = int(rng.choice(sib_classes))
+        c_n = int(rng.choice(non_sib_classes))
+        if len(by_class[c_a]) == 0 or len(by_class[c_p]) == 0 or len(by_class[c_n]) == 0:
+            continue
+        i_a = int(rng.choice(by_class[c_a]))
+        i_p = int(rng.choice(by_class[c_p]))
+        i_n = int(rng.choice(by_class[c_n]))
+        d_ap = dist_np[i_a, i_p]
+        d_an = dist_np[i_a, i_n]
+        if d_ap < d_an:
+            wins += 1
+        total += 1
+
+    if total == 0:
+        return float("nan")
+    return wins / total
+
+
+def hrc_origin_depth_correlation(
+    X: torch.Tensor,
+    labels: np.ndarray | torch.Tensor,
+    manifold: 'Manifold',
+    hierarchy_clusters: list[set[int]],
+) -> dict[str, float]:
+    """Leaf-only adaptation of the origin metric M_o (Tan et al. 2024).
+
+    Tests whether per-class mean distance-to-origin grows with hierarchy
+    depth (deeper leaves should sit further from the manifold origin in
+    a hyperbolic embedding that respects the tree). Returns Spearman
+    correlation and a monotonicity score across depth bins.
+    """
+    labels_np = np.asarray(labels.cpu() if isinstance(labels, torch.Tensor) else labels)
+    leaf_ids = set(int(l) for l in np.unique(labels_np))
+    depths = _leaf_depths(hierarchy_clusters, leaf_ids)
+    if len(set(depths.values())) < 2:
+        return {"spearman": float("nan"), "monotonic": float("nan")}
+
+    with torch.no_grad():
+        d0 = manifold.dist_0(X).cpu().numpy()
+    d0 = np.asarray(d0).reshape(-1)
+
+    per_class_norm: dict[int, float] = {}
+    for c in leaf_ids:
+        idx = np.where(labels_np == c)[0]
+        if len(idx) == 0:
+            continue
+        per_class_norm[c] = float(np.mean(d0[idx]))
+
+    classes = sorted(c for c in leaf_ids if c in per_class_norm and c in depths)
+    depth_arr = np.array([depths[c] for c in classes], dtype=np.float64)
+    norm_arr = np.array([per_class_norm[c] for c in classes], dtype=np.float64)
+
+    def _spearman(a: np.ndarray, b: np.ndarray) -> float:
+        ra = np.argsort(np.argsort(a)).astype(np.float64)
+        rb = np.argsort(np.argsort(b)).astype(np.float64)
+        ra -= ra.mean(); rb -= rb.mean()
+        denom = (np.linalg.norm(ra) * np.linalg.norm(rb))
+        return float((ra @ rb) / denom) if denom > 0 else float("nan")
+
+    spearman = _spearman(depth_arr, norm_arr)
+
+    bin_means: list[tuple[int, float]] = []
+    for d in sorted(set(int(x) for x in depth_arr)):
+        mask = depth_arr == d
+        if mask.any():
+            bin_means.append((d, float(np.mean(norm_arr[mask]))))
+    if len(bin_means) < 2:
+        monotonic = float("nan")
+    else:
+        diffs = [bin_means[i + 1][1] - bin_means[i][1] for i in range(len(bin_means) - 1)]
+        monotonic = float(sum(1 for x in diffs if x > 0) / len(diffs))
+
+    return {"spearman": spearman, "monotonic": monotonic}
 
 
 def build_hierarchy_clusters(parent_child: dict[int, list[int]], leaf_ids: set[int], include_singletons: bool = False) -> list[set[int]]:

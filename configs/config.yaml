@@ -156,6 +156,9 @@ evaluation_metrics:
   best_partition_ward: True
   best_partition_max_k: null  # null = auto (3x true class count); set integer to override
   dasgupta_cost: False
+  hrc_sibling_triplet: True       # M_b (Tan et al. 2024) — leaf-only sibling triplet accuracy
+  hrc_origin_depth: True          # M_o (Tan et al. 2024) — Spearman(depth, ‖x‖) over class centroids
+  hrc_num_triplets: 200000        # Monte-Carlo budget for hrc_sibling_triplet
   visualization_sample_size: 5000
   test_sample_size: 0 # if 0 all datapoints are used
   # WordNet hierarchy for hierarchical evaluation (CIFAR-100 and ImageNet)

@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=lca_curv_sweep
-#SBATCH --time=4:00:00
+#SBATCH --time=8:00:00
 #SBATCH -c 16
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
