@@ -17,7 +17,45 @@ from pytorch_lightning.plugins.environments import LightningEnvironment
 import wandb
 import warnings
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import Callback, ModelCheckpoint
+
+
+class CollapseKillCallback(Callback):
+    """Stop training when the monitored test metric stays at/below a threshold.
+
+    Reads from `pl_module.last_test_metrics` (populated by the model's
+    on_train_epoch_end via _stash_test_metrics). Only checks after warmup
+    epochs so the HypHC schedule has time to ramp.
+    """
+
+    def __init__(self, monitor: str, threshold: float, warmup_epochs: int = 0, mode: str = "max"):
+        super().__init__()
+        self.monitor = monitor
+        self.threshold = float(threshold)
+        self.warmup_epochs = int(warmup_epochs)
+        if mode not in ("min", "max"):
+            raise ValueError(f"mode must be 'min' or 'max', got {mode}")
+        self.mode = mode
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        if trainer.current_epoch < self.warmup_epochs:
+            return
+        last = getattr(pl_module, "last_test_metrics", None) or {}
+        val = last.get(self.monitor)
+        if val is None:
+            return
+        if isinstance(val, list):
+            val = sum(val) / len(val) if val else None
+        if val is None:
+            return
+        bad = (val <= self.threshold) if self.mode == "max" else (val >= self.threshold)
+        if bad:
+            print(
+                f"[CollapseKill] epoch={trainer.current_epoch} {self.monitor}={val:.6g} "
+                f"crossed threshold {self.threshold} (mode={self.mode}); stopping run.",
+                flush=True,
+            )
+            trainer.should_stop = True
 
 from icecream import install  # type: ignore
 
@@ -180,6 +218,18 @@ def main(cfg: DictConfig) -> None:
 
         clustering_model = get_clustering_model(cfg, pretrain_model)
 
+        clustering_callbacks = []
+        early_stop_cfg = cfg.clustering.get("early_stop", None)
+        if early_stop_cfg is not None and early_stop_cfg.get("enabled", False):
+            clustering_callbacks.append(
+                CollapseKillCallback(
+                    monitor=early_stop_cfg.get("monitor", "test/1_nearest_neighbors_accuracy"),
+                    threshold=early_stop_cfg.get("threshold", 0.0),
+                    warmup_epochs=early_stop_cfg.get("warmup_epochs", 0),
+                    mode=early_stop_cfg.get("mode", "max"),
+                )
+            )
+
         trainer = pl.Trainer(
             logger=logger,
             max_epochs=cfg.clustering.epochs,
@@ -197,6 +247,7 @@ def main(cfg: DictConfig) -> None:
             if cfg.experiment.gradient_clip_value is not None
             else 1.0,
             plugins=[LightningEnvironment()] if is_slurm else [],
+            callbacks=clustering_callbacks if clustering_callbacks else None,
         )
         print(
             f"[DDP] clustering stage: world_size={trainer.world_size} "

@@ -124,6 +124,9 @@ class AbstractModel(pl.LightningModule):
             raise ValueError(f"Invalid manifold name: {manifold_name}")
 
         self.metrics = {}
+        # Snapshot of the most recent test_phase() results, preserved across the
+        # per-epoch metrics reset so callbacks can read it after on_train_epoch_end.
+        self.last_test_metrics: dict = {}
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -605,6 +608,11 @@ class AbstractModel(pl.LightningModule):
             epoch=epoch,
         )
 
+    def _stash_test_metrics(self) -> None:
+        snapshot = {k: v for k, v in self.metrics.items() if k.startswith("test/")}
+        if snapshot:
+            self.last_test_metrics = snapshot
+
     def on_train_start(self) -> None:
         self.test_phase()
         self.metrics[f"{self.hparams.stage}/epoch"] = self.current_epoch
@@ -620,6 +628,7 @@ class AbstractModel(pl.LightningModule):
         if isinstance(self.logger, WandbLogger):
             self.logger.experiment.log(self.metrics, step=self.current_epoch + self.hparams.global_epoch)
         self._write_metrics_to_file(self.current_epoch)
+        self._stash_test_metrics()
         self.metrics = {}
         self.train()
 
@@ -633,6 +642,7 @@ class AbstractModel(pl.LightningModule):
         if isinstance(self.logger, WandbLogger):
             self.logger.experiment.log(self.metrics, step=self.current_epoch + self.hparams.global_epoch)
         self._write_metrics_to_file(self.current_epoch)
+        self._stash_test_metrics()
         self.metrics = {}
         self.train()
 
@@ -647,6 +657,7 @@ class AbstractModel(pl.LightningModule):
         if isinstance(self.logger, WandbLogger):
             self.logger.experiment.log(self.metrics, step=self.current_epoch + self.hparams.global_epoch + 1)
         self._write_metrics_to_file(self.current_epoch + 1)
+        self._stash_test_metrics()
         self.metrics = {}
         self.train()
 

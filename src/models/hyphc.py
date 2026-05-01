@@ -132,6 +132,11 @@ class HyperbolicHCModel(AbstractModel):
             if unfreeze_backbone_from is not None:
                 resnet_backbone = self.encoder[0]  # type: ignore  # First module in Sequential is the ResNet
                 layer_names = ["layer1", "layer2", "layer3", "layer4"]
+                if not all(hasattr(resnet_backbone, ln) for ln in layer_names):
+                    raise NotImplementedError(
+                        f"unfreeze_backbone_from is only wired for ResNet backbones; got "
+                        f"{type(resnet_backbone).__name__} (e.g. ViT). Set unfreeze_backbone_from=null."
+                    )
                 if unfreeze_backbone_from not in layer_names:
                     raise ValueError(f"unfreeze_backbone_from must be one of {layer_names}, got '{unfreeze_backbone_from}'")
                 start_idx = layer_names.index(unfreeze_backbone_from)
