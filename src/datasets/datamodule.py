@@ -427,11 +427,21 @@ class ColorDataModule(pl.LightningDataModule):
             test_mask = torch.tensor(
                 [label in self.hparams.selected_classes for label in base_test.targets]
             )
-            base_train.data = base_train.data[train_mask]
+            if hasattr(base_train, "samples"):
+                # ImageFolder-style datasets (iNat18, ImageNet): filter .samples
+                # and .targets in lockstep; .imgs is an alias for .samples.
+                train_keep = train_mask.tolist()
+                test_keep = test_mask.tolist()
+                base_train.samples = [s for s, k in zip(base_train.samples, train_keep) if k]
+                base_train.imgs = base_train.samples
+                base_test.samples = [s for s, k in zip(base_test.samples, test_keep) if k]
+                base_test.imgs = base_test.samples
+            else:
+                base_train.data = base_train.data[train_mask]
+                base_test.data = base_test.data[test_mask]
             base_train.targets = [
                 label for i, label in enumerate(base_train.targets) if train_mask[i]
             ]
-            base_test.data = base_test.data[test_mask]
             base_test.targets = [
                 label for i, label in enumerate(base_test.targets) if test_mask[i]
             ]

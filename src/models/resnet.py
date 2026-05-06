@@ -7,6 +7,19 @@ from src.models.abstract import AbstractModel, FeatureScaling
 from src.models.utils import get_hyperbolic_encoding_layer_by_name
 from src.hyperbolic_math.src.manifolds import Euclidean
 
+RESNET_MODEL_TYPES = ("resnet18", "resnet34", "resnet50", "resnet101", "resnet152")
+# ViT backbones loaded via torch.hub. forward() returns CLS-token features
+# (768-d for ViT-B), so no head-stripping or attribute modifications are
+# needed. Pretrained SSL weights are baked into the hub load and override
+# any load_supervised_weights / pretrained_weights_path inputs.
+VIT_MODEL_TYPES = {
+    "dino_vitb16": ("facebookresearch/dino:main", "dino_vitb16", 768),
+    "dino_vitb8":  ("facebookresearch/dino:main", "dino_vitb8",  768),
+    "dinov2_vitb14": ("facebookresearch/dinov2", "dinov2_vitb14", 768),
+    "dinov2_vitl14": ("facebookresearch/dinov2", "dinov2_vitl14", 1024),
+    "dinov2_vitg14": ("facebookresearch/dinov2", "dinov2_vitg14", 1536),
+}
+
 
 class HyperbolicResNet(AbstractModel):
     def __init__(
@@ -88,38 +101,56 @@ class HyperbolicResNet(AbstractModel):
         if self.hparams.supervised:
             print("Supervised learning enabled", flush=True)
 
-        # Encoder
-        if self.hparams.model_type == "resnet18":
+        # Encoder — ResNet (torchvision) or ViT (torch.hub).
+        mt = self.hparams.model_type
+        if mt == "resnet18":
             self.encoder = resnet18(weights=pretrained_weights)
-        elif self.hparams.model_type == "resnet34":
+        elif mt == "resnet34":
             self.encoder = resnet34(weights=pretrained_weights)
-        elif self.hparams.model_type == "resnet50":
+        elif mt == "resnet50":
             self.encoder = resnet50(weights=pretrained_weights)
-        elif self.hparams.model_type == "resnet101":
+        elif mt == "resnet101":
             self.encoder = resnet101(weights=pretrained_weights)
-        elif self.hparams.model_type == "resnet152":
+        elif mt == "resnet152":
             self.encoder = resnet152(weights=pretrained_weights)
+        elif mt in VIT_MODEL_TYPES:
+            repo, hub_name, _ = VIT_MODEL_TYPES[mt]
+            print(f"Loading {hub_name} via torch.hub from {repo} (SSL weights baked in)", flush=True)
+            self.encoder = torch.hub.load(repo, hub_name)
         else:
-            raise ValueError(f"Invalid model type: {self.hparams.model_type}")
+            raise ValueError(f"Invalid model type: {mt}")
         # Decoder
-        self.decoder = None  # ResNet decoder not supported
+        self.decoder = None  # ResNet/ViT decoder not supported
 
-        # Replace classification head with identity to use pooled features (2048 for ResNet50, 512 for ResNet18)
-        backbone_dims = {"resnet18": 512, "resnet34": 512, "resnet50": 2048, "resnet101": 2048, "resnet152": 2048}
-        backbone_dim = backbone_dims[self.hparams.model_type]
-        self.encoder.fc = nn.Identity()
+        if mt in RESNET_MODEL_TYPES:
+            backbone_dims = {"resnet18": 512, "resnet34": 512, "resnet50": 2048,
+                             "resnet101": 2048, "resnet152": 2048}
+            backbone_dim = backbone_dims[mt]
+            # Replace classification head with identity to expose pooled features.
+            self.encoder.fc = nn.Identity()
 
-        # Modify encoder for CIFAR-10/100 (32x32 images)
-        if self.hparams.input_size == 32:
-            print("Modifying ResNet encoder for CIFAR-10/100 (32x32 images).", flush=True)
-            # Overwrite the first convolutional layer and maxpooling layer
-            self.encoder.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-            self.encoder.maxpool = nn.Identity()  # type: ignore
-        elif self.hparams.input_size == 64:
-            print("Modifying ResNet encoder for 64x64 images (removing maxpool).", flush=True)
-            self.encoder.maxpool = nn.Identity()  # type: ignore
+            # Modify encoder for CIFAR-10/100 (32x32 images)
+            if self.hparams.input_size == 32:
+                print("Modifying ResNet encoder for CIFAR-10/100 (32x32 images).", flush=True)
+                # Overwrite the first convolutional layer and maxpooling layer
+                self.encoder.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+                self.encoder.maxpool = nn.Identity()  # type: ignore
+            elif self.hparams.input_size == 64:
+                print("Modifying ResNet encoder for 64x64 images (removing maxpool).", flush=True)
+                self.encoder.maxpool = nn.Identity()  # type: ignore
+        else:
+            # ViT: forward returns the CLS-token feature (no fc head); the
+            # input-resolution branches above are ResNet-only conv stem hacks.
+            backbone_dim = VIT_MODEL_TYPES[mt][2]
 
         if self.hparams.pretrained_weights_path is not None:
+            if mt in VIT_MODEL_TYPES:
+                # ViT hub load already provides DINO SSL weights; refuse silent
+                # overrides since the state-dict key conventions differ.
+                raise ValueError(
+                    f"pretrained_weights_path is not supported for ViT model_type={mt}; "
+                    "DINO weights are loaded via torch.hub."
+                )
             print(f"Loading backbone weights from {self.hparams.pretrained_weights_path}", flush=True)
             state = torch.load(self.hparams.pretrained_weights_path, map_location="cpu", weights_only=False)
             if isinstance(state, dict) and "state_dict" in state:
@@ -130,7 +161,14 @@ class HyperbolicResNet(AbstractModel):
             missing, unexpected = self.encoder.load_state_dict(state, strict=False)
             print(f"Loaded external checkpoint: missing={len(missing)} unexpected={len(unexpected)}", flush=True)
 
-        if self.hparams.load_supervised_weights or self.hparams.pretrained_weights_path is not None:
+        # ViT hub load is treated as "weights provided" → freeze by default,
+        # matching the load_supervised / pretrained_weights_path branches.
+        weights_loaded = (
+            self.hparams.load_supervised_weights
+            or self.hparams.pretrained_weights_path is not None
+            or mt in VIT_MODEL_TYPES
+        )
+        if weights_loaded:
             for param in self.encoder.parameters():
                 param.requires_grad = False
 

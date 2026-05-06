@@ -214,17 +214,30 @@ def _create_scatter_plot(two_d_pts, labels, title, max_legend_classes=20):
 
 
 def _compute_2d_embeddings(X_sampled, manifold):
-    """Compute 2D embeddings using log map + t-SNE (hyperbolic) or PCA (Euclidean)."""
+    """Compute 2D scatter coords for the wandb visualization.
+
+    Returns (two_d_pts, method_name) where method_name is one of:
+      "raw"   — embedding is already 2D, plotted as-is in native coords;
+      "PCA"   — Euclidean d>2 reduced to 2 by PCA;
+      "t-SNE" — hyperbolic d>2 log-mapped to tangent plane then t-SNE'd.
+
+    At d=2 we skip projection on BOTH manifolds so the wandb panels are
+    apples-to-apples (no rotation on Euclidean, no logmap on Poincaré).
+    """
+    # d=2: no projection, plot raw coords for either manifold.
+    if X_sampled.shape[1] == 2:
+        pts_np = X_sampled.detach().cpu().float().numpy()
+        return torch.tensor(pts_np, dtype=X_sampled.dtype, device=X_sampled.device), "raw"
+
     if isinstance(manifold, Euclidean):
         from sklearn.decomposition import PCA as SklearnPCA
         pca = SklearnPCA(n_components=2)
         pts_np = X_sampled.detach().cpu().float().numpy()
         two_d = pca.fit_transform(pts_np)
-        return torch.tensor(two_d, dtype=X_sampled.dtype, device=X_sampled.device)
+        return torch.tensor(two_d, dtype=X_sampled.dtype, device=X_sampled.device), "PCA"
 
-    # Hyperbolic: log map to tangent space at origin, then t-SNE
+    # Hyperbolic d>2: log map to tangent space at origin, then t-SNE.
     if isinstance(manifold, Hyperboloid):
-        # Convert to PoincareBall first for logmap_0
         poincare = PoincareBall(c=manifold.c.detach().clone(), dtype=manifold.dtype)
         pts_poincare = manifold.to_poincare(X_sampled.to(manifold.dtype))
         tangent = poincare.logmap_0(pts_poincare)
@@ -234,14 +247,10 @@ def _compute_2d_embeddings(X_sampled, manifold):
         raise ValueError(f"Unsupported manifold: {manifold}")
 
     tangent_np = tangent.detach().cpu().float().numpy()
-    # Handle edge case: if dim is already 2, skip t-SNE
-    if tangent_np.shape[1] == 2:
-        return torch.tensor(tangent_np, dtype=X_sampled.dtype, device=X_sampled.device)
-
     perplexity = min(30.0, max(5.0, tangent_np.shape[0] / 4.0))
     tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42, init="pca", learning_rate="auto")
     two_d = tsne.fit_transform(tangent_np)
-    return torch.tensor(two_d, dtype=X_sampled.dtype, device=X_sampled.device)
+    return torch.tensor(two_d, dtype=X_sampled.dtype, device=X_sampled.device), "t-SNE"
 
 
 # ---------------------------------------------------------------------------
@@ -529,6 +538,7 @@ def evaluation(
 
     # --- Visualization: 2D embeddings ---
     two_d_pts = None
+    two_d_method = None
     vis_sample_indices = None
     do_vis = metrics.get("visualization", False)
 
@@ -537,7 +547,7 @@ def evaluation(
         vis_sample_indices = stratified_sample(Y_clustering, sample_size)
         points_sampled = X[vis_sample_indices]
         try:
-            two_d_pts = _compute_2d_embeddings(points_sampled, manifold)
+            two_d_pts, two_d_method = _compute_2d_embeddings(points_sampled, manifold)
         except Exception as e:
             warning(f"2D embedding computation failed: {e}")
             do_vis = False
@@ -582,6 +592,19 @@ def evaluation(
         else:
             dp_score = dendrogram_purity(distance_matrix, Y, dp_linkage, use_root=dp_use_root)
             results[f"dendrogram_purity_{dp_linkage}"] = dp_score
+
+    # --- HRC sibling triplet (M_b, leaf-only) ---
+    if metrics.get("hrc_sibling_triplet", False) and hierarchy_clusters is not None:
+        results["hrc_sibling_triplet"] = hrc_sibling_triplet_accuracy(
+            distance_matrix, Y, hierarchy_clusters,
+            num_triplets=int(metrics.get("hrc_num_triplets", 200_000)),
+        )
+
+    # --- HRC origin-depth (M_o, leaf-only) ---
+    if metrics.get("hrc_origin_depth", False) and hierarchy_clusters is not None:
+        hrc_o = hrc_origin_depth_correlation(X, Y, manifold, hierarchy_clusters)
+        results["hrc_origin_depth_spearman"] = hrc_o["spearman"]
+        results["hrc_origin_depth_monotonic"] = hrc_o["monotonic"]
 
     # --- Agglomerative clustering ---
     for linkage_name in ("single", "complete", "average", "ward"):
@@ -636,9 +659,19 @@ def evaluation(
         else:
             labels = vis_Y
 
-        method = "t-SNE" if not isinstance(manifold, Euclidean) else "PCA"
-        fig = _create_scatter_plot(two_d_pts, labels, title=f"{method} Embeddings (Ground Truth)")
-        results[f"{'tsne' if method == 't-SNE' else 'pca'}_embeddings"] = wandb.Image(fig)
+        # Honest title + stable wandb panel key. At d=2 no projection runs
+        # (raw native coords) so the title says so explicitly; >2 reports the
+        # actual reduction method. Keys split by manifold so a Euclidean run
+        # and a Poincaré run land in different panels rather than overwriting.
+        manifold_tag = "euclidean" if isinstance(manifold, Euclidean) else "hyperbolic"
+        if two_d_method == "raw":
+            title_method = f"raw 2D ({manifold_tag})"
+            key = f"raw2d_{manifold_tag}_embeddings"
+        else:
+            title_method = two_d_method
+            key = f"{'tsne' if two_d_method == 't-SNE' else 'pca'}_embeddings"
+        fig = _create_scatter_plot(two_d_pts, labels, title=f"{title_method} Embeddings (Ground Truth)")
+        results[key] = wandb.Image(fig)
         plt.close(fig)
 
     # --- Nearest neighbors accuracy ---
@@ -940,6 +973,161 @@ def dendrogram_purity(
         del cluster_label_counts[node2_id]
 
     return total_purity_sum / num_same_class_pairs
+
+
+# ---------------------------------------------------------------------------
+# HRC (Hierarchical Representation Capability) metrics — leaf-only adaptation
+# of Tan et al. 2024 "Why are HNNs Effective?" (M_b sibling, M_o origin).
+# ---------------------------------------------------------------------------
+
+def _immediate_parent_clusters(
+    hierarchy_clusters: list[set[int]],
+    leaf_ids: set[int],
+) -> dict[int, frozenset[int]]:
+    """For each leaf, the smallest cluster (≥2 leaves) that contains it.
+
+    This is the leaf-only analogue of the "immediate parent" relation —
+    siblings(c) := immediate_parent_cluster(c) \\ {c}.
+    """
+    sized = sorted(
+        ({frozenset(c) for c in hierarchy_clusters if len(c) >= 2}),
+        key=len,
+    )
+    out: dict[int, frozenset[int]] = {}
+    for c in leaf_ids:
+        for cluster in sized:
+            if c in cluster:
+                out[c] = cluster
+                break
+    return out
+
+
+def _leaf_depths(
+    hierarchy_clusters: list[set[int]],
+    leaf_ids: set[int],
+) -> dict[int, int]:
+    """Depth(c) = number of (non-trivial, non-root) clusters containing c.
+
+    A purely structural definition: deeper leaves sit inside more nested
+    ancestor clusters. Independent of any embedding.
+    """
+    sets = [frozenset(c) for c in hierarchy_clusters if len(c) >= 2]
+    return {c: sum(1 for s in sets if c in s) for c in leaf_ids}
+
+
+def hrc_sibling_triplet_accuracy(
+    distance_matrix: torch.Tensor,
+    labels: np.ndarray | torch.Tensor,
+    hierarchy_clusters: list[set[int]],
+    num_triplets: int = 200_000,
+    rng: np.random.Generator | None = None,
+) -> float:
+    """Leaf-only adaptation of the sibling metric M_b (Tan et al. 2024).
+
+    For triplets (a, p, n) where a, p are samples whose classes share an
+    immediate parent in the hierarchy and n is a sample whose class does not,
+    return the fraction satisfying d(a, p) < d(a, n).
+    """
+    labels_np = np.asarray(labels.cpu() if isinstance(labels, torch.Tensor) else labels)
+    leaf_ids = set(int(l) for l in np.unique(labels_np))
+    parent_clusters = _immediate_parent_clusters(hierarchy_clusters, leaf_ids)
+    if not parent_clusters:
+        return float("nan")
+
+    by_class: dict[int, np.ndarray] = {
+        int(c): np.where(labels_np == c)[0] for c in leaf_ids
+    }
+    if rng is None:
+        rng = np.random.default_rng(0)
+
+    dist_np = distance_matrix.cpu().numpy() if isinstance(distance_matrix, torch.Tensor) else np.asarray(distance_matrix)
+
+    eligible_classes = [c for c in leaf_ids if c in parent_clusters and len(parent_clusters[c]) >= 2]
+    if not eligible_classes:
+        return float("nan")
+    eligible_arr = np.array(eligible_classes, dtype=np.int64)
+
+    wins = 0
+    total = 0
+    for _ in range(num_triplets):
+        c_a = int(rng.choice(eligible_arr))
+        sib_classes = [s for s in parent_clusters[c_a] if s != c_a and s in by_class]
+        non_sib_classes = [s for s in leaf_ids if s not in parent_clusters[c_a]]
+        if not sib_classes or not non_sib_classes:
+            continue
+        c_p = int(rng.choice(sib_classes))
+        c_n = int(rng.choice(non_sib_classes))
+        if len(by_class[c_a]) == 0 or len(by_class[c_p]) == 0 or len(by_class[c_n]) == 0:
+            continue
+        i_a = int(rng.choice(by_class[c_a]))
+        i_p = int(rng.choice(by_class[c_p]))
+        i_n = int(rng.choice(by_class[c_n]))
+        d_ap = dist_np[i_a, i_p]
+        d_an = dist_np[i_a, i_n]
+        if d_ap < d_an:
+            wins += 1
+        total += 1
+
+    if total == 0:
+        return float("nan")
+    return wins / total
+
+
+def hrc_origin_depth_correlation(
+    X: torch.Tensor,
+    labels: np.ndarray | torch.Tensor,
+    manifold: 'Manifold',
+    hierarchy_clusters: list[set[int]],
+) -> dict[str, float]:
+    """Leaf-only adaptation of the origin metric M_o (Tan et al. 2024).
+
+    Tests whether per-class mean distance-to-origin grows with hierarchy
+    depth (deeper leaves should sit further from the manifold origin in
+    a hyperbolic embedding that respects the tree). Returns Spearman
+    correlation and a monotonicity score across depth bins.
+    """
+    labels_np = np.asarray(labels.cpu() if isinstance(labels, torch.Tensor) else labels)
+    leaf_ids = set(int(l) for l in np.unique(labels_np))
+    depths = _leaf_depths(hierarchy_clusters, leaf_ids)
+    if len(set(depths.values())) < 2:
+        return {"spearman": float("nan"), "monotonic": float("nan")}
+
+    with torch.no_grad():
+        d0 = manifold.dist_0(X).cpu().numpy()
+    d0 = np.asarray(d0).reshape(-1)
+
+    per_class_norm: dict[int, float] = {}
+    for c in leaf_ids:
+        idx = np.where(labels_np == c)[0]
+        if len(idx) == 0:
+            continue
+        per_class_norm[c] = float(np.mean(d0[idx]))
+
+    classes = sorted(c for c in leaf_ids if c in per_class_norm and c in depths)
+    depth_arr = np.array([depths[c] for c in classes], dtype=np.float64)
+    norm_arr = np.array([per_class_norm[c] for c in classes], dtype=np.float64)
+
+    def _spearman(a: np.ndarray, b: np.ndarray) -> float:
+        ra = np.argsort(np.argsort(a)).astype(np.float64)
+        rb = np.argsort(np.argsort(b)).astype(np.float64)
+        ra -= ra.mean(); rb -= rb.mean()
+        denom = (np.linalg.norm(ra) * np.linalg.norm(rb))
+        return float((ra @ rb) / denom) if denom > 0 else float("nan")
+
+    spearman = _spearman(depth_arr, norm_arr)
+
+    bin_means: list[tuple[int, float]] = []
+    for d in sorted(set(int(x) for x in depth_arr)):
+        mask = depth_arr == d
+        if mask.any():
+            bin_means.append((d, float(np.mean(norm_arr[mask]))))
+    if len(bin_means) < 2:
+        monotonic = float("nan")
+    else:
+        diffs = [bin_means[i + 1][1] - bin_means[i][1] for i in range(len(bin_means) - 1)]
+        monotonic = float(sum(1 for x in diffs if x > 0) / len(diffs))
+
+    return {"spearman": spearman, "monotonic": monotonic}
 
 
 def build_hierarchy_clusters(parent_child: dict[int, list[int]], leaf_ids: set[int], include_singletons: bool = False) -> list[set[int]]:

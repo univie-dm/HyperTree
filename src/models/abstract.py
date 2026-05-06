@@ -124,6 +124,9 @@ class AbstractModel(pl.LightningModule):
             raise ValueError(f"Invalid manifold name: {manifold_name}")
 
         self.metrics = {}
+        # Snapshot of the most recent test_phase() results, preserved across the
+        # per-epoch metrics reset so callbacks can read it after on_train_epoch_end.
+        self.last_test_metrics: dict = {}
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -415,7 +418,15 @@ class AbstractModel(pl.LightningModule):
                 _dump_prefix = os.environ.get("HYP_DUMP_EMB")
                 if _dump_prefix:
                     os.makedirs(os.path.dirname(_dump_prefix) or ".", exist_ok=True)
-                    _dump_path = f"{_dump_prefix}_ce{self.current_epoch}.pt"
+                    # Stage suffix so clustering-stage dumps don't overwrite
+                    # pretrain dumps (Lightning resets current_epoch per fit).
+                    # Pretrain keeps the original "_ce{ep}.pt" name so existing
+                    # LCA-aggregation tooling still matches.
+                    _stage = getattr(self.hparams, "stage", "pretrain")
+                    if _stage and _stage != "pretrain":
+                        _dump_path = f"{_dump_prefix}_{_stage}_ce{self.current_epoch}.pt"
+                    else:
+                        _dump_path = f"{_dump_prefix}_ce{self.current_epoch}.pt"
                     torch.save(
                         (all_embeddings.detach().cpu(), all_labels.detach().cpu(), torch.arange(len(all_labels))),
                         _dump_path,
@@ -605,6 +616,11 @@ class AbstractModel(pl.LightningModule):
             epoch=epoch,
         )
 
+    def _stash_test_metrics(self) -> None:
+        snapshot = {k: v for k, v in self.metrics.items() if k.startswith("test/")}
+        if snapshot:
+            self.last_test_metrics = snapshot
+
     def on_train_start(self) -> None:
         self.test_phase()
         self.metrics[f"{self.hparams.stage}/epoch"] = self.current_epoch
@@ -620,6 +636,7 @@ class AbstractModel(pl.LightningModule):
         if isinstance(self.logger, WandbLogger):
             self.logger.experiment.log(self.metrics, step=self.current_epoch + self.hparams.global_epoch)
         self._write_metrics_to_file(self.current_epoch)
+        self._stash_test_metrics()
         self.metrics = {}
         self.train()
 
@@ -633,6 +650,7 @@ class AbstractModel(pl.LightningModule):
         if isinstance(self.logger, WandbLogger):
             self.logger.experiment.log(self.metrics, step=self.current_epoch + self.hparams.global_epoch)
         self._write_metrics_to_file(self.current_epoch)
+        self._stash_test_metrics()
         self.metrics = {}
         self.train()
 
@@ -647,6 +665,7 @@ class AbstractModel(pl.LightningModule):
         if isinstance(self.logger, WandbLogger):
             self.logger.experiment.log(self.metrics, step=self.current_epoch + self.hparams.global_epoch + 1)
         self._write_metrics_to_file(self.current_epoch + 1)
+        self._stash_test_metrics()
         self.metrics = {}
         self.train()
 
