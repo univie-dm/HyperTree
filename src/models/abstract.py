@@ -418,7 +418,15 @@ class AbstractModel(pl.LightningModule):
                 _dump_prefix = os.environ.get("HYP_DUMP_EMB")
                 if _dump_prefix:
                     os.makedirs(os.path.dirname(_dump_prefix) or ".", exist_ok=True)
-                    _dump_path = f"{_dump_prefix}_ce{self.current_epoch}.pt"
+                    # Stage suffix so clustering-stage dumps don't overwrite
+                    # pretrain dumps (Lightning resets current_epoch per fit).
+                    # Pretrain keeps the original "_ce{ep}.pt" name so existing
+                    # LCA-aggregation tooling still matches.
+                    _stage = getattr(self.hparams, "stage", "pretrain")
+                    if _stage and _stage != "pretrain":
+                        _dump_path = f"{_dump_prefix}_{_stage}_ce{self.current_epoch}.pt"
+                    else:
+                        _dump_path = f"{_dump_prefix}_ce{self.current_epoch}.pt"
                     torch.save(
                         (all_embeddings.detach().cpu(), all_labels.detach().cpu(), torch.arange(len(all_labels))),
                         _dump_path,

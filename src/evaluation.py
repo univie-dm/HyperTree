@@ -214,17 +214,30 @@ def _create_scatter_plot(two_d_pts, labels, title, max_legend_classes=20):
 
 
 def _compute_2d_embeddings(X_sampled, manifold):
-    """Compute 2D embeddings using log map + t-SNE (hyperbolic) or PCA (Euclidean)."""
+    """Compute 2D scatter coords for the wandb visualization.
+
+    Returns (two_d_pts, method_name) where method_name is one of:
+      "raw"   — embedding is already 2D, plotted as-is in native coords;
+      "PCA"   — Euclidean d>2 reduced to 2 by PCA;
+      "t-SNE" — hyperbolic d>2 log-mapped to tangent plane then t-SNE'd.
+
+    At d=2 we skip projection on BOTH manifolds so the wandb panels are
+    apples-to-apples (no rotation on Euclidean, no logmap on Poincaré).
+    """
+    # d=2: no projection, plot raw coords for either manifold.
+    if X_sampled.shape[1] == 2:
+        pts_np = X_sampled.detach().cpu().float().numpy()
+        return torch.tensor(pts_np, dtype=X_sampled.dtype, device=X_sampled.device), "raw"
+
     if isinstance(manifold, Euclidean):
         from sklearn.decomposition import PCA as SklearnPCA
         pca = SklearnPCA(n_components=2)
         pts_np = X_sampled.detach().cpu().float().numpy()
         two_d = pca.fit_transform(pts_np)
-        return torch.tensor(two_d, dtype=X_sampled.dtype, device=X_sampled.device)
+        return torch.tensor(two_d, dtype=X_sampled.dtype, device=X_sampled.device), "PCA"
 
-    # Hyperbolic: log map to tangent space at origin, then t-SNE
+    # Hyperbolic d>2: log map to tangent space at origin, then t-SNE.
     if isinstance(manifold, Hyperboloid):
-        # Convert to PoincareBall first for logmap_0
         poincare = PoincareBall(c=manifold.c.detach().clone(), dtype=manifold.dtype)
         pts_poincare = manifold.to_poincare(X_sampled.to(manifold.dtype))
         tangent = poincare.logmap_0(pts_poincare)
@@ -234,14 +247,10 @@ def _compute_2d_embeddings(X_sampled, manifold):
         raise ValueError(f"Unsupported manifold: {manifold}")
 
     tangent_np = tangent.detach().cpu().float().numpy()
-    # Handle edge case: if dim is already 2, skip t-SNE
-    if tangent_np.shape[1] == 2:
-        return torch.tensor(tangent_np, dtype=X_sampled.dtype, device=X_sampled.device)
-
     perplexity = min(30.0, max(5.0, tangent_np.shape[0] / 4.0))
     tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42, init="pca", learning_rate="auto")
     two_d = tsne.fit_transform(tangent_np)
-    return torch.tensor(two_d, dtype=X_sampled.dtype, device=X_sampled.device)
+    return torch.tensor(two_d, dtype=X_sampled.dtype, device=X_sampled.device), "t-SNE"
 
 
 # ---------------------------------------------------------------------------
@@ -529,6 +538,7 @@ def evaluation(
 
     # --- Visualization: 2D embeddings ---
     two_d_pts = None
+    two_d_method = None
     vis_sample_indices = None
     do_vis = metrics.get("visualization", False)
 
@@ -537,7 +547,7 @@ def evaluation(
         vis_sample_indices = stratified_sample(Y_clustering, sample_size)
         points_sampled = X[vis_sample_indices]
         try:
-            two_d_pts = _compute_2d_embeddings(points_sampled, manifold)
+            two_d_pts, two_d_method = _compute_2d_embeddings(points_sampled, manifold)
         except Exception as e:
             warning(f"2D embedding computation failed: {e}")
             do_vis = False
@@ -649,9 +659,19 @@ def evaluation(
         else:
             labels = vis_Y
 
-        method = "t-SNE" if not isinstance(manifold, Euclidean) else "PCA"
-        fig = _create_scatter_plot(two_d_pts, labels, title=f"{method} Embeddings (Ground Truth)")
-        results[f"{'tsne' if method == 't-SNE' else 'pca'}_embeddings"] = wandb.Image(fig)
+        # Honest title + stable wandb panel key. At d=2 no projection runs
+        # (raw native coords) so the title says so explicitly; >2 reports the
+        # actual reduction method. Keys split by manifold so a Euclidean run
+        # and a Poincaré run land in different panels rather than overwriting.
+        manifold_tag = "euclidean" if isinstance(manifold, Euclidean) else "hyperbolic"
+        if two_d_method == "raw":
+            title_method = f"raw 2D ({manifold_tag})"
+            key = f"raw2d_{manifold_tag}_embeddings"
+        else:
+            title_method = two_d_method
+            key = f"{'tsne' if two_d_method == 't-SNE' else 'pca'}_embeddings"
+        fig = _create_scatter_plot(two_d_pts, labels, title=f"{title_method} Embeddings (Ground Truth)")
+        results[key] = wandb.Image(fig)
         plt.close(fig)
 
     # --- Nearest neighbors accuracy ---

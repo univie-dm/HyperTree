@@ -67,6 +67,7 @@ clustering:
   enable_checkpointing: False
   accumulate_gradients: 4
   freeze_encoder: True
+  unfreeze_backbone_from: null
   lr_scheduler:
     type: warmup_cosine
     interval: 10
@@ -124,6 +125,7 @@ evaluation_metrics:
   agglomerative_clustering_average: False
   agglomerative_clustering_ward: True
   nearest_neighbors_accuracy: True
+  recall_at_k: True
   spectral_clustering: False
   visualization: True
   kmeans: False

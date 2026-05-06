@@ -57,8 +57,20 @@ CONDS=(
 
 IFS=':' read -r BACKBONE MANIFOLD CURV CND_TAG <<< "${CONDS[$SLURM_ARRAY_TASK_ID]}"
 
+# HypHC LCA op only supports hyperbolic manifolds. For Euclidean conditions,
+# disable the hyperbolic loss entirely (matches sbatch_cifar100_euclidean_d16.sh
+# pattern). The Euclidean run then becomes "frozen ViT-B + projection head trained
+# with contrastive loss", which is the right baseline for the manifold ablation.
+if [ "${MANIFOLD}" = "Euclidean" ]; then
+    HC_START=0.0
+    HC_END=0.0
+else
+    HC_START=0.0
+    HC_END=5.0
+fi
+
 echo "=== inat18_vitb task ${SLURM_ARRAY_TASK_ID}: ${CND_TAG} ==="
-echo "    backbone=${BACKBONE}  manifold=${MANIFOLD}  c=${CURV}"
+echo "    backbone=${BACKBONE}  manifold=${MANIFOLD}  c=${CURV}  hc_end=${HC_END}"
 
 LOCAL_DATA="/tmp/inat18"
 if [ ! -d "$LOCAL_DATA" ] && [ -d "$DATA/inat18" ]; then
@@ -99,8 +111,8 @@ uv run python train.py --config-name inat18_dino \
     clustering.freeze_encoder=True \
     clustering.unfreeze_backbone_from=null \
     clustering.accumulate_gradients=2 \
-    clustering.hyperbolic_loss.start_weight=0.0 \
-    clustering.hyperbolic_loss.end_weight=5.0 \
+    clustering.hyperbolic_loss.start_weight=${HC_START} \
+    clustering.hyperbolic_loss.end_weight=${HC_END} \
     clustering.hyperbolic_loss.weight_interval=20 \
     clustering.hyperbolic_loss.start_temperature=1.0 \
     clustering.hyperbolic_loss.end_temperature=0.5 \

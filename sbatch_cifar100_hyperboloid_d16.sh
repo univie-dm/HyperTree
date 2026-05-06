@@ -64,18 +64,22 @@ uv run python train.py \
     pretraining.contrastive_loss.temperature=0.5 \
     clustering.epochs=300 \
     clustering.learning_rate=0.0001 \
-    clustering.freeze_encoder=False \
+    clustering.freeze_encoder=True \
     clustering.contrastive_loss.enabled=True \
     clustering.contrastive_loss.weight=0.1 \
     clustering.contrastive_loss.temperature=0.5 \
     clustering.hyperbolic_loss.start_weight=1.0 \
     clustering.hyperbolic_loss.end_weight=5.0 \
+    clustering.hyperbolic_loss.weight_interval=250 \
     clustering.hyperbolic_loss.start_temperature=0.2 \
     clustering.hyperbolic_loss.end_temperature=0.1 \
+    clustering.hyperbolic_loss.temperature_interval=250 \
     clustering.hyperbolic_loss.sampling_alpha=0.2 \
+    clustering.hyperbolic_loss.sampling_eps=0.01 \
+    clustering.hyperbolic_loss.use_backbone_knn_similarities=False \
     architecture.hyperbolic_smoothing=50.0 \
     clustering.regularizer.enabled=False \
     evaluation_metrics.dendrogrampurity_use_root=True \
-    wandb.tags='[cifar100,manifold_ablation,hyperboloid,d16,paper_main,seed'${SEED}']'
+    wandb.tags='[cifar100,manifold_ablation,hyperboloid,d16,hist_revert,paper_main,seed'${SEED}']'
 
 module purge

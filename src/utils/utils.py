@@ -201,7 +201,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
         )
     elif cfg.architecture.model_type in [
         "resnet18", "resnet34", "resnet50", "resnet101", "resnet152",
-        "dino_vitb16", "dino_vitb8", "dinov2_vitb14",
+        "dino_vitb16", "dino_vitb8", "dinov2_vitb14", "dinov2_vitl14", "dinov2_vitg14",
     ]:
         model = HyperbolicResNet(
             # Architecture

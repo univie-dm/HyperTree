@@ -16,6 +16,8 @@ VIT_MODEL_TYPES = {
     "dino_vitb16": ("facebookresearch/dino:main", "dino_vitb16", 768),
     "dino_vitb8":  ("facebookresearch/dino:main", "dino_vitb8",  768),
     "dinov2_vitb14": ("facebookresearch/dinov2", "dinov2_vitb14", 768),
+    "dinov2_vitl14": ("facebookresearch/dinov2", "dinov2_vitl14", 1024),
+    "dinov2_vitg14": ("facebookresearch/dinov2", "dinov2_vitg14", 1536),
 }
 
 

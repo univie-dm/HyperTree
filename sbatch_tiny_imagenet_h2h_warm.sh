@@ -8,7 +8,7 @@
 #SBATCH --output=logs/tiny_imagenet_h2h_warm_%A_%a.log
 #SBATCH -A datamining
 #SBATCH -x galadriel
-#SBATCH --array=0-8%3
+#SBATCH --array=0-8
 
 export PYTHON_VERSION=3.11
 export ENV_NAME=hyper
