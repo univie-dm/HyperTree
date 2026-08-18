@@ -119,7 +119,16 @@ class AbstractModel(pl.LightningModule):
         elif manifold_name == "Hyperboloid":
             self.manifold = Hyperboloid(c=c_tensor, dtype=manifold_precision, dist_version="smoothened")
         elif manifold_name == "PoincareBall":
-            self.manifold = PoincareBall(c=c_tensor, dtype=manifold_precision)
+            # HYP_MAX_ENORM_EPS widens the safety margin to the ball boundary.
+            # The float64 default (1e-8) lets training saturate the boundary:
+            # trained checkpoints land at 1 - ||x|| ~ 1e-8, where (1 - c||x||^2)
+            # is ~2e-8 and known to only ~1e-16 absolute, so geodesic distances
+            # collapse into ties (measured: 0.1-1.6% distinct pairwise values,
+            # against 100% for the epoch-0 anchor). Set e.g. 1e-4 to keep the
+            # embedding in a numerically well-resolved region. Unset = unchanged.
+            _eps = os.environ.get("HYP_MAX_ENORM_EPS")
+            _kw = {"max_enorm_eps": float(_eps)} if _eps else {}
+            self.manifold = PoincareBall(c=c_tensor, dtype=manifold_precision, **_kw)
         else:
             raise ValueError(f"Invalid manifold name: {manifold_name}")
 
@@ -677,6 +686,10 @@ class AbstractModel(pl.LightningModule):
         c: torch.Tensor = self.manifold.c  # type: ignore
         lcas = torch.zeros((n, n), dtype=points.dtype, device=device)
 
+        # Coneheads umbral shadow-cone join (sup2) as the LCA readout.
+        if version == 'coneheads':
+            return self._coneheads_lca_depth(points, lcas)
+
         # Pre-compute point norms version=='ours'
         if version == 'ours':
             point_norms = points.norm(p=2, dim=-1, keepdim=True)
@@ -756,6 +769,46 @@ class AbstractModel(pl.LightningModule):
             lcas[batch_col, batch_row] = lca_depth
 
         return lcas
+
+    def _coneheads_lca_depth(self, points: torch.Tensor, lcas: torch.Tensor) -> torch.Tensor:
+        """LCA 'depth' from the Coneheads (NeurIPS 2023) umbral shadow-cone join.
+
+        Maps the Poincaré-ball points into the upper half-space (inversion in the
+        sphere at the boundary pole ``b = -e_last / sqrt(c)``) and reads the height
+        of the umbral ``sup2`` join of each pair: a low join (small height) sits
+        deep near the leaves = closely related; a high join sits near the root =
+        distantly related. We return it as a hyperbolic vertical depth
+        ``ln(h0 / sup_h) / sqrt(c)`` (``h0 = 1/sqrt(c)`` is the image of the origin)
+        so that *larger = deeper = more related*, matching ``dist_0``'s sign and
+        (logarithmic) scale, which the triplet-softmax temperature is tuned for.
+        """
+        n = points.shape[0]
+        device = points.device
+        cf = float(self.manifold.c)  # type: ignore
+        sqrt_c = cf ** 0.5
+        inv_sqrt_c = 1.0 / sqrt_c
+        radius = float(getattr(self.hparams, "coneheads_radius", 0.05))
+        sinh_r = torch.sinh(torch.tensor(sqrt_c * radius, device=device, dtype=points.dtype)).clamp(min=1e-15)
+
+        # Ball -> upper half-space; the last coordinate is the (hyperbolic) height.
+        b = torch.zeros_like(points)
+        b[..., -1] = -inv_sqrt_c
+        zb = points - b
+        sq = (zb * zb).sum(dim=-1, keepdim=True).clamp(min=1e-15)
+        hs = b + (2.0 / cf) * zb / sq
+
+        row_idx, col_idx = torch.triu_indices(n, n, 1, device=device)
+        u, v = hs[row_idx], hs[col_idx]
+        u_d, v_d = u[..., -1], v[..., -1]
+        lat = (u[..., :-1] - v[..., :-1]).norm(dim=-1)
+        mix = lat / (2.0 * sinh_r) + 0.5 * (u_d + v_d)
+        sup_h = torch.maximum(torch.maximum(u_d, v_d), mix).clamp(min=1e-6)
+        depth = torch.log(inv_sqrt_c / sup_h) / sqrt_c
+
+        lcas[row_idx, col_idx] = depth
+        lcas[col_idx, row_idx] = depth
+        return lcas
+
 
 class FeatureScaling(torch.nn.Module):
     def __init__(

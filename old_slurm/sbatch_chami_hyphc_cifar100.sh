@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=chami_c100
-#SBATCH --time=06:00:00
+#SBATCH --job-name=chami_c100_60k
+#SBATCH --time=16:00:00
 #SBATCH -c 16
-#SBATCH --mem=64G
+#SBATCH --mem=192G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint='nvidia-h100|nvidia-h200'
 #SBATCH --output=logs/chami_hyphc_cifar100_%A_%a.log
@@ -49,7 +49,7 @@ SEED_IDX=$((SLURM_ARRAY_TASK_ID % 3))
 RANK=${RANKS[$RANK_IDX]}
 SEED=${SEEDS[$SEED_IDX]}
 
-OUT_PT="baselines/chami_hyphc/cifar100_val_d${RANK}_s${SEED}.pt"
+OUT_PT="baselines/chami_hyphc/cifar100_all60k_d${RANK}_s${SEED}.pt"
 
 echo "=== chami_c100 task ${SLURM_ARRAY_TASK_ID}: rank=${RANK} seed=${SEED} ==="
 
@@ -62,15 +62,21 @@ uv run python scripts/run_chami_hyphc_cifar100.py \
     --temperature 0.05 \
     --anneal_every 20 \
     --anneal_factor 0.5 \
+    --num_samples 2000000 \
     --data_root data \
-    --split test \
+    --split all \
     --out_pt ${OUT_PT}
+# NOTE: at n=60k, all-triples enumeration is C(60000,3) ~= 3.6e13 (the O(n^3)
+# wall from Sec 3 — intractable), so HypHC is run with a sampled budget of
+# 2M triples/epoch. This is itself ~74x larger than our method's ~27k
+# triples/step sample-complexity bound (Thm 4.4), which is n-independent.
 
 echo "=== eval ==="
 uv run python scripts/eval_baseline_embeddings.py \
     --emb_path ${OUT_PT} \
-    --manifold poincare --c 1.0 \
+    --manifold poincare --c 1.0 --use_root False \
     --dataset cifar100 \
-    --tag chami_hyphc_cifar100_d${RANK}_s${SEED}
+    --test_sample_size 10000 \
+    --tag chami_hyphc_cifar100_60k_d${RANK}_s${SEED}
 
 module purge

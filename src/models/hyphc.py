@@ -1,4 +1,6 @@
 import math
+import os
+import time
 import torch
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
@@ -33,11 +35,13 @@ class HyperbolicHCModel(AbstractModel):
         hyperbolic_loss_end_temperature: float = 0.1,
         hyperbolic_loss_temperature_interval: int = 250,
         lca_version: str = "ours",
+        coneheads_radius: float = 0.05,
         loss_version: str = "normalized",
         sampling_strategy: str | None = "importance",
         sampling_eps: float = 1e-3,
         sampling_delta: float = 1e-2,
         sampling_alpha: float = 0.5,
+        sampling_running_extrema: bool = False,
         uniform_sample_size: int = 1_000,
         log_approximation_diff: bool = False,
         # Contrastive Loss parameters
@@ -330,7 +334,7 @@ class HyperbolicHCModel(AbstractModel):
         device = embeddings.device
 
         # Compute the LCA depths
-        if self.hparams.lca_version not in ["ours", "chami"]:
+        if self.hparams.lca_version not in ["ours", "chami", "coneheads"]:
             raise ValueError(f"Invalid LCA version: {self.hparams.lca_version}")
         lcas = self.compute_lca_depth(embeddings, version=self.hparams.lca_version)
 
@@ -394,13 +398,27 @@ class HyperbolicHCModel(AbstractModel):
         upper_sims = similarities[triu_idx[0], triu_idx[1]]
         min_sim = upper_sims.min().detach()
         max_sim = upper_sims.max().detach()
+        # Running-extrema variant (rebuttal DC2): instead of the current
+        # batch's similarity extrema, accumulate a global running min/max across
+        # all batches seen so far, giving a tighter estimate of the true
+        # dataset-level w_min/w_max used in the acceptance normalizer. Gated so
+        # the default (batch-level) behavior is unchanged.
+        if getattr(self.hparams, "sampling_running_extrema", False):
+            if not hasattr(self, "running_sim_min"):
+                self.running_sim_min = min_sim
+                self.running_sim_max = max_sim
+            else:
+                self.running_sim_min = torch.minimum(self.running_sim_min, min_sim)
+                self.running_sim_max = torch.maximum(self.running_sim_max, max_sim)
+            min_sim = self.running_sim_min
+            max_sim = self.running_sim_max
         max_min_delta = (max_sim - min_sim).detach()
         self.metrics.setdefault("sampling/similarities_min", []).append(min_sim)
         self.metrics.setdefault("sampling/similarities_max", []).append(max_sim)
         self.metrics.setdefault("sampling/similarities_max_min_delta", []).append(max_min_delta)
 
         # Compute the LCA depths
-        if self.hparams.lca_version not in ["ours", "chami"]:
+        if self.hparams.lca_version not in ["ours", "chami", "coneheads"]:
             raise ValueError(f"Invalid LCA version: {self.hparams.lca_version}")
         lcas = self.compute_lca_depth(embeddings, version=self.hparams.lca_version)
 
@@ -433,6 +451,11 @@ class HyperbolicHCModel(AbstractModel):
             elif self.hparams.sampling_strategy == "importance":
                 # Sample triplets using importance sampling
                 accepted_triplets: list[torch.Tensor] = []
+                _prof = os.environ.get("HYP_PROFILE_SAMPLER")
+                if _prof:
+                    if device.type == "cuda":
+                        torch.cuda.synchronize()
+                    _t_sampler = time.perf_counter()
                 total_num_accepted = 0
                 total_num_sampled = 0
 
@@ -473,12 +496,23 @@ class HyperbolicHCModel(AbstractModel):
                     total_num_sampled += sample_size
 
                 # Update the acceptance rate cache for the next training step
+                if _prof:
+                    if device.type == "cuda":
+                        torch.cuda.synchronize()
+                    self.metrics.setdefault("profile/sampler_ms", []).append(
+                        (time.perf_counter() - _t_sampler) * 1000.0)
                 self.cached_acceptance_rate = max(total_num_accepted / total_num_sampled, 0.01)
                 triplets = torch.cat(accepted_triplets, dim=0)
                 self.metrics.setdefault("sampling/acceptance_rate", []).append(self.cached_acceptance_rate)
+                self.metrics.setdefault("sampling/candidate_triplets", []).append(total_num_sampled)
             elif self.hparams.sampling_strategy == "power_weighted":
                 # Sample triplets using power-weighted sampling
                 accepted_triplets: list[torch.Tensor] = []
+                _prof = os.environ.get("HYP_PROFILE_SAMPLER")
+                if _prof:
+                    if device.type == "cuda":
+                        torch.cuda.synchronize()
+                    _t_sampler = time.perf_counter()
                 total_num_accepted = 0
                 total_num_sampled = 0
 
@@ -520,6 +554,11 @@ class HyperbolicHCModel(AbstractModel):
                     total_num_sampled += sample_size
 
                 # Update the acceptance rate cache for the next training step
+                if _prof:
+                    if device.type == "cuda":
+                        torch.cuda.synchronize()
+                    self.metrics.setdefault("profile/sampler_ms", []).append(
+                        (time.perf_counter() - _t_sampler) * 1000.0)
                 self.cached_acceptance_rate = max(total_num_accepted / total_num_sampled, 0.01)
                 triplets = torch.cat(accepted_triplets, dim=0)
                 self.metrics.setdefault("sampling/acceptance_rate", []).append(self.cached_acceptance_rate)
@@ -717,6 +756,22 @@ class HyperbolicHCModel(AbstractModel):
             return torch.zeros_like(x), manifold_z
         x_recon = self.decode(manifold_z)
         return x_recon, manifold_z
+
+    def on_train_batch_start(self, batch, batch_idx):  # noqa: D102
+        if os.environ.get("HYP_PROFILE_SAMPLER"):
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            self._prof_step_t0 = time.perf_counter()
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):  # noqa: D102
+        if os.environ.get("HYP_PROFILE_SAMPLER") and hasattr(self, "_prof_step_t0"):
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            _step_ms = (time.perf_counter() - self._prof_step_t0) * 1000.0
+            self.metrics.setdefault("profile/step_ms", []).append(_step_ms)
+            _s = self.metrics.get("profile/sampler_ms", [])
+            if _s:
+                print(f"PROF sampler_ms={_s[-1]:.3f} step_ms={_step_ms:.3f}", flush=True)
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         x_aug_1, x_aug_2, x, _ = batch

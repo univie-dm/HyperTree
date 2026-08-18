@@ -76,7 +76,8 @@ clustering:
     start_temperature: 0.2
     end_temperature: 0.1
     temperature_interval: 250 # 0 equals to end_temperature all times
-    lca_version: 'ours' # 'ours', 'chami'
+    lca_version: 'ours' # 'ours', 'chami', 'coneheads'
+    coneheads_radius: 0.05 # umbral shadow-cone aperture radius (only used when lca_version='coneheads')
     loss_version: 'normalized' # 'wang', 'normalized', 'chami' (chami & wang requires use_importance_sampling=False)
     sampling_strategy: 'importance' # None/'None', 'uniform', 'importance', 'power_weighted'
     sampling_eps: 0.001 # accuracy of sampling

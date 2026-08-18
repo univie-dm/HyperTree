@@ -202,6 +202,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig, input_dim: int) -> Union[Hyper
     elif cfg.architecture.model_type in [
         "resnet18", "resnet34", "resnet50", "resnet101", "resnet152",
         "dino_vitb16", "dino_vitb8", "dinov2_vitb14", "dinov2_vitl14", "dinov2_vitg14",
+        "bioclip",
     ]:
         model = HyperbolicResNet(
             # Architecture
@@ -271,11 +272,13 @@ def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: Union[Hyperb
         hyperbolic_loss_end_temperature=cfg.clustering.hyperbolic_loss.end_temperature,
         hyperbolic_loss_temperature_interval=cfg.clustering.hyperbolic_loss.temperature_interval,
         lca_version=cfg.clustering.hyperbolic_loss.lca_version,
+        coneheads_radius=cfg.clustering.hyperbolic_loss.get("coneheads_radius", 0.05),
         loss_version=cfg.clustering.hyperbolic_loss.loss_version,
         sampling_strategy=cfg.clustering.hyperbolic_loss.sampling_strategy,
         sampling_eps=cfg.clustering.hyperbolic_loss.sampling_eps,
         sampling_delta=cfg.clustering.hyperbolic_loss.sampling_delta,
         sampling_alpha=cfg.clustering.hyperbolic_loss.sampling_alpha,
+        sampling_running_extrema=cfg.clustering.hyperbolic_loss.get("sampling_running_extrema", False),
         uniform_sample_size=cfg.clustering.hyperbolic_loss.uniform_sample_size,
         log_approximation_diff=cfg.clustering.hyperbolic_loss.log_approximation_diff,
         # Contrastive Loss parameters

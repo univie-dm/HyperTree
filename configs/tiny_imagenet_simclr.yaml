@@ -64,6 +64,7 @@ clustering:
     end_temperature: 0.1
     temperature_interval: 150
     lca_version: ours
+    coneheads_radius: 0.05
     loss_version: normalized
     sampling_strategy: importance
     sampling_eps: 0.001

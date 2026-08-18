@@ -209,3 +209,7 @@ baselines/*
 ./*.json
 gHHC
 HypHC
+paper
+results_hdp_per_level/
+poster/
+figures/poster/

@@ -19,6 +19,38 @@ VIT_MODEL_TYPES = {
     "dinov2_vitl14": ("facebookresearch/dinov2", "dinov2_vitl14", 1024),
     "dinov2_vitg14": ("facebookresearch/dinov2", "dinov2_vitg14", 1536),
 }
+# BioCLIP (Stevens et al., CVPR 2024): CLIP ViT-B/16 on TreeOfLife-10M, loaded
+# via open_clip. 512-d image features. Frozen backbone for iNat18 rebuttal.
+BIOCLIP_DIM = 512
+_IMAGENET_MEAN = (0.485, 0.456, 0.406)
+_IMAGENET_STD = (0.229, 0.224, 0.225)
+_CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
+_CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
+
+
+class _BioCLIPBackbone(nn.Module):
+    """Frozen BioCLIP image encoder. The datamodule feeds ImageNet-normalized
+    tensors; BioCLIP expects CLIP normalization, so we re-normalize on the fly
+    (invert ImageNet stats, apply CLIP stats) as a fixed per-channel affine so
+    the features match the standalone extraction (scripts/extract_bioclip.py).
+    Returns a 512-d image-feature vector per image."""
+
+    def __init__(self):
+        super().__init__()
+        import open_clip  # lazy: only required when this backbone is used
+        clip_model, _, _ = open_clip.create_model_and_transforms("hf-hub:imageomics/bioclip")
+        self.clip = clip_model
+        in_mean = torch.tensor(_IMAGENET_MEAN).view(1, 3, 1, 1)
+        in_std = torch.tensor(_IMAGENET_STD).view(1, 3, 1, 1)
+        clip_mean = torch.tensor(_CLIP_MEAN).view(1, 3, 1, 1)
+        clip_std = torch.tensor(_CLIP_STD).view(1, 3, 1, 1)
+        # x_clip = (x_in * in_std + in_mean - clip_mean) / clip_std
+        self.register_buffer("renorm_scale", in_std / clip_std)
+        self.register_buffer("renorm_shift", (in_mean - clip_mean) / clip_std)
+
+    def forward(self, x):
+        x = x * self.renorm_scale + self.renorm_shift
+        return self.clip.encode_image(x)
 
 
 class HyperbolicResNet(AbstractModel):
@@ -117,6 +149,9 @@ class HyperbolicResNet(AbstractModel):
             repo, hub_name, _ = VIT_MODEL_TYPES[mt]
             print(f"Loading {hub_name} via torch.hub from {repo} (SSL weights baked in)", flush=True)
             self.encoder = torch.hub.load(repo, hub_name)
+        elif mt == "bioclip":
+            print("Loading BioCLIP (hf-hub:imageomics/bioclip) via open_clip (frozen)", flush=True)
+            self.encoder = _BioCLIPBackbone()
         else:
             raise ValueError(f"Invalid model type: {mt}")
         # Decoder
@@ -138,18 +173,20 @@ class HyperbolicResNet(AbstractModel):
             elif self.hparams.input_size == 64:
                 print("Modifying ResNet encoder for 64x64 images (removing maxpool).", flush=True)
                 self.encoder.maxpool = nn.Identity()  # type: ignore
+        elif mt == "bioclip":
+            backbone_dim = BIOCLIP_DIM
         else:
             # ViT: forward returns the CLS-token feature (no fc head); the
             # input-resolution branches above are ResNet-only conv stem hacks.
             backbone_dim = VIT_MODEL_TYPES[mt][2]
 
         if self.hparams.pretrained_weights_path is not None:
-            if mt in VIT_MODEL_TYPES:
-                # ViT hub load already provides DINO SSL weights; refuse silent
-                # overrides since the state-dict key conventions differ.
+            if mt in VIT_MODEL_TYPES or mt == "bioclip":
+                # ViT hub / BioCLIP loads already provide pretrained weights;
+                # refuse silent overrides since the state-dict conventions differ.
                 raise ValueError(
-                    f"pretrained_weights_path is not supported for ViT model_type={mt}; "
-                    "DINO weights are loaded via torch.hub."
+                    f"pretrained_weights_path is not supported for model_type={mt}; "
+                    "pretrained weights are loaded via torch.hub / open_clip."
                 )
             print(f"Loading backbone weights from {self.hparams.pretrained_weights_path}", flush=True)
             state = torch.load(self.hparams.pretrained_weights_path, map_location="cpu", weights_only=False)
@@ -167,6 +204,7 @@ class HyperbolicResNet(AbstractModel):
             self.hparams.load_supervised_weights
             or self.hparams.pretrained_weights_path is not None
             or mt in VIT_MODEL_TYPES
+            or mt == "bioclip"
         )
         if weights_loaded:
             for param in self.encoder.parameters():
