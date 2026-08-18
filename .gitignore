@@ -213,3 +213,9 @@ paper
 results_hdp_per_level/
 poster/
 figures/poster/
+docs/
+figures/
+scripts/
+related_work/
+lightning_logs/
+baseline_dp_eval/
