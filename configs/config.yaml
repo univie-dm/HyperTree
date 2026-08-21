@@ -6,6 +6,8 @@ experiment:
   log_interval: 10
   optimizer: 'Adam' # 'Adam', 'SGD'
   gradient_clip_value: 5.0 # None, Float
+  training_precision: '32-true' # Lightning autocast, PRETRAINING stage only. '32-true', 'bf16-mixed', '16-mixed'.
+                                # bf16-mixed cuts pretraining memory; manifold ops stay FP32 via _2manifold_dtype.
 
 
 ## Pretraining parameters
