@@ -2,25 +2,17 @@ import torch
 import torch.nn as nn
 
 from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
-from typing import Tuple
 from src.models.abstract import AbstractModel, FeatureScaling
 from src.models.utils import get_hyperbolic_encoding_layer_by_name
 from src.hyperbolic_math.src.manifolds import Euclidean
 
-RESNET_MODEL_TYPES = ("resnet18", "resnet34", "resnet50", "resnet101", "resnet152")
-# ViT backbones loaded via torch.hub. forward() returns CLS-token features
-# (768-d for ViT-B), so no head-stripping or attribute modifications are
-# needed. Pretrained SSL weights are baked into the hub load and override
-# any load_supervised_weights / pretrained_weights_path inputs.
-VIT_MODEL_TYPES = {
-    "dino_vitb16": ("facebookresearch/dino:main", "dino_vitb16", 768),
-    "dino_vitb8":  ("facebookresearch/dino:main", "dino_vitb8",  768),
-    "dinov2_vitb14": ("facebookresearch/dinov2", "dinov2_vitb14", 768),
-    "dinov2_vitl14": ("facebookresearch/dinov2", "dinov2_vitl14", 1024),
-    "dinov2_vitg14": ("facebookresearch/dinov2", "dinov2_vitg14", 1536),
-}
+RESNET_MODELS = {"resnet18": resnet18, "resnet34": resnet34, "resnet50": resnet50,
+                 "resnet101": resnet101, "resnet152": resnet152}
+RESNET_DIMS = {"resnet18": 512, "resnet34": 512, "resnet50": 2048, "resnet101": 2048, "resnet152": 2048}
+# Views of an image that the pretraining consumes: its two augmented views
+PRETRAINING_VIEWS = ("aug_1", "aug_2")
 # BioCLIP (Stevens et al., CVPR 2024): CLIP ViT-B/16 on TreeOfLife-10M, loaded
-# via open_clip. 512-d image features. Frozen backbone for iNat18 rebuttal.
+# via open_clip. 512-d image features. Always used as a frozen backbone.
 BIOCLIP_DIM = 512
 _IMAGENET_MEAN = (0.485, 0.456, 0.406)
 _IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -31,8 +23,7 @@ _CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
 class _BioCLIPBackbone(nn.Module):
     """Frozen BioCLIP image encoder. The datamodule feeds ImageNet-normalized
     tensors; BioCLIP expects CLIP normalization, so we re-normalize on the fly
-    (invert ImageNet stats, apply CLIP stats) as a fixed per-channel affine so
-    the features match the standalone extraction (scripts/extract_bioclip.py).
+    (invert ImageNet stats, apply CLIP stats) as a fixed per-channel affine.
     Returns a 512-d image-feature vector per image."""
 
     def __init__(self):
@@ -61,12 +52,11 @@ class HyperbolicResNet(AbstractModel):
         params_dtype: str = "float32",
         activation_function: str = "swish",
         feature_scaling: bool = True,
-        hyperbolic_encoding: str | None = None,
+        hyperbolic_encoding: str | None = "HyperbolicLinearPP",
         latent_dim: int = 32,
         manifold_name: str = "PoincareBall",
         manifold_precision: str | torch.dtype = "float64",
         curvature_magnitude: float | torch.Tensor = 1.0,
-        hyperbolic_decoding: str | None = None,
         # Optimizer
         optimizer_name: str = "Adam",
         learning_rate: float = 1e-3,
@@ -75,23 +65,13 @@ class HyperbolicResNet(AbstractModel):
         # Evaluation & Logging
         stage: str = "pretrain",
         global_epoch: int = 0,
-        log_interval: int = 5,
+        log_interval: int = 10,
         evaluation_metrics: dict[str, bool] = {},
-        # (Hyperbolic-) Layer specific parameters
-        clamping_factor: float = 1.0,
-        smoothing_factor: float = 50.0,
-        hyperboloid_layer_learnable_scale: bool = False,
-        FHCNN_normalize: bool = False,
         # ResNet specific parameters
         projection_layer_dims: list[int] = [512, 256, 128],
         input_size: int = 32,
-        contrastive_loss_enabled: bool = False,
-        contrastive_weight: float = 0.5,
         contrastive_temperature: float = 0.1,
-        # Supervised learning parameters
-        load_supervised_weights: bool = False,
-        supervised: bool = False,
-        # External checkpoint (e.g., DINO ResNet50 from Facebook)
+        # External backbone checkpoint (e.g. DINO ResNet50 from Facebook)
         pretrained_weights_path: str | None = None,
     ):
         super().__init__(
@@ -105,7 +85,6 @@ class HyperbolicResNet(AbstractModel):
             manifold_name=manifold_name,
             manifold_precision=manifold_precision,
             curvature_magnitude=curvature_magnitude,
-            hyperbolic_decoding=None, # not supported for ResNet
             # Optimizer
             optimizer_name=optimizer_name,
             learning_rate=learning_rate,
@@ -116,57 +95,20 @@ class HyperbolicResNet(AbstractModel):
             global_epoch=global_epoch,
             log_interval=log_interval,
             evaluation_metrics=evaluation_metrics,
-            # (Hyperbolic-) Layer specific parameters
-            clamping_factor=clamping_factor,
-            smoothing_factor=smoothing_factor,
-            hyperboloid_layer_learnable_scale=hyperboloid_layer_learnable_scale,
-            FHCNN_normalize=FHCNN_normalize,
         )
         self.save_hyperparameters()
 
-        if self.hparams.load_supervised_weights:
-            print("Loading supervised weights", flush=True)
-            pretrained_weights = 'DEFAULT'
-        else:
-            pretrained_weights = None
-
-        if self.hparams.supervised:
-            print("Supervised learning enabled", flush=True)
-
-        # Encoder — ResNet (torchvision) or ViT (torch.hub).
+        # Encoder — ResNet (torchvision) or frozen BioCLIP image encoder (open_clip)
         mt = self.hparams.model_type
-        if mt == "resnet18":
-            self.encoder = resnet18(weights=pretrained_weights)
-        elif mt == "resnet34":
-            self.encoder = resnet34(weights=pretrained_weights)
-        elif mt == "resnet50":
-            self.encoder = resnet50(weights=pretrained_weights)
-        elif mt == "resnet101":
-            self.encoder = resnet101(weights=pretrained_weights)
-        elif mt == "resnet152":
-            self.encoder = resnet152(weights=pretrained_weights)
-        elif mt in VIT_MODEL_TYPES:
-            repo, hub_name, _ = VIT_MODEL_TYPES[mt]
-            print(f"Loading {hub_name} via torch.hub from {repo} (SSL weights baked in)", flush=True)
-            self.encoder = torch.hub.load(repo, hub_name)
-        elif mt == "bioclip":
-            print("Loading BioCLIP (hf-hub:imageomics/bioclip) via open_clip (frozen)", flush=True)
-            self.encoder = _BioCLIPBackbone()
-        else:
-            raise ValueError(f"Invalid model type: {mt}")
-        # Decoder
-        self.decoder = None  # ResNet/ViT decoder not supported
-
-        if mt in RESNET_MODEL_TYPES:
-            backbone_dims = {"resnet18": 512, "resnet34": 512, "resnet50": 2048,
-                             "resnet101": 2048, "resnet152": 2048}
-            backbone_dim = backbone_dims[mt]
+        if mt in RESNET_MODELS:
+            self.encoder = RESNET_MODELS[mt](weights=None)
+            backbone_dim = RESNET_DIMS[mt]
             # Replace classification head with identity to expose pooled features.
             self.encoder.fc = nn.Identity()
 
-            # Modify encoder for CIFAR-10/100 (32x32 images)
+            # Modify encoder for CIFAR-100 (32x32 images)
             if self.hparams.input_size == 32:
-                print("Modifying ResNet encoder for CIFAR-10/100 (32x32 images).", flush=True)
+                print("Modifying ResNet encoder for CIFAR-100 (32x32 images).", flush=True)
                 # Overwrite the first convolutional layer and maxpooling layer
                 self.encoder.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
                 self.encoder.maxpool = nn.Identity()  # type: ignore
@@ -174,19 +116,19 @@ class HyperbolicResNet(AbstractModel):
                 print("Modifying ResNet encoder for 64x64 images (removing maxpool).", flush=True)
                 self.encoder.maxpool = nn.Identity()  # type: ignore
         elif mt == "bioclip":
+            print("Loading BioCLIP (hf-hub:imageomics/bioclip) via open_clip (frozen)", flush=True)
+            self.encoder = _BioCLIPBackbone()
             backbone_dim = BIOCLIP_DIM
         else:
-            # ViT: forward returns the CLS-token feature (no fc head); the
-            # input-resolution branches above are ResNet-only conv stem hacks.
-            backbone_dim = VIT_MODEL_TYPES[mt][2]
+            raise ValueError(f"Invalid model type: {mt}")
 
         if self.hparams.pretrained_weights_path is not None:
-            if mt in VIT_MODEL_TYPES or mt == "bioclip":
-                # ViT hub / BioCLIP loads already provide pretrained weights;
-                # refuse silent overrides since the state-dict conventions differ.
+            if mt == "bioclip":
+                # BioCLIP already provides pretrained weights; refuse silent
+                # overrides since the state-dict conventions differ.
                 raise ValueError(
                     f"pretrained_weights_path is not supported for model_type={mt}; "
-                    "pretrained weights are loaded via torch.hub / open_clip."
+                    "pretrained weights are loaded via open_clip."
                 )
             print(f"Loading backbone weights from {self.hparams.pretrained_weights_path}", flush=True)
             state = torch.load(self.hparams.pretrained_weights_path, map_location="cpu", weights_only=False)
@@ -198,22 +140,14 @@ class HyperbolicResNet(AbstractModel):
             missing, unexpected = self.encoder.load_state_dict(state, strict=False)
             print(f"Loaded external checkpoint: missing={len(missing)} unexpected={len(unexpected)}", flush=True)
 
-        # ViT hub load is treated as "weights provided" → freeze by default,
-        # matching the load_supervised / pretrained_weights_path branches.
-        weights_loaded = (
-            self.hparams.load_supervised_weights
-            or self.hparams.pretrained_weights_path is not None
-            or mt in VIT_MODEL_TYPES
-            or mt == "bioclip"
-        )
-        if weights_loaded:
+        # Externally pretrained backbones are kept frozen
+        if self.hparams.pretrained_weights_path is not None or mt == "bioclip":
             for param in self.encoder.parameters():
                 param.requires_grad = False
 
         # Build projection head layers progressively
         current_dim = backbone_dim
-        #projection_layers: list[nn.Module] = [] # old
-        projection_layers: list[nn.Module] = [nn.BatchNorm1d(current_dim), self.activation_function] # test if better
+        projection_layers: list[nn.Module] = [nn.BatchNorm1d(current_dim), self.activation_function]
         for dim in self.hparams.projection_layer_dims:
             projection_layers.extend(
                 [nn.Linear(current_dim, dim),
@@ -237,78 +171,35 @@ class HyperbolicResNet(AbstractModel):
             input_dim=current_dim,
             output_dim=self.hparams.latent_dim,
             params_dtype=self.hparams.params_dtype,
-            clamping_factor=self.hparams.clamping_factor,
-            smoothing_factor=self.hparams.smoothing_factor,
-            learnable_scale=self.hparams.hyperboloid_layer_learnable_scale,
-            FHCNN_normalize=self.hparams.FHCNN_normalize,
         )
 
+    def training_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
+        x_aug_1, x_aug_2 = (batch[view] for view in PRETRAINING_VIEWS)
 
+        # Backbone features only — skip hyperbolic head during pretraining.
+        # The hyperbolic head has enough capacity to minimize contrastive loss
+        # without the backbone improving (gradient absorption). Euclidean-only
+        # contrastive forces clean gradient through the backbone. The hyperbolic
+        # head is trained from scratch during the clustering stage.
+        h_aug_1 = self.rms(self.encoder(x_aug_1))
+        h_aug_2 = self.rms(self.encoder(x_aug_2))
 
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        hidden, manifold_z = self.encode_with_backbone(x)
-        return manifold_z
+        if not torch.isfinite(h_aug_1).all() or not torch.isfinite(h_aug_2).all():
+            raise ValueError("Non-finite values encountered in backbone features.")
 
-    def encode_with_backbone(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Returns (backbone_features, hyperbolic_embeddings) in a single forward pass."""
-        hidden = self.encoder(x)
-        hidden = self.rms(hidden)
-        if self.hparams.feature_scaling and not isinstance(self.manifold, Euclidean):
-            manifold_z = self.hyperbolic_encoding_layer(self.feature_scaling_layer(hidden))
-        else:
-            manifold_z = self.hyperbolic_encoding_layer(hidden)
-        return hidden, manifold_z
-
-    def forward(self, x: torch.Tensor) -> Tuple[None, torch.Tensor]:
-        manifold_z = self.encode(x)
-        return None, manifold_z
-
-    def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
-        x_aug_1, x_aug_2, x, y = batch
-
-        if self.hparams.supervised:
-            z_aug_1 = self.encode(x_aug_1)
-            z_aug_2 = self.encode(x_aug_2)
-
-            if not torch.isfinite(z_aug_1).all() or not torch.isfinite(z_aug_2).all():
-                raise ValueError("Non-finite values encountered in supervised contrastive embeddings.")
-
-            supcon_loss = self.compute_supervised_contrastive_loss(
-                z_aug_1, z_aug_2, y, temperature=self.hparams.contrastive_temperature
-            )
-            loss = self.hparams.contrastive_weight * supcon_loss
-
-            # Supervised contrastive metrics
-            self.metrics.setdefault("pretrain/supcon_loss", []).append(supcon_loss.detach().item())
-            dist_to_center = self.manifold.dist_0(z_aug_1).mean()
-            self.metrics.setdefault("pretrain/dist_to_center", []).append(dist_to_center.detach().item())
-        else:
-            # Backbone features only — skip hyperbolic head during pretraining.
-            # The hyperbolic head has enough capacity to minimize contrastive loss
-            # without the backbone improving (gradient absorption). Euclidean-only
-            # contrastive forces clean gradient through the backbone. The hyperbolic
-            # head is trained from scratch during the clustering stage.
-            h_aug_1 = self.rms(self.encoder(x_aug_1))
-            h_aug_2 = self.rms(self.encoder(x_aug_2))
-
-            if not torch.isfinite(h_aug_1).all() or not torch.isfinite(h_aug_2).all():
-                raise ValueError("Non-finite values encountered in backbone features.")
-
-            euclidean_contrastive_loss = self._compute_euclidean_contrastive_loss(
-                h_aug_1, h_aug_2, temperature=self.hparams.contrastive_temperature
-            )
-            loss = self.hparams.contrastive_weight * euclidean_contrastive_loss
-
-            self.metrics.setdefault("pretrain/euclidean_contrastive_loss", []).append(euclidean_contrastive_loss.detach().item())
-            z_aug_1 = h_aug_1  # backbone features for latent space stats below
+        loss = self._compute_euclidean_contrastive_loss(
+            h_aug_1, h_aug_2, temperature=self.hparams.contrastive_temperature
+        )
 
         # Logging
-        self.metrics.setdefault("pretrain/total_loss", []).append(loss.detach().item())  # type: ignore
+        self.metrics.setdefault("pretrain/euclidean_contrastive_loss", []).append(loss.detach().item())
+        self.metrics.setdefault("pretrain/total_loss", []).append(loss.detach().item())
         self.metrics.setdefault("pretrain/c", []).append(
             self.manifold.c.detach().item()  # type: ignore
             if self.manifold.c.numel() == 1  # type: ignore
             else self.manifold.c.detach().cpu()  # type: ignore
         )  # type: ignore
+        self.metrics.setdefault("latent_space/norm_mean", []).append(h_aug_1.norm(p=2, dim=-1).mean().detach().item())
         self.log(
             "loss",
             loss,
@@ -318,18 +209,6 @@ class HyperbolicResNet(AbstractModel):
             on_step=False,
             sync_dist=False,
         )
-        self.metrics.setdefault("latent_space/mean", []).append(z_aug_1.mean().detach().item())
-        self.metrics.setdefault("latent_space/std", []).append(z_aug_1.std().detach().item())
-        self.metrics.setdefault("latent_space/max", []).append(z_aug_1.max().detach().item())
-        self.metrics.setdefault("latent_space/min", []).append(z_aug_1.min().detach().item())
-        self.metrics.setdefault("latent_space/norm_mean", []).append(z_aug_1.norm(p=2, dim=-1).mean().detach().item())
-
-        if self.hparams.hyperbolic_encoding in ["HyperbolicLinearHyperboloidFHCNN", "HyperbolicLinearHyperboloidFHNN"]:
-            scale = self.hyperbolic_encoding_layer[1].scale  # type: ignore
-            self.metrics.setdefault("hyperbolic_encoding_layer/scale", []).append(scale.detach().item())
-
-        if not isinstance(loss, torch.Tensor):
-            loss = torch.tensor(loss, device=x.device)
 
         # Safety net: replace NaN/Inf with 0 while preserving the computation graph
         if not torch.isfinite(loss):

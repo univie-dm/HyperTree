@@ -10,23 +10,16 @@ experiment:
                                 # bf16-mixed cuts pretraining memory; manifold ops stay FP32 via _2manifold_dtype.
 
 
-## Pretraining parameters
+## Pretraining parameters (SimCLR on the backbone features with two augmented views)
 pretraining:
-  method: contrastive  # 'contrastive' or 'dino'
-  augmentation: null    # null, 'byol', 'dino'
-  epochs: 800
+  epochs: 800 # 0 skips pretraining (e.g. together with pretrained_weights_path)
   overwrite: False
   learning_rate: 0.003
   weight_decay: 1e-5
   accumulate_gradients: 1  # Gradient accumulation steps (effective_batch = batch_size * accumulate_gradients * num_gpus)
   enable_checkpointing: False  # Enable for long training runs (e.g., ImageNet)
-  # Reconstruction loss parameters
-  reconstruction_loss:
-    weight: 0.0
   # Contrastive loss parameters
   contrastive_loss:
-    enabled: True
-    weight: 1.0
     temperature: 0.5
   # Learning rate scheduler
   lr_scheduler:
@@ -34,26 +27,7 @@ pretraining:
     interval: 40  # Number of epochs for warmup phase (also T_0 for cosine restart)
     cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
     patience: 20 # Number of epochs
-  load_supervised_weights: False
-  supervised: False
-  pretrained_weights_path: null  # Path to external checkpoint (e.g., FB DINO ResNet50)
-  # DINO multi-crop settings (used when method=dino)
-  n_local_crops: 6
-  local_crop_size: 96
-  dino_global_scale: [0.4, 1.0]
-  dino_local_scale: [0.05, 0.4]
-  # DINO-specific settings (used when method=dino)
-  dino:
-    out_dim: 65536
-    hidden_dim: 2048
-    bottleneck_dim: 256
-    teacher_momentum_start: 0.996
-    teacher_momentum_end: 1.0
-    teacher_temperature: 0.04
-    student_temperature: 0.1
-    center_momentum: 0.9
-    warmup_teacher_temp: 0.04
-    warmup_teacher_temp_epochs: 30
+  pretrained_weights_path: null  # Path to an external backbone checkpoint (e.g. FB DINO ResNet50); the backbone is then kept frozen
 
 
 ## Clustering parameters
@@ -61,121 +35,99 @@ clustering:
   epochs: 600
   learning_rate: 1e-4
   weight_decay: 1e-5
-  enable_checkpointing: False  # Enable for long training runs
   accumulate_gradients: 1
-  freeze_encoder: True  # Freeze backbone encoder during clustering (recommended with use_backbone_knn_similarities)
+  freeze_encoder: True  # Freeze the encoder (backbone and projection head) during clustering (recommended with use_backbone_knn_similarities)
+  train_projection_head: False  # Only with freeze_encoder: keep the projection head trainable, so that only the backbone is frozen and the
+                                # head is trained jointly with the feature scaling and the hyperbolic layer
   # Learning rate scheduler
   lr_scheduler:
     type: # 'warmup_cosine'
     interval: 40  # Number of epochs for warmup phase
     cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
     patience: 20 # Number of epochs
-  # Hyperbolic loss parameters
-  hyperbolic_loss:
+  # Hierarchical loss parameters
+  hierarchical_loss:
     start_weight: 1.0
     end_weight: 5.0
     weight_interval: 250 # 0 equals to end_weight all times
     start_temperature: 0.2
     end_temperature: 0.1
     temperature_interval: 250 # 0 equals to end_temperature all times
-    lca_version: 'ours' # 'ours', 'chami', 'coneheads'
-    coneheads_radius: 0.05 # umbral shadow-cone aperture radius (only used when lca_version='coneheads')
-    loss_version: 'normalized' # 'wang', 'normalized', 'chami' (chami & wang requires use_importance_sampling=False)
-    sampling_strategy: 'importance' # None/'None', 'uniform', 'importance', 'power_weighted'
-    sampling_eps: 0.001 # accuracy of sampling
+    # Images the hierarchical loss is computed on: 'original' (un-augmented) or 'augmented' (first
+    # augmented view). Only the views that are needed are prepared by the dataloader and encoded
+    # (once per step). The pairwise distances of the contrastive loss are reused for the similarities /
+    # triplet sampling whenever this view is part of the contrastive positive pair: always for
+    # 'augmented', for 'original' only with 'orig_aug'.
+    view: 'original' # 'original', 'augmented'
+    lca_version: 'rectified' # 'rectified', 'unrectified' (LCA on the full geodesic instead of the geodesic segment)
+    # Importance sampling of triplets: sample size m >= (1/2 + 2/3 eps) * ln(2 / delta) / eps^2.
+    # Batches with fewer triplets than m are evaluated exactly.
+    sampling_eps: 0.01 # accuracy of sampling
     sampling_delta: 0.01 # confidence of sampling
-    sampling_alpha: 0.2 # interpolation factor between uniform-importance sampling
-    uniform_sample_size: 10000
-    log_approximation_diff: False # log the approximation quality when using sampling
     # Backbone kNN SNN similarities: replace hyperbolic-distance similarities with Jaccard SNN
     # in backbone feature space (higher-dim, richer semantic signal). Pair with freeze_encoder: true.
+    # The features are taken after the projection head, so with train_projection_head they change during training.
     use_backbone_knn_similarities: True
     snn_k: 10 # number of nearest neighbors for SNN computation
-    similarity_pruning: # similarity pruning is only enabled for the full cost computation (not importance sampling)
-      version: null # 'percentile_pruning', 'knn_pruning', 'threshold_pruning', None (disables similarity pruning)
-      threshold: 0.01
-      quantile: 0.2
-      nearest_neighbors: 10
   # Contrastive loss parameters
   # For end-to-end unsupervised: enable this and set pretraining.epochs=0, freeze_encoder=False,
-  # hyperbolic_loss.start_weight=0.0, end_weight=1.0, weight_interval=<warmup_epochs>.
-  # Contrastive loss uses (aug_1, aug_2) as the positive pair (two-view SimCLR on hyperbolic embeddings).
+  # hierarchical_loss.start_weight=0.0, end_weight=1.0, weight_interval=<warmup_epochs>.
   contrastive_loss:
     enabled: True
     temperature: 0.5
     weight: 0.1
-  # Reconstruction loss parameters
-  reconstruction_loss:
-    weight: 0.0
-  # Regularizer parameters (regularization to the origin)
-  regularizer:
-    enabled: False
-    weight: 0.05
+    # Positive pair: 'aug_aug' (aug_1, aug_2) or 'orig_aug' (original, aug_1).
+    positive_pair: 'aug_aug' # 'aug_aug', 'orig_aug'
 
 
 ## Model architecture
 architecture:
-  model_type: 'resnet50' # 'feedforward', 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152'
-  feature_scaling: True
-  feedforward_hidden_dims: [512, 256, 128] # only used if model_type is 'feedforward'
+  model_type: 'resnet50' # 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152', 'bioclip' (frozen, requires open_clip_torch)
   projection_layer_dims: [1024, 512] # contrastive projection head layers after encoder
-  latent_dim: 32 # Hyperboloid automatically uses latent_dim+1 (latent_dim refers to the dimension of the hyperbolic manifold)
+  latent_dim: 32 # embedding manifold dimension (Hyperboloid implements latent_dim+1)
   precision: 'float32' # 'float32', 'float64'
   manifold_precision: 'float64' # 'float32', 'float64'
   manifold_name: 'PoincareBall' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
-  curvature_magnitude: 1.0
-  hyperbolic_encoding: 'HyperbolicLinearPP' # 'EuclideanLinear_Exp'
-                                            #  Hyperboloid: 'HyperbolicLinearHyperboloidFHNN', 'HyperbolicLinearHyperboloidFHCNN', 'HyperbolicLinearPP'
+  curvature_magnitude: 1.0 # sectional curvature magnitude of the hyperbolic manifold
+  hyperbolic_encoding: 'HyperbolicLinearPP' #  Hyperboloid: 'HyperbolicLinearPP', 'HyperbolicLinearHyperboloidFHNN', 'HyperbolicLinearHyperboloidFHCNN'
                                             #  Poincare: 'HyperbolicLinearPP'
-  hyperbolic_decoding: 'Log_EuclideanLinear' # 'Log_EuclideanLinear'
-                                             # Hyperboloid: 'HyperbolicLinearHyperboloidFHNN_Log', 'HyperbolicLinearHyperboloidFHCNN_Log', 'HyperbolicLinearPP_Log'
-                                             # Poincare: 'HyperbolicLinearPP_Log'
   activation_function: 'swish' # 'swish', 'relu'
-  hyperbolic_clamping: 1.0
-  hyperbolic_smoothing: 50.0
-  hyperboloid_layer_learnable_scale: True # only used in Hyperboloid layers
-  FHCNN_normalize: True # only used if hyperbolic_encoding is 'HyperbolicLinearHyperboloidFHCNN'
+  feature_scaling: True # bound the norms of the Euclidean features before the hyperbolic layer
 
 
 ## Evaluation Metrics to be used and logged
 evaluation_metrics:
-  delta_hyperbolicity: False
+  # (Hierarchical) dendrogram purity per tree decoder: linkage on the geodesic distances, or the
+  # LCA-induced tree (single linkage on the rectified-LCA depths, hyperbolic manifolds only)
   dendrogram_purity_single: False
   dendrogram_purity_complete: True
   dendrogram_purity_average: False
   dendrogram_purity_ward: True
+  dendrogram_purity_lca: True
   dendrogrampurity_use_root: True  # if True, the root node (final dendrogram merge) is included in the purity sum
+  # NMI of agglomerative clustering
   agglomerative_clustering_single: False
   agglomerative_clustering_complete: True
   agglomerative_clustering_average: False
   agglomerative_clustering_ward: True
   nearest_neighbors_accuracy: True
   recall_at_k: True
-  spectral_clustering: True
-  visualization: True
-  kmeans: False
-  best_partition_complete: True
-  best_partition_average: False
-  best_partition_ward: True
-  best_partition_max_k: null  # null = auto (3x true class count); set integer to override
-  dasgupta_cost: False
-  hrc_sibling_triplet: True       # M_b (Tan et al. 2024) — leaf-only sibling triplet accuracy
-  hrc_origin_depth: True          # M_o (Tan et al. 2024) — Spearman(depth, ‖x‖) over class centroids
-  hrc_num_triplets: 200000        # Monte-Carlo budget for hrc_sibling_triplet
-  visualization_sample_size: 5000
   test_sample_size: 0 # if 0 all datapoints are used
-  # WordNet hierarchy for hierarchical evaluation (CIFAR-100 and ImageNet)
-  use_wordnet_labels: True  # Use WordNet hierarchy for hierarchical DP evaluation
+  results_dir: './results' # metrics of every evaluation are also written here as JSON
+  # Class hierarchies for hierarchical evaluation (WordNet for CIFAR-100 / TinyImageNet / ImageNet, taxonomy for iNat18)
+  use_wordnet_labels: True  # Use the class hierarchy for hierarchical DP evaluation
   wordnet_hierarchy_path: './data/cifar100_wordnet_hierarchy.txt'  # CIFAR-100 hierarchy file
+  tiny_imagenet_hierarchy_path: './data/tiny_imagenet_wordnet_hierarchy.txt'  # TinyImageNet hierarchy file (built from the dataset folder)
   imagenet_hierarchy_path: './data/imagenet_wordnet_hierarchy.txt'  # ImageNet hierarchy file (auto-downloaded from cvjena/semantic-embeddings)
+  inat18_hierarchy_path: './data/inat18_taxonomy_hierarchy.txt'  # iNat18 taxonomy file
   wordnet_download_if_missing: True  # Automatically download/setup hierarchy files if not found
 
 
 ## Logging
 wandb:
   enabled: True
-  project: 'hyper_clustering'
-  entity: 'kevin-sidak-team'
+  project: 'hypertree'
+  entity: 'thomas-lang'
   save_dir: './logs'
   tags:
     - cifar100

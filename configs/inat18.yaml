@@ -1,0 +1,57 @@
+# DRAFT: iNaturalist-2018 recipe of the paper (Appendix, table "Hyperparameters for all main-paper experiments").
+# Only values that differ from config.yaml are listed; everything else in the table equals the defaults
+# (Adam, ResNet-50, Poincaré Ball, HyperbolicLinearPP, lr 1e-4, weight decay 1e-5, frozen encoder,
+# contrastive weight 0.1, hierarchical weight 1 -> 5, delta=0.01).
+#
+#   python train.py --config-name inat18 experiment.seed=<seed>      (the paper reports three seeds)
+#
+# The backbone is the public DINO ResNet-50 checkpoint, kept frozen; there is no pretraining stage:
+#   wget -O data/models/dino_resnet50_pretrain.pth \
+#       https://dl.fbaipublicfiles.com/dino/dino_resnet50_pretrain/dino_resnet50_pretrain.pth
+#
+# Taken from the text rather than the table:
+#   * train_projection_head: the table only says "Encoder: frozen", the text says the projection head and
+#     the hyperbolic layer are trained jointly.
+#   * use_backbone_knn_similarities stays at the default (True): on iNat18 the similarities are computed from
+#     the frozen backbone features. NOTE: the code takes these features after the projection head, so with
+#     train_projection_head they are not held fixed as the text states.
+#   * weight_interval / temperature_interval: "over the first 250 epochs (or the full duration if shorter)".
+#   * test_sample_size: hDP is computed on a class-stratified 10k subsample of the validation split.
+# Known differences to the historical run scripts (old_slurm/ in git history, base inat18_dino.yaml):
+#   projection_layer_dims [1024, 512], weight_interval / temperature_interval 30, hierarchical weight starting
+#   at 0, clustering.accumulate_gradients=2, warmup_cosine lr schedule in the clustering stage, projection
+#   head frozen at its random initialization, evaluation_metrics.dendrogrampurity_use_root=False.
+
+defaults:
+  - config
+  - override dataset: inat18
+  - _self_
+
+experiment:
+  batch_size: 256
+
+pretraining:
+  epochs: 0
+  pretrained_weights_path: data/models/dino_resnet50_pretrain.pth
+
+architecture:
+  projection_layer_dims: [512, 256, 128]
+  latent_dim: 128
+  curvature_magnitude: 0.3
+
+clustering:
+  epochs: 50
+  train_projection_head: True
+  hierarchical_loss:
+    weight_interval: 50
+    start_temperature: 1.0
+    end_temperature: 0.5
+    temperature_interval: 50
+    sampling_eps: 0.01 # ~27,000 triplets per step
+
+evaluation_metrics:
+  test_sample_size: 10000
+
+wandb:
+  tags:
+    - inat18

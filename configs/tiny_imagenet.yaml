@@ -1,0 +1,39 @@
+# DRAFT: TinyImageNet recipe of the paper (Appendix, table "Hyperparameters for all main-paper experiments").
+# Only values that differ from config.yaml are listed; everything else in the table equals the defaults
+# (Adam, batch size 512, SimCLR pretraining with tau=0.5 for 800 epochs at lr 3e-3, ResNet-50, Poincaré Ball
+# with c=1, HyperbolicLinearPP, 600 joint epochs at lr 1e-4, weight decay 1e-5, frozen encoder, contrastive
+# weight 0.1, hierarchical weight 1 -> 5 over 250 epochs, delta=0.01).
+#
+#   python train.py --config-name tiny_imagenet experiment.seed=<seed>      (the paper reports three seeds)
+#   Hyperboloid rows: architecture.manifold_name=Hyperboloid (main table: architecture.latent_dim=128)
+#
+# Taken from the text rather than the table:
+#   * train_projection_head: the table only says "Encoder: frozen", the text says the projection head and
+#     the hyperbolic layer are trained jointly.
+#   * use_backbone_knn_similarities: False, i.e. w_ij = 1 / (1 + d(z_i, z_j)) (Section 4.1).
+#   * temperature_interval is not stated; the default (250, same as the weight) is kept.
+# Known differences to the historical run scripts (old_slurm/ in git history, base tiny_imagenet_simclr.yaml):
+#   projection_layer_dims [512, 512], hierarchical weight 0 -> 5 over 150 epochs, temperature_interval 150,
+#   sampling_eps 0.001, warmup_cosine lr schedule in the clustering stage, projection head frozen,
+#   evaluation_metrics.dendrogrampurity_use_root=False.
+
+defaults:
+  - config
+  - override dataset: tiny_imagenet
+  - _self_
+
+architecture:
+  projection_layer_dims: [512, 256, 128]
+  latent_dim: 16
+
+clustering:
+  train_projection_head: True
+  hierarchical_loss:
+    start_temperature: 1.0
+    end_temperature: 0.5
+    sampling_eps: 0.01 # ~27,000 triplets per step
+    use_backbone_knn_similarities: False
+
+wandb:
+  tags:
+    - tiny_imagenet

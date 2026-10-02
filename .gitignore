@@ -220,4 +220,4 @@ related_work/
 lightning_logs/
 baseline_dp_eval/
 old_slurm/
-imagenet.yaml
+/imagenet.yaml

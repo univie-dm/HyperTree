@@ -2,5 +2,4 @@ name: 'tiny_imagenet'
 subset: 'train'
 data_dir: 'data/tiny-imagenet-200'
 resize: 64
-channels: 3
 selected_classes:

@@ -1,73 +1,17 @@
 import numpy as np
-import os
 import torch
-import matplotlib.pyplot as plt
 import pytorch_lightning as pl
-import wandb
 
 from pathlib import Path
 from typing import Tuple, Any
 from pytorch_lightning.loggers import WandbLogger
-
-
-class LARS(torch.optim.Optimizer):
-    """LARS (Layer-wise Adaptive Rate Scaling) optimizer.
-
-    Wraps SGD with per-layer learning rate scaling based on the ratio of
-    parameter norm to gradient norm. Essential for large-batch contrastive
-    learning (SimCLR, BYOL, etc.).
-
-    Reference: https://arxiv.org/abs/1708.03888
-    """
-
-    def __init__(self, params, lr: float = 1.0, momentum: float = 0.9,
-                 weight_decay: float = 1e-6, trust_coefficient: float = 0.001):
-        defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay,
-                        trust_coefficient=trust_coefficient)
-        super().__init__(params, defaults)
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        loss = None
-        if closure is not None:
-            with torch.enable_grad():
-                loss = closure()
-
-        for group in self.param_groups:
-            wd = group['weight_decay']
-            momentum = group['momentum']
-            lr = group['lr']
-            trust = group['trust_coefficient']
-
-            for p in group['params']:
-                if p.grad is None:
-                    continue
-
-                dp = p.grad
-                if wd != 0:
-                    dp = dp.add(p, alpha=wd)
-
-                # LARS local learning rate
-                p_norm = torch.norm(p)
-                g_norm = torch.norm(dp)
-                local_lr = trust * p_norm / g_norm if p_norm > 0 and g_norm > 0 else 1.0
-
-                # SGD with momentum
-                state = self.state[p]
-                if 'momentum_buffer' not in state:
-                    state['momentum_buffer'] = torch.clone(dp).detach()
-                else:
-                    state['momentum_buffer'].mul_(momentum).add_(dp)
-                p.add_(state['momentum_buffer'], alpha=-lr * local_lr)
-
-        return loss
 
 from src.evaluation import evaluation, build_hierarchy_clusters, write_results
 from src.hyperbolic_math.src.manifolds import Euclidean, Hyperboloid, PoincareBall
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.hyperbolic_math.src.utils.math_utils import atanh
 from src.utils.wordnet_hierarchy import get_wordnet_labels_for_cifar100
-from src.utils.imagenet_hierarchy import get_wordnet_labels_for_imagenet, get_hierarchy_node_names, get_labels_at_hierarchy_level, setup_tiny_imagenet_hierarchy, load_node_synset_names
+from src.utils.imagenet_hierarchy import get_wordnet_labels_for_imagenet, get_labels_at_hierarchy_level, load_imagenet_hierarchy, setup_tiny_imagenet_hierarchy
 
 
 class AbstractModel(pl.LightningModule):
@@ -78,12 +22,11 @@ class AbstractModel(pl.LightningModule):
         params_dtype: str = "float32",
         activation_function: str = "swish",
         feature_scaling: bool = True,
-        hyperbolic_encoding: str | None = None,
+        hyperbolic_encoding: str | None = "HyperbolicLinearPP",
         latent_dim: int = 32,
         manifold_name: str = "PoincareBall",
         manifold_precision: str | torch.dtype = "float64",
         curvature_magnitude: float | torch.Tensor = 1.0,
-        hyperbolic_decoding: str | None = None,
         # Optimizer
         optimizer_name: str = "Adam",
         learning_rate: float = 1e-3,
@@ -92,13 +35,8 @@ class AbstractModel(pl.LightningModule):
         # Evaluation & Logging
         stage: str = "pretrain",
         global_epoch: int = 0,
-        log_interval: int = 5,
+        log_interval: int = 10,
         evaluation_metrics: dict[str, bool] = {},
-        # (Hyperbolic-) Layer specific parameters
-        clamping_factor: float = 1.0,
-        smoothing_factor: float = 50.0,
-        hyperboloid_layer_learnable_scale: bool = False,
-        FHCNN_normalize: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["manifold_precision", "model"])
@@ -119,42 +57,34 @@ class AbstractModel(pl.LightningModule):
         elif manifold_name == "Hyperboloid":
             self.manifold = Hyperboloid(c=c_tensor, dtype=manifold_precision, dist_version="smoothened")
         elif manifold_name == "PoincareBall":
-            # HYP_MAX_ENORM_EPS widens the safety margin to the ball boundary.
-            # The float64 default (1e-8) lets training saturate the boundary:
-            # trained checkpoints land at 1 - ||x|| ~ 1e-8, where (1 - c||x||^2)
-            # is ~2e-8 and known to only ~1e-16 absolute, so geodesic distances
-            # collapse into ties (measured: 0.1-1.6% distinct pairwise values,
-            # against 100% for the epoch-0 anchor). Set e.g. 1e-4 to keep the
-            # embedding in a numerically well-resolved region. Unset = unchanged.
-            _eps = os.environ.get("HYP_MAX_ENORM_EPS")
-            _kw = {"max_enorm_eps": float(_eps)} if _eps else {}
-            self.manifold = PoincareBall(c=c_tensor, dtype=manifold_precision, **_kw)
+            self.manifold = PoincareBall(c=c_tensor, dtype=manifold_precision)
         else:
             raise ValueError(f"Invalid manifold name: {manifold_name}")
 
         self.metrics = {}
-        # Snapshot of the most recent test_phase() results, preserved across the
-        # per-epoch metrics reset so callbacks can read it after on_train_epoch_end.
-        self.last_test_metrics: dict = {}
+
+    def encode_with_backbone(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Returns (backbone_features, manifold_embeddings) in a single forward pass.
+
+        Subclasses provide the modules: encoder, rms, hyperbolic_encoding_layer and,
+        with feature scaling on a hyperbolic manifold, feature_scaling_layer.
+        """
+        hidden = self.encoder(x)  # type: ignore
+        hidden = self.rms(hidden)  # type: ignore
+        if self.hparams.feature_scaling and not isinstance(self.manifold, Euclidean):
+            manifold_z = self.hyperbolic_encoding_layer(self.feature_scaling_layer(hidden))  # type: ignore
+        else:
+            manifold_z = self.hyperbolic_encoding_layer(hidden)  # type: ignore
+        return hidden, manifold_z
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Encodes the input tensor x into a manifold representation.
-        This method should be implemented by subclasses.
-        """
-        raise NotImplementedError("The encode method must be implemented by subclasses.")
+        """Encodes the input tensor x into a manifold representation."""
+        _, manifold_z = self.encode_with_backbone(x)
+        return manifold_z
 
-    def decode(self, manifold_z: torch.Tensor) -> torch.Tensor:
-        """
-        Decodes the manifold representation manifold_z back into the original input space.
-        This method should be implemented by subclasses.
-        """
-        raise NotImplementedError("The decode method must be implemented by subclasses.")
-
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         manifold_z = self.encode(x)
-        x_recon = self.decode(manifold_z)
-        return x_recon, manifold_z
+        return manifold_z
 
     @staticmethod
     def _gather_with_backprop(z: torch.Tensor) -> torch.Tensor:
@@ -172,7 +102,24 @@ class AbstractModel(pl.LightningModule):
         gathered[rank] = z
         return torch.cat(gathered, dim=0)
 
-    def compute_contrastive_loss(self, z_i: torch.Tensor, z_j: torch.Tensor, temperature: float = 0.1) -> torch.Tensor:
+    @staticmethod
+    def _local_view_distances(distance_matrix: torch.Tensor, view: int, local_batch_size: int) -> torch.Tensor:
+        """Pairwise distances among the local embeddings of one contrastive view.
+
+        Selects the block of view 0 (z_i) or view 1 (z_j) from the distance matrix returned by
+        compute_contrastive_loss, which under DDP covers the gathered batch of all ranks.
+        """
+        global_batch_size = distance_matrix.shape[0] // 2
+        rank = 0
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            rank = torch.distributed.get_rank()
+        start = view * global_batch_size + rank * local_batch_size
+        block = slice(start, start + local_batch_size)
+        return distance_matrix[block, block]
+
+    def compute_contrastive_loss(
+        self, z_i: torch.Tensor, z_j: torch.Tensor, temperature: float = 0.1
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Compute simplified NT-Xent (normalized temperature-scaled cross entropy) loss
         for hyperbolic or Euclidean embeddings.
@@ -181,12 +128,14 @@ class AbstractModel(pl.LightningModule):
         full global batch of negatives.  Gradients only flow through the local shard.
 
         Args:
-            z_i: Embeddings from original images, shape (batch_size, latent_dim)
-            z_j: Embeddings from augmented images, shape (batch_size, latent_dim)
+            z_i: Embeddings of the first view, shape (batch_size, latent_dim)
+            z_j: Embeddings of the second view, shape (batch_size, latent_dim)
             temperature: Temperature parameter for softmax
 
         Returns:
-            Contrastive loss value
+            Contrastive loss value and the pairwise geodesic distance matrix of [z_i; z_j]
+            (with gradients), so callers can reuse it instead of recomputing the distances
+            (see _local_view_distances).
         """
         local_batch_size = z_i.shape[0]
         z_i = z_i.view(local_batch_size, -1)
@@ -214,7 +163,7 @@ class AbstractModel(pl.LightningModule):
         similarity_matrix = similarity_matrix.masked_fill(mask, float("-inf"))
         # Compute loss
         loss = torch.nn.functional.cross_entropy(similarity_matrix, labels)
-        return loss
+        return loss, distance_matrix
 
     def _compute_euclidean_contrastive_loss(self, h_i: torch.Tensor, h_j: torch.Tensor, temperature: float) -> torch.Tensor:
         """NT-Xent with cosine similarity on Euclidean features — bounded, no boundary drift."""
@@ -232,58 +181,6 @@ class AbstractModel(pl.LightningModule):
         ])
         return torch.nn.functional.cross_entropy(sim, labels)
 
-    def compute_supervised_contrastive_loss(
-        self, z_i: torch.Tensor, z_j: torch.Tensor, labels: torch.Tensor, temperature: float = 0.1
-    ) -> torch.Tensor:
-        """
-        Compute Supervised Contrastive Loss (SupCon) using manifold distances.
-        All samples sharing the same class label are treated as positives.
-        Numerically stable implementation using logsumexp.
-
-        Args:
-            z_i: Embeddings from original images, shape (batch_size, latent_dim)
-            z_j: Embeddings from augmented images, shape (batch_size, latent_dim)
-            labels: Class labels, shape (batch_size,)
-            temperature: Temperature parameter for softmax
-
-        Returns:
-            Supervised contrastive loss value
-        """
-        batch_size = z_i.shape[0]
-        z_i = z_i.view(batch_size, -1)
-        z_j = z_j.view(batch_size, -1)
-        z = torch.cat([z_i, z_j], dim=0)  # (2*batch_size, latent_dim)
-        all_labels = torch.cat([labels, labels], dim=0)  # (2*batch_size,)
-
-        # Compute pairwise geodesic distances and convert to similarities
-        distance_matrix = compute_pairwise_distances(z, self.manifold)
-        similarity_matrix = -distance_matrix / temperature
-
-        # Mask out self-similarities
-        n = 2 * batch_size
-        self_mask = torch.eye(n, dtype=torch.bool, device=z.device)
-        similarity_matrix = similarity_matrix.masked_fill(self_mask, float("-inf"))
-
-        # Positive mask: same label, excluding self
-        positive_mask = (all_labels.unsqueeze(0) == all_labels.unsqueeze(1)) & ~self_mask  # (n, n)
-
-        # Numerically stable log-sum-exp denominator over all non-self entries
-        # Use torch.logsumexp with -inf for masked entries (they contribute 0 to the sum)
-        log_denom = torch.logsumexp(similarity_matrix, dim=1, keepdim=True)  # (n, 1)
-
-        # Log probabilities for positive pairs
-        log_prob = similarity_matrix - log_denom  # (n, n)
-
-        # Average log-prob over positive pairs per anchor
-        num_positives = positive_mask.sum(dim=1).clamp(min=1)  # (n,)
-        # Use masked_fill instead of multiplication to avoid 0 * (-inf) = NaN
-        # (self-mask entries have log_prob = -inf, and positive_mask = False there)
-        log_prob_pos = log_prob.masked_fill(~positive_mask, 0.0)
-        mean_log_prob_pos = log_prob_pos.sum(dim=1) / num_positives
-
-        loss = -mean_log_prob_pos.mean()
-        return loss
-
     def configure_optimizers(self) -> Any:
         if self.hparams.optimizer_name == "Adam":
             optimizer = torch.optim.Adam(
@@ -295,13 +192,6 @@ class AbstractModel(pl.LightningModule):
             )
         elif self.hparams.optimizer_name == "SGD":
             optimizer = torch.optim.SGD(
-                self.parameters(),
-                lr=self.hparams.learning_rate,
-                momentum=0.9,
-                weight_decay=self.hparams.weight_decay,
-            )
-        elif self.hparams.optimizer_name == "LARS":
-            optimizer = LARS(
                 self.parameters(),
                 lr=self.hparams.learning_rate,
                 momentum=0.9,
@@ -341,12 +231,12 @@ class AbstractModel(pl.LightningModule):
             )
         else:
             raise ValueError(
-                f"Invalid scheduler name: {self.hparams.lr_scheduler_params['scheduler_name']}"
+                f"Invalid scheduler name: {self.hparams.lr_scheduler_params['type']}"
             )
         return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "loss"}
 
     def test_phase(self) -> None:
-        if not isinstance(self.logger, WandbLogger):
+        if not self.trainer.is_global_zero:
             return
         if self.current_epoch % self.hparams.log_interval == 0 and any([i for i in self.hparams.evaluation_metrics.values()]):
             self.eval()
@@ -357,266 +247,110 @@ class AbstractModel(pl.LightningModule):
 
                 embeddings = []
                 labels = []
-                str_labels = []
-                coarse_labels = []  # For hierarchical datasets like CIFAR-100, GTSRB
-                labels_map = self.trainer.datamodule.get_class_names()  # type: ignore
-
-                for batch_idx, (_, _, x, y) in enumerate(test_loader):
-                    _, z = self(x.to(self.device))
-                    embeddings.append(z)
-                    labels.append(y)
-                    if labels_map is not None:
-                        batch_str_labels = []
-                        batch_coarse_labels = []
-                        for label in y:
-                            label_value = labels_map[int(label)]
-                            # Handle tuple format: (fine_label, coarse_label)
-                            if isinstance(label_value, tuple) and len(label_value) >= 2:
-                                fine_label, coarse_label = (label_value[0], label_value[1])
-                                # For visualization, use coarse label if available
-                                batch_str_labels.append(coarse_label if coarse_label is not None else fine_label)
-                                # Store coarse labels for hierarchical DP
-                                if coarse_label is not None:
-                                    # Map string coarse label back to numeric ID
-                                    # We'll need to create a mapping
-                                    batch_coarse_labels.append(coarse_label)
-                            else:
-                                batch_str_labels.append(label_value)
-                        str_labels.append(batch_str_labels)
-                        if batch_coarse_labels:
-                            coarse_labels.append(batch_coarse_labels)
-
-                if labels_map is not None:
-                    # Flatten the list of lists into a single list
-                    str_labels = [label for batch_labels in str_labels for label in batch_labels]
-                    # Validate that str_labels has the same length as labels
-                    if len(str_labels) != len(torch.cat(labels, dim=0)):
-                        print(
-                            f"Warning: str_labels length ({len(str_labels)}) doesn't match labels length ({len(torch.cat(labels, dim=0))}). Using None."
-                        )
-                        str_labels = None
-                else:
-                    str_labels = None
-
-                # Process coarse labels for hierarchical datasets
-                coarse_labels_array = None
-                native_coarse_label_names = None
-                if coarse_labels:
-                    # Flatten coarse labels
-                    coarse_labels_flat = [label for batch_labels in coarse_labels for label in batch_labels]
-                    if len(coarse_labels_flat) == len(torch.cat(labels, dim=0)):
-                        # Create numeric mapping for coarse labels
-                        unique_coarse = sorted(set(coarse_labels_flat))
-                        coarse_to_id = {label: i for i, label in enumerate(unique_coarse)}
-                        coarse_labels_array = np.array([coarse_to_id[label] for label in coarse_labels_flat])
-                        # Build name mapping for native coarse labels
-                        native_coarse_label_names = {i: name for i, name in enumerate(unique_coarse)}
-                    else:
-                        print(
-                            f"Warning: coarse_labels length ({len(coarse_labels_flat)}) doesn't match labels length ({len(torch.cat(labels, dim=0))}). Using None."
-                        )
-
+                for batch in test_loader:
+                    embeddings.append(self(batch["original"].to(self.device)))
+                    labels.append(batch["label"])
                 all_embeddings = torch.cat(embeddings, dim=0)
                 all_labels = torch.cat(labels, dim=0)
+                labels_np = all_labels.cpu().numpy()
 
-                # Optional embedding dump (for offline geometry analyses, e.g.
-                # LCA wrong-rate measurement). Gated by HYP_DUMP_EMB env var.
-                # If set, treat as a *prefix* (directory + filename stem) and
-                # save one .pt per eval, named `{prefix}_ce{epoch}.pt`. This
-                # gives a per-checkpoint trajectory for the §4.2.3 analysis.
-                _dump_prefix = os.environ.get("HYP_DUMP_EMB")
-                if _dump_prefix:
-                    os.makedirs(os.path.dirname(_dump_prefix) or ".", exist_ok=True)
-                    # Stage suffix so clustering-stage dumps don't overwrite
-                    # pretrain dumps (Lightning resets current_epoch per fit).
-                    # Pretrain keeps the original "_ce{ep}.pt" name so existing
-                    # LCA-aggregation tooling still matches.
-                    _stage = getattr(self.hparams, "stage", "pretrain")
-                    if _stage and _stage != "pretrain":
-                        _dump_path = f"{_dump_prefix}_{_stage}_ce{self.current_epoch}.pt"
-                    else:
-                        _dump_path = f"{_dump_prefix}_ce{self.current_epoch}.pt"
-                    torch.save(
-                        (all_embeddings.detach().cpu(), all_labels.detach().cpu(), torch.arange(len(all_labels))),
-                        _dump_path,
-                    )
-                    print(f"[dump_emb] saved test embeddings to {_dump_path}")
+                datamodule = self.trainer.datamodule  # type: ignore
+                dataset_name = datamodule.hparams.dataset_name
+                eval_cfg = self.hparams.evaluation_metrics
 
-                # Build WordNet hierarchy for DP and coarse labels for visualization
-                coarse_label_names = None
+                # Native coarse labels (CIFAR-100: 20 superclasses)
+                coarse_labels_array = None
+                native_coarse_labels = datamodule.get_coarse_labels()
+                if native_coarse_labels is not None:
+                    coarse_labels_array = np.array([native_coarse_labels[int(label)] for label in labels_np])
+
+                # Build the WordNet / taxonomy hierarchy for hierarchical dendrogram purity
                 hierarchy_clusters = None
-                use_wordnet = self.hparams.evaluation_metrics.get("use_wordnet_labels", False)
-                if use_wordnet:
+                if eval_cfg.get("use_wordnet_labels", False):
                     try:
-                        # Get dataset name from datamodule
-                        dataset_name = None
-                        if hasattr(self.trainer, 'datamodule') and self.trainer.datamodule is not None:  # type: ignore
-                            datamodule_hparams = getattr(self.trainer.datamodule, 'hparams', None)  # type: ignore
-                            if datamodule_hparams and hasattr(datamodule_hparams, 'dataset_name'):
-                                dataset_name = datamodule_hparams.dataset_name
-
-                        # Build leaf name mapping from str_labels (fine label → name)
-                        leaf_names = {}
-                        if labels_map is not None:
-                            for idx, val in labels_map.items():
-                                name = val[0] if isinstance(val, tuple) else val
-                                leaf_names[idx] = str(name)
-
+                        leaf_ids = set(np.unique(labels_np).tolist())
                         if dataset_name == "cifar100":
-                            wordnet_path = self.hparams.evaluation_metrics.get("wordnet_hierarchy_path", "./data/cifar100_wordnet_hierarchy.txt")
-                            download_if_missing = self.hparams.evaluation_metrics.get("wordnet_download_if_missing", True)
-                            if not isinstance(wordnet_path, str):
-                                wordnet_path = str(wordnet_path)
-                            if not isinstance(download_if_missing, bool):
-                                download_if_missing = bool(download_if_missing)
-
                             _, parent_child = get_wordnet_labels_for_cifar100(
-                                all_labels.cpu().numpy(),
-                                hierarchy_file=wordnet_path,
-                                download_if_missing=download_if_missing
+                                labels_np,
+                                hierarchy_file=str(eval_cfg.get("wordnet_hierarchy_path", "./data/cifar100_wordnet_hierarchy.txt")),
+                                download_if_missing=bool(eval_cfg.get("wordnet_download_if_missing", True)),
                             )
-                            leaf_ids = set(np.unique(all_labels.cpu().numpy()).tolist())
                             hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
                             # Keep native 20 superclasses in coarse_labels_array
 
                         elif dataset_name == "imagenet":
-                            imagenet_hierarchy_path = self.hparams.evaluation_metrics.get("imagenet_hierarchy_path", "./data/imagenet_wordnet_hierarchy.txt")
-                            setup_if_missing = self.hparams.evaluation_metrics.get("wordnet_download_if_missing", True)
-                            if not isinstance(imagenet_hierarchy_path, str):
-                                imagenet_hierarchy_path = str(imagenet_hierarchy_path)
-                            if not isinstance(setup_if_missing, bool):
-                                setup_if_missing = bool(setup_if_missing)
-
-                            # Rebuild hierarchy if .synsets companion is missing
-                            if not Path(imagenet_hierarchy_path + ".synsets").exists() and Path(imagenet_hierarchy_path).exists():
-                                Path(imagenet_hierarchy_path).unlink()
-
                             _, parent_child = get_wordnet_labels_for_imagenet(
-                                all_labels.cpu().numpy(),
-                                hierarchy_file=imagenet_hierarchy_path,
-                                setup_if_missing=setup_if_missing
+                                labels_np,
+                                hierarchy_file=str(eval_cfg.get("imagenet_hierarchy_path", "./data/imagenet_wordnet_hierarchy.txt")),
+                                setup_if_missing=bool(eval_cfg.get("wordnet_download_if_missing", True)),
                             )
-                            leaf_ids = set(np.unique(all_labels.cpu().numpy()).tolist())
                             hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
-                            # Aggregate to ~20 coarse classes for vis/confusion matrix
+                            # Aggregate to ~20 coarse classes
                             coarse_labels_array, _ = get_labels_at_hierarchy_level(
-                                all_labels.cpu().numpy(), parent_child, target_num_classes=20
+                                labels_np, parent_child, target_num_classes=20
                             )
-                            if leaf_names:
-                                synset_names = load_node_synset_names(imagenet_hierarchy_path)
-                                coarse_label_names = get_hierarchy_node_names(parent_child, leaf_names, synset_node_names=synset_names)
 
                         elif dataset_name == "inat18":
-                            inat_hierarchy_path = self.hparams.evaluation_metrics.get(
-                                "inat18_hierarchy_path", "./data/inat18_taxonomy_hierarchy.txt"
-                            )
-                            if not isinstance(inat_hierarchy_path, str):
-                                inat_hierarchy_path = str(inat_hierarchy_path)
+                            inat_hierarchy_path = str(eval_cfg.get("inat18_hierarchy_path", "./data/inat18_taxonomy_hierarchy.txt"))
                             if Path(inat_hierarchy_path).exists():
-                                from src.utils.imagenet_hierarchy import load_imagenet_hierarchy
                                 parent_child = load_imagenet_hierarchy(inat_hierarchy_path, exclude_root=True)
-                                leaf_ids = set(np.unique(all_labels.cpu().numpy()).tolist())
                                 hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
-                                # Coarse labels gate the hierarchical_dendrogram_purity_* branch
-                                # in evaluation.py:560 — without them, only flat DP is logged.
+                                # Coarse labels gate the hierarchical dendrogram purity in
+                                # evaluation(); without them, only flat DP is logged.
                                 coarse_labels_array, _ = get_labels_at_hierarchy_level(
-                                    all_labels.cpu().numpy(), parent_child, target_num_classes=20
+                                    labels_np, parent_child, target_num_classes=20
                                 )
                             else:
-                                print(f"iNat18 hierarchy file not found: {inat_hierarchy_path}; "
-                                      f"run scripts/build_inat18_taxonomy.py to build.")
+                                print(f"iNat18 hierarchy file not found: {inat_hierarchy_path}")
 
                         elif dataset_name == "tiny_imagenet":
-                            tiny_hierarchy_path = self.hparams.evaluation_metrics.get(
-                                "tiny_imagenet_hierarchy_path", "./data/tiny_imagenet_wordnet_hierarchy.txt"
-                            )
-                            if not isinstance(tiny_hierarchy_path, str):
-                                tiny_hierarchy_path = str(tiny_hierarchy_path)
-
-                            # Get data_dir for hierarchy setup
-                            data_dir = None
-                            if hasattr(self.trainer, 'datamodule') and self.trainer.datamodule is not None:
-                                dm_hparams = getattr(self.trainer.datamodule, 'hparams', None)
-                                if dm_hparams and hasattr(dm_hparams, 'data_dir'):
-                                    data_dir = dm_hparams.data_dir
-
-                            # Rebuild hierarchy if .synsets companion is missing
-                            if not Path(tiny_hierarchy_path + ".synsets").exists() and Path(tiny_hierarchy_path).exists() and data_dir:
-                                Path(tiny_hierarchy_path).unlink()
-
+                            tiny_hierarchy_path = str(eval_cfg.get("tiny_imagenet_hierarchy_path", "./data/tiny_imagenet_wordnet_hierarchy.txt"))
                             # Build hierarchy if missing
-                            if not Path(tiny_hierarchy_path).exists() and data_dir:
-                                setup_tiny_imagenet_hierarchy(data_dir, tiny_hierarchy_path)
+                            if not Path(tiny_hierarchy_path).exists():
+                                setup_tiny_imagenet_hierarchy(datamodule.hparams.data_dir, tiny_hierarchy_path)
 
                             _, parent_child = get_wordnet_labels_for_imagenet(
-                                all_labels.cpu().numpy(),
+                                labels_np,
                                 hierarchy_file=tiny_hierarchy_path,
                                 setup_if_missing=False
                             )
-                            leaf_ids = set(np.unique(all_labels.cpu().numpy()).tolist())
                             hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
-                            # Aggregate to ~20 coarse classes for vis/confusion matrix
+                            # Aggregate to ~20 coarse classes
                             coarse_labels_array, _ = get_labels_at_hierarchy_level(
                                 all_labels.cpu().numpy(), parent_child, target_num_classes=20
                             )
-                            if leaf_names:
-                                synset_names = load_node_synset_names(tiny_hierarchy_path)
-                                coarse_label_names = get_hierarchy_node_names(parent_child, leaf_names, synset_node_names=synset_names)
 
                     except Exception as e:
                         print(f"Warning: Failed to load WordNet labels: {e}")
                         print("Falling back to standard coarse labels (if available)")
 
-                # Use native coarse label names when WordNet didn't set them
-                if coarse_label_names is None:
-                    coarse_label_names = native_coarse_label_names
-
                 # Compute the (non-smoothened) pairwise distances
                 distance_matrix = compute_pairwise_distances(all_embeddings, self.manifold, version="default")
 
                 mask = torch.triu(torch.ones_like(distance_matrix), diagonal=1).bool()
-                plt.hist(distance_matrix[mask].cpu().numpy().flatten(), bins=50)
-                self.metrics["test/distance_histogram"] = wandb.Image(plt)
-                plt.clf()
-
                 self.metrics["test/mean_distance"] = distance_matrix[mask].mean().item()
                 self.metrics["test/std_distance"] = distance_matrix[mask].std().item()
                 self.metrics["test/min_distance"] = distance_matrix[mask].min().item()
                 self.metrics["test/max_distance"] = distance_matrix[mask].max().item()
-
-                str_labels_array = np.array(str_labels) if str_labels else None
-
-                # Build visualization labels (≤20 coarse categories for t-SNE/confusion)
-                vis_labels = None
-                if str_labels_array is not None and len(set(str(l) for l in str_labels_array)) <= 20:
-                    # Native coarse labels from get_class_names() (CIFAR-100, GTSRB, CUB-200, etc.)
-                    vis_labels = str_labels_array
-                elif coarse_labels_array is not None and coarse_label_names is not None:
-                    # Hierarchy-derived coarse labels (ImageNet, TinyImageNet)
-                    vis_labels = np.array([coarse_label_names.get(int(l), str(l)) for l in coarse_labels_array])
 
                 evaluation_results = evaluation(
                     X=all_embeddings,
                     Y=all_labels,
                     distance_matrix=distance_matrix,
                     manifold=self.manifold,
-                    metrics=self.hparams.evaluation_metrics,
-                    str_labels=str_labels_array,
+                    metrics=eval_cfg,
                     Y_coarse=coarse_labels_array,
-                    coarse_label_names=coarse_label_names,
                     hierarchy_clusters=hierarchy_clusters,
-                    visualization_labels=vis_labels,
                 )
 
                 del all_embeddings, all_labels, distance_matrix, embeddings, labels
 
                 for key, value in evaluation_results.items():
                     self.metrics[f"test/{key}"] = value
-                plt.close()
                 self.train()
 
     def _write_metrics_to_file(self, epoch: int) -> None:
-        """Write current metrics to a JSON file for LLM consumption."""
+        """Write current metrics to a JSON file."""
         results_dir = self.hparams.evaluation_metrics.get("results_dir", "./results")
         write_results(
             metrics=self.metrics,
@@ -624,11 +358,6 @@ class AbstractModel(pl.LightningModule):
             stage=self.hparams.stage,
             epoch=epoch,
         )
-
-    def _stash_test_metrics(self) -> None:
-        snapshot = {k: v for k, v in self.metrics.items() if k.startswith("test/")}
-        if snapshot:
-            self.last_test_metrics = snapshot
 
     def on_train_start(self) -> None:
         self.test_phase()
@@ -645,21 +374,6 @@ class AbstractModel(pl.LightningModule):
         if isinstance(self.logger, WandbLogger):
             self.logger.experiment.log(self.metrics, step=self.current_epoch + self.hparams.global_epoch)
         self._write_metrics_to_file(self.current_epoch)
-        self._stash_test_metrics()
-        self.metrics = {}
-        self.train()
-
-    def on_train_end(self) -> None:
-        self.test_phase()
-        self.metrics[f"{self.hparams.stage}/epoch"] = self.current_epoch
-        self.metrics[f"{self.hparams.stage}/lr"] = self.optimizers().param_groups[0]["lr"]  # type: ignore
-        for key, value in self.metrics.items():
-            if isinstance(value, list):
-                self.metrics[key] = sum(value) / len(value)
-        if isinstance(self.logger, WandbLogger):
-            self.logger.experiment.log(self.metrics, step=self.current_epoch + self.hparams.global_epoch)
-        self._write_metrics_to_file(self.current_epoch)
-        self._stash_test_metrics()
         self.metrics = {}
         self.train()
 
@@ -674,143 +388,31 @@ class AbstractModel(pl.LightningModule):
         if isinstance(self.logger, WandbLogger):
             self.logger.experiment.log(self.metrics, step=self.current_epoch + self.hparams.global_epoch + 1)
         self._write_metrics_to_file(self.current_epoch + 1)
-        self._stash_test_metrics()
         self.metrics = {}
         self.train()
 
-    def compute_lca_depth(self, points: torch.Tensor, batch_size: int = 1_000_000, version: str = 'ours') -> torch.Tensor:
-        """Generalized, corrected, and numerically stabilized implementation of
-        Chami et al.'s (2020) LCA depth computation using inverse geometry."""
-        device = points.device
-        n = points.shape[0]
-        c: torch.Tensor = self.manifold.c  # type: ignore
-        lcas = torch.zeros((n, n), dtype=points.dtype, device=device)
-
-        # Coneheads umbral shadow-cone join (sup2) as the LCA readout.
-        if version == 'coneheads':
-            return self._coneheads_lca_depth(points, lcas)
-
-        # Pre-compute point norms version=='ours'
-        if version == 'ours':
-            point_norms = points.norm(p=2, dim=-1, keepdim=True)
-            point_dists_0 = self.manifold.dist_0(points)
-
-        # Get the upper triangular indices and process in batches
-        row_idx, col_idx = torch.triu_indices(n, n, 1, device=device)
-        total_pairs = row_idx.shape[0]
-        for start_idx in range(0, total_pairs, batch_size):
-            end_idx = min(start_idx + batch_size, total_pairs)
-            batch_row = row_idx[start_idx:end_idx]
-            batch_col = col_idx[start_idx:end_idx]
-
-            x = points[batch_row]
-            y = points[batch_col]
-            xy = (x * y).sum(dim=-1, keepdim=True)
-
-            if isinstance(self.manifold, Hyperboloid):
-                # Compute the orthogonal geodesic projection(s) onto the Minkowski subspace
-                sqrt_c = c.sqrt()
-                x0 = x.narrow(-1, 0, 1)
-                y0 = y.narrow(-1, 0, 1)
-                xy_mink = self.manifold._minkowski_inner(x, y)
-                denom = (1 - (c * xy_mink).pow(2)).clamp(max=-1e-15)
-                alpha = (sqrt_c * (x0 + c * xy_mink * y0)) / denom
-                beta = (sqrt_c * (y0 + c * xy_mink * x0)) / denom
-                z = alpha * x + beta * y
-
-                # Rescale the vector to lie on the Hyperboloid
-                z_mink = self.manifold._minkowski_inner(z, z)
-                lca = z / (-c * z_mink).clamp(min=1e-15).sqrt()
-            elif isinstance(self.manifold, PoincareBall):
-                # Compute the center of geodesic circle Gamma through x and y
-                x2 = x.pow(2).sum(dim=-1, keepdim=True)
-                y2 = y.pow(2).sum(dim=-1, keepdim=True)
-
-                denom = (2 * c * (x2 * y2 - xy.pow(2))).clamp(min=1e-15)
-                alpha = ((1 + c * x2) * y2 - (1 + c * y2) * xy) / denom
-                beta = ((1 + c * y2) * x2 - (1 + c * x2) * xy) / denom
-                z = alpha * x + beta * y
-
-                # Compute the lca and its distance to the origin w.r.t. the full geodesic
-                z2 = z.pow(2).sum(dim=-1, keepdim=True)
-                z_norm = z.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-15)
-
-                # Computation via conjugation to avoid numerical issues
-                sqrt_term = (z2 - 1 / c).clamp(min=1e-15).sqrt()
-                denom = c * z_norm * (z_norm + sqrt_term).clamp(min=1e-15)
-                lca = z / denom
-            else:
-                raise ValueError(f"Unsupported manifold: {self.manifold}")
-
-            lca_depth = self.manifold.dist_0(lca)
-
-            # Apply LCA correction
-            if version == 'ours':
-                # Use pre-computed norms
-                x_norm = point_norms[batch_row]
-                y_norm = point_norms[batch_col]
-
-                # Compute the cosine of the angles at the origin in the triangles {x, origin, c}, {y, origin, c}  {x, origin, y}
-                xlca = (x * lca).sum(dim=-1, keepdim=True)
-                ylca = (y * lca).sum(dim=-1, keepdim=True)
-                lca_norm = lca.norm(p=2, dim=-1, keepdim=True)
-
-                cos_x0c = (xlca / (x_norm * lca_norm).clamp(min=1e-15)).clamp(-1.0, 1.0)
-                cos_y0c = (ylca / (y_norm * lca_norm).clamp(min=1e-15)).clamp(-1.0, 1.0)
-                cos_x0y = (xy / (x_norm * y_norm).clamp(min=1e-15)).clamp(-1.0, 1.0)
-
-                # Get the lca depth w.r.t. the geodesic segment between x and y
-                condition = (cos_x0y > cos_x0c) | (cos_x0y > cos_y0c) | (cos_x0y > 1-1e-15)  # True iff lca lies outside
-                lca_depth = torch.where(condition, torch.min(point_dists_0[batch_row], point_dists_0[batch_col]), lca_depth)
-                lca_depth = torch.where(cos_x0y == -1, torch.zeros_like(lca_depth), lca_depth)  # Handle antipodal points
-
-            lca_depth = lca_depth.reshape(-1)
-            lcas[batch_row, batch_col] = lca_depth
-            lcas[batch_col, batch_row] = lca_depth
-
-        return lcas
-
-    def _coneheads_lca_depth(self, points: torch.Tensor, lcas: torch.Tensor) -> torch.Tensor:
-        """LCA 'depth' from the Coneheads (NeurIPS 2023) umbral shadow-cone join.
-
-        Maps the Poincaré-ball points into the upper half-space (inversion in the
-        sphere at the boundary pole ``b = -e_last / sqrt(c)``) and reads the height
-        of the umbral ``sup2`` join of each pair: a low join (small height) sits
-        deep near the leaves = closely related; a high join sits near the root =
-        distantly related. We return it as a hyperbolic vertical depth
-        ``ln(h0 / sup_h) / sqrt(c)`` (``h0 = 1/sqrt(c)`` is the image of the origin)
-        so that *larger = deeper = more related*, matching ``dist_0``'s sign and
-        (logarithmic) scale, which the triplet-softmax temperature is tuned for.
-        """
-        n = points.shape[0]
-        device = points.device
-        cf = float(self.manifold.c)  # type: ignore
-        sqrt_c = cf ** 0.5
-        inv_sqrt_c = 1.0 / sqrt_c
-        radius = float(getattr(self.hparams, "coneheads_radius", 0.05))
-        sinh_r = torch.sinh(torch.tensor(sqrt_c * radius, device=device, dtype=points.dtype)).clamp(min=1e-15)
-
-        # Ball -> upper half-space; the last coordinate is the (hyperbolic) height.
-        b = torch.zeros_like(points)
-        b[..., -1] = -inv_sqrt_c
-        zb = points - b
-        sq = (zb * zb).sum(dim=-1, keepdim=True).clamp(min=1e-15)
-        hs = b + (2.0 / cf) * zb / sq
-
-        row_idx, col_idx = torch.triu_indices(n, n, 1, device=device)
-        u, v = hs[row_idx], hs[col_idx]
-        u_d, v_d = u[..., -1], v[..., -1]
-        lat = (u[..., :-1] - v[..., :-1]).norm(dim=-1)
-        mix = lat / (2.0 * sinh_r) + 0.5 * (u_d + v_d)
-        sup_h = torch.maximum(torch.maximum(u_d, v_d), mix).clamp(min=1e-6)
-        depth = torch.log(inv_sqrt_c / sup_h) / sqrt_c
-
-        lcas[row_idx, col_idx] = depth
-        lcas[col_idx, row_idx] = depth
-        return lcas
+    def on_train_end(self) -> None:
+        self.test_phase()
+        self.metrics[f"{self.hparams.stage}/epoch"] = self.current_epoch
+        self.metrics[f"{self.hparams.stage}/lr"] = self.optimizers().param_groups[0]["lr"]  # type: ignore
+        for key, value in self.metrics.items():
+            if isinstance(value, list):
+                self.metrics[key] = sum(value) / len(value)
+        if isinstance(self.logger, WandbLogger):
+            self.logger.experiment.log(self.metrics, step=self.current_epoch + self.hparams.global_epoch)
+        self._write_metrics_to_file(self.current_epoch)
+        self.metrics = {}
+        self.train()
 
 
 class FeatureScaling(torch.nn.Module):
+    """
+    Scaling layer to stabilize training of hybrid Euclidean-hyperbolic models.
+
+    Reference:
+    Klein Timo, et al. "Understanding and improving hyperbolic deep reinforcement learning."
+        International Conference on Learning Representations. Vol. 2026. 2026.
+    """
     def __init__(
         self,
         dim: int,

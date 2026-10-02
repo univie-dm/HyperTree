@@ -27,9 +27,6 @@ WORDNET_HIERARCHY_URL = "https://raw.githubusercontent.com/cvjena/semantic-embed
 # Note: cvjena uses folder names directly, so we derive from the hierarchy leaves
 IMAGENET_SYNSETS_URL = "https://raw.githubusercontent.com/cvjena/semantic-embeddings/master/datasets/ilsvrc.py"
 
-# Full WordNet synset-to-name mapping (82K+ synsets)
-WORDNET_WORDS_URL = "https://image-net.org/data/words.txt"
-
 
 def download_file(url: str, save_path: str) -> str:
     """
@@ -59,75 +56,6 @@ def download_file(url: str, save_path: str) -> str:
     return str(save_path_obj)
 
 
-def download_wordnet_words(save_path: str = "./data/wordnet_words.txt") -> str:
-    """Download the full WordNet synset-to-name mapping from ImageNet.
-
-    The file maps all ~82K WordNet synsets to human-readable names.
-    Format: ``synset_id\\tname1, name2, ...`` per line.
-    """
-    save_path_obj = Path(save_path)
-    if save_path_obj.exists():
-        return str(save_path_obj)
-    return download_file(WORDNET_WORDS_URL, save_path)
-
-
-def load_wordnet_words(filepath: str = "./data/wordnet_words.txt") -> Dict[str, str]:
-    """Load synset_id -> human-readable name mapping.
-
-    Returns the *first* lemma name for each synset (the most common one).
-    """
-    mapping: Dict[str, str] = {}
-    with open(filepath, "r") as f:
-        for line in f:
-            parts = line.strip().split("\t", 1)
-            if len(parts) == 2:
-                synset_id = parts[0]
-                # Take the first name (before comma) for cleaner display
-                name = parts[1].split(",")[0].strip()
-                mapping[synset_id] = name
-    return mapping
-
-
-def load_node_synset_names(
-    hierarchy_path: str,
-    words_path: str = "./data/wordnet_words.txt",
-) -> Optional[Dict[int, str]]:
-    """Load proper WordNet names for all nodes in a numeric hierarchy.
-
-    Requires the companion ``.synsets`` file (written by
-    :func:`build_imagenet_hierarchy_file`) and the WordNet words file.
-
-    Returns ``None`` if the companion file is missing.
-    """
-    synsets_path = hierarchy_path + ".synsets"
-    if not Path(synsets_path).exists():
-        return None
-
-    # Download words.txt if needed
-    try:
-        download_wordnet_words(words_path)
-    except Exception:
-        return None
-    if not Path(words_path).exists():
-        return None
-
-    # Load node_id -> synset_id mapping
-    node_to_synset: Dict[int, str] = {}
-    with open(synsets_path, "r") as f:
-        for line in f:
-            parts = line.strip().split("\t")
-            if len(parts) == 2:
-                node_to_synset[int(parts[0])] = parts[1]
-
-    # Load synset_id -> name mapping
-    synset_to_name = load_wordnet_words(words_path)
-
-    return {
-        node_id: synset_to_name.get(synset_id, synset_id)
-        for node_id, synset_id in node_to_synset.items()
-    }
-
-
 def download_imagenet_synset_mapping(save_path: Optional[str] = None) -> str:
     """
     Download the ImageNet synset to index mapping.
@@ -145,7 +73,6 @@ def download_imagenet_synset_mapping(save_path: Optional[str] = None) -> str:
     str
         Path to the downloaded file
     """
-    import json
     
     if save_path is None:
         save_path = "./data/imagenet_synset_to_idx.txt"
@@ -198,7 +125,6 @@ def build_synset_list_from_imagenet_folder(
     str
         Path to the saved synset list file
     """
-    import os
     
     if save_path is None:
         save_path = "./data/imagenet_synset_to_idx.txt"
@@ -374,12 +300,6 @@ def build_imagenet_hierarchy_file(
                 if child_idx is None:
                     continue
                 f.write(f"{parent_idx} {child_idx}\n")
-
-    # Write companion .synsets file mapping node_id -> synset_id
-    synsets_path = str(output_path_obj) + ".synsets"
-    with open(synsets_path, "w") as f:
-        for synset, idx in sorted(node_to_idx.items(), key=lambda x: x[1]):
-            f.write(f"{idx}\t{synset}\n")
 
     return str(output_path_obj)
 
@@ -675,74 +595,6 @@ def get_labels_at_hierarchy_level(
 
     coarse_labels = np.array([label_to_active.get(int(l), int(l)) for l in fine_labels])
     return coarse_labels, label_to_active
-
-
-def get_hierarchy_node_names(
-    parent_child: Dict[int, List[int]],
-    leaf_names: Dict[int, str],
-    max_examples: int = 3,
-    synset_node_names: Optional[Dict[int, str]] = None,
-) -> Dict[int, str]:
-    """
-    Build human-readable names for all nodes in a hierarchy.
-
-    Leaf nodes use the provided ``leaf_names``.  Parent nodes use proper
-    WordNet synset names when ``synset_node_names`` is provided (e.g.
-    ``"animal"``, ``"wheeled vehicle"``).  Otherwise falls back to listing
-    up to ``max_examples`` representative leaf descendants.
-
-    Parameters
-    ----------
-    parent_child : Dict[int, List[int]]
-        Parent → children mapping.
-    leaf_names : Dict[int, str]
-        Mapping from leaf node ID to human-readable name.
-    max_examples : int
-        Maximum number of leaf example names to show for parent nodes
-        (only used when ``synset_node_names`` is not available).
-    synset_node_names : Optional[Dict[int, str]]
-        Mapping from node ID to proper WordNet synset name, as returned
-        by :func:`load_node_synset_names`.  When provided, parent nodes
-        use these names instead of concatenated leaf names.
-
-    Returns
-    -------
-    Dict[int, str]
-        Mapping from *every* node ID to a display name.
-    """
-    # Recursively collect leaf descendants.
-    _cache: Dict[int, List[int]] = {}
-
-    def _get_leaves(node: int) -> List[int]:
-        if node in _cache:
-            return _cache[node]
-        if node not in parent_child:
-            _cache[node] = [node]
-            return [node]
-        leaves: List[int] = []
-        for child in parent_child[node]:
-            leaves.extend(_get_leaves(child))
-        _cache[node] = leaves
-        return leaves
-
-    node_names: Dict[int, str] = dict(leaf_names)
-    for parent in parent_child:
-        # Prefer proper WordNet synset name for internal nodes
-        if synset_node_names and parent in synset_node_names:
-            node_names[parent] = synset_node_names[parent]
-        else:
-            leaves = _get_leaves(parent)
-            names_sorted = sorted({leaf_names[l] for l in leaves if l in leaf_names})
-            if not names_sorted:
-                node_names[parent] = str(parent)
-            elif len(names_sorted) <= max_examples:
-                node_names[parent] = "/".join(names_sorted)
-            else:
-                node_names[parent] = (
-                    "/".join(names_sorted[:max_examples])
-                    + f"/\u2026({len(names_sorted)})"
-                )
-    return node_names
 
 
 def print_imagenet_hierarchy_statistics(parent_child: Dict[int, List[int]]) -> None:

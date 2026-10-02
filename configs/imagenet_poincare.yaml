@@ -1,3 +1,18 @@
+# ---------------------------------------------------------------------------------------------------------------
+# CLEAN-UP NOTE (2026-10-01) -- observations from the release clean-up; this file itself was left untouched.
+#
+# * Written against a much older config schema. It inherits from config.yaml (`defaults: - config`), so it still composes,
+#   but most of its keys do not exist in config.yaml anymore and are merged as extra keys that no code reads:
+#       the whole `hyphc:` and `evaluation:` sections (now clustering.hierarchical_loss / evaluation_metrics),
+#       architecture.cluster_dim, ae_type, spectral_normalization, use_seperate_heads
+#           (they still enter the pretraining-cache hash, which covers the whole architecture block),
+#       pretraining.recon_weight, trainable_curvature, contrastive_loss.enabled, contrastive_loss.byol.
+#   Everything about the hierarchical loss therefore comes from config.yaml, not from this file.
+# * Despite its name it does not select the ImageNet dataset (the dataset default of config.yaml, cifar100, applies).
+# * Used once in the historical slurm scripts (old_slurm/ in git history). Not connected to the paper runs, which used
+#   imagenet_dino.yaml as base -> candidate for deletion.
+# ---------------------------------------------------------------------------------------------------------------
+
 architecture:
   latent_dim: 32
   cluster_dim: 32

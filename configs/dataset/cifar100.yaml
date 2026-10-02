@@ -2,5 +2,4 @@ name: 'cifar100'
 subset: 'all'
 data_dir: './data'
 resize: 32
-channels: 3
 selected_classes:
