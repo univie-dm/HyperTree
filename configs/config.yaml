@@ -21,6 +21,11 @@ pretraining:
   # Contrastive loss parameters
   contrastive_loss:
     temperature: 0.5
+    # 'euclidean': SimCLR, cosine similarity of the projection-head features (before the hyperbolic layer);
+    #              feature scaling and the hyperbolic layer stay untrained until the clustering stage.
+    # 'hyperbolic': negative geodesic distance of the manifold embeddings (after the hyperbolic layer),
+    #              i.e. the contrastive loss of the clustering stage; trains the whole model.
+    space: 'euclidean' # 'euclidean', 'hyperbolic'
   # Learning rate scheduler
   lr_scheduler:
     type: warmup_cosine  # 'warmup_cosine', 'ReduceLROnPlateau'

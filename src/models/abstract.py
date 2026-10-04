@@ -71,11 +71,13 @@ class AbstractModel(pl.LightningModule):
         """
         hidden = self.encoder(x)  # type: ignore
         hidden = self.rms(hidden)  # type: ignore
+        return hidden, self.embed_features(hidden)
+
+    def embed_features(self, hidden: torch.Tensor) -> torch.Tensor:
+        """Maps (RMS-normalized) backbone features onto the manifold: feature scaling and hyperbolic layer."""
         if self.hparams.feature_scaling and not isinstance(self.manifold, Euclidean):
-            manifold_z = self.hyperbolic_encoding_layer(self.feature_scaling_layer(hidden))  # type: ignore
-        else:
-            manifold_z = self.hyperbolic_encoding_layer(hidden)  # type: ignore
-        return hidden, manifold_z
+            hidden = self.feature_scaling_layer(hidden)  # type: ignore
+        return self.hyperbolic_encoding_layer(hidden)  # type: ignore
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """Encodes the input tensor x into a manifold representation."""

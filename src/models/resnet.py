@@ -3,7 +3,7 @@ import torch.nn as nn
 
 from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
 from src.models.abstract import AbstractModel, FeatureScaling
-from src.models.utils import get_hyperbolic_encoding_layer_by_name
+from src.models.utils import get_hyperbolic_encoding_layer_by_name, get_dtype_from_precision
 from src.hyperbolic_math.src.manifolds import Euclidean
 
 RESNET_MODELS = {"resnet18": resnet18, "resnet34": resnet34, "resnet50": resnet50,
@@ -11,6 +11,9 @@ RESNET_MODELS = {"resnet18": resnet18, "resnet34": resnet34, "resnet50": resnet5
 RESNET_DIMS = {"resnet18": 512, "resnet34": 512, "resnet50": 2048, "resnet101": 2048, "resnet152": 2048}
 # Views of an image that the pretraining consumes: its two augmented views
 PRETRAINING_VIEWS = ("aug_1", "aug_2")
+# Where the pretraining contrastive loss is computed: cosine similarity of the projection-head
+# features (before the hyperbolic layer) or negative geodesic distance of the manifold embeddings
+CONTRASTIVE_SPACES = ("euclidean", "hyperbolic")
 # BioCLIP (Stevens et al., CVPR 2024): CLIP ViT-B/16 on TreeOfLife-10M, loaded
 # via open_clip. 512-d image features. Always used as a frozen backbone.
 BIOCLIP_DIM = 512
@@ -71,6 +74,7 @@ class HyperbolicResNet(AbstractModel):
         projection_layer_dims: list[int] = [512, 256, 128],
         input_size: int = 32,
         contrastive_temperature: float = 0.1,
+        contrastive_space: str = "euclidean",
         # External backbone checkpoint (e.g. DINO ResNet50 from Facebook)
         pretrained_weights_path: str | None = None,
     ):
@@ -97,6 +101,8 @@ class HyperbolicResNet(AbstractModel):
             evaluation_metrics=evaluation_metrics,
         )
         self.save_hyperparameters()
+        if contrastive_space not in CONTRASTIVE_SPACES:
+            raise ValueError(f"contrastive_space must be one of {CONTRASTIVE_SPACES}, got '{contrastive_space}'")
 
         # Encoder — ResNet (torchvision) or frozen BioCLIP image encoder (open_clip)
         mt = self.hparams.model_type
@@ -176,30 +182,41 @@ class HyperbolicResNet(AbstractModel):
     def training_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
         x_aug_1, x_aug_2 = (batch[view] for view in PRETRAINING_VIEWS)
 
-        # Backbone features only — skip hyperbolic head during pretraining.
-        # The hyperbolic head has enough capacity to minimize contrastive loss
-        # without the backbone improving (gradient absorption). Euclidean-only
-        # contrastive forces clean gradient through the backbone. The hyperbolic
-        # head is trained from scratch during the clustering stage.
         h_aug_1 = self.rms(self.encoder(x_aug_1))
         h_aug_2 = self.rms(self.encoder(x_aug_2))
-
         if not torch.isfinite(h_aug_1).all() or not torch.isfinite(h_aug_2).all():
             raise ValueError("Non-finite values encountered in backbone features.")
 
-        loss = self._compute_euclidean_contrastive_loss(
-            h_aug_1, h_aug_2, temperature=self.hparams.contrastive_temperature
-        )
+        if self.hparams.contrastive_space == "euclidean":
+            # Cosine-similarity contrastive loss on the projection-head features: the hyperbolic
+            # head is skipped during pretraining, since it has enough capacity to minimize the
+            # contrastive loss without the backbone improving (gradient absorption), and is
+            # trained from scratch during the clustering stage.
+            loss = self._compute_euclidean_contrastive_loss(
+                h_aug_1, h_aug_2, temperature=self.hparams.contrastive_temperature
+            )
+            z_aug_1 = h_aug_1
+        else:
+            # Geodesic contrastive loss on the manifold embeddings, i.e. the contrastive loss of the
+            # clustering stage; this also trains the feature scaling and the hyperbolic layer.
+            # The manifold operations are kept out of a possible autocast of the pretraining stage.
+            with torch.autocast(device_type=h_aug_1.device.type, enabled=False):
+                params_dtype = get_dtype_from_precision(self.hparams.params_dtype)
+                z_aug_1 = self.embed_features(h_aug_1.to(dtype=params_dtype))
+                z_aug_2 = self.embed_features(h_aug_2.to(dtype=params_dtype))
+                loss, _ = self.compute_contrastive_loss(
+                    z_aug_1, z_aug_2, temperature=self.hparams.contrastive_temperature
+                )
 
         # Logging
-        self.metrics.setdefault("pretrain/euclidean_contrastive_loss", []).append(loss.detach().item())
+        self.metrics.setdefault(f"pretrain/{self.hparams.contrastive_space}_contrastive_loss", []).append(loss.detach().item())
         self.metrics.setdefault("pretrain/total_loss", []).append(loss.detach().item())
         self.metrics.setdefault("pretrain/c", []).append(
             self.manifold.c.detach().item()  # type: ignore
             if self.manifold.c.numel() == 1  # type: ignore
             else self.manifold.c.detach().cpu()  # type: ignore
         )  # type: ignore
-        self.metrics.setdefault("latent_space/norm_mean", []).append(h_aug_1.norm(p=2, dim=-1).mean().detach().item())
+        self.metrics.setdefault("latent_space/norm_mean", []).append(z_aug_1.norm(p=2, dim=-1).mean().detach().item())
         self.log(
             "loss",
             loss,

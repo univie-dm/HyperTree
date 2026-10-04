@@ -11,6 +11,8 @@
 #   * train_projection_head: the table only says "Encoder: frozen", the text says the projection head and
 #     the hyperbolic layer are trained jointly.
 #   * use_backbone_knn_similarities: False, i.e. w_ij = 1 / (1 + d(z_i, z_j)) (Section 4.1).
+#   * pretraining.contrastive_loss.space is left at 'euclidean' (SimCLR, as in the appendix); Section 4.1
+#     ("pretrain on L_C alone", geodesic) would be 'hyperbolic'.
 # Known difference to the historical run scripts: they used clustering.freeze_encoder=False.
 
 defaults:

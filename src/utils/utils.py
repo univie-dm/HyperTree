@@ -23,6 +23,7 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "weight_decay": cfg.pretraining.weight_decay,
         "accumulate_gradients_pretrain": cfg.pretraining.accumulate_gradients,
         "contrastive_temperature_pretrain": cfg.pretraining.contrastive_loss.temperature,
+        "contrastive_space_pretrain": cfg.pretraining.contrastive_loss.space,
         "lr_scheduler_pretrain": cfg.pretraining.lr_scheduler,
         "pretrained_weights_path": cfg.pretraining.pretrained_weights_path,
         # Model attributes
@@ -87,6 +88,7 @@ def get_pretrain_model(cfg: omegaconf.DictConfig) -> HyperbolicResNet:
         projection_layer_dims=cfg.architecture.projection_layer_dims,
         input_size=cfg.dataset.resize,
         contrastive_temperature=cfg.pretraining.contrastive_loss.temperature,
+        contrastive_space=cfg.pretraining.contrastive_loss.space,
         pretrained_weights_path=cfg.pretraining.pretrained_weights_path,
     )
     return model
