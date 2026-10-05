@@ -62,6 +62,21 @@ class AbstractModel(pl.LightningModule):
             raise ValueError(f"Invalid manifold name: {manifold_name}")
 
         self.metrics = {}
+        # Modules whose parameters are frozen; they are kept in eval mode (see train())
+        self.frozen_modules: list[torch.nn.Module] = []
+
+    def train(self, mode: bool = True):
+        """Sets the training mode, except for the frozen modules, which stay in eval mode.
+
+        In train mode BatchNorm normalizes with batch statistics and updates its running
+        statistics, so the features of a frozen backbone would still change during training
+        and differ from the ones used at evaluation. Keeping the frozen modules in eval mode
+        makes their features the same during training and evaluation.
+        """
+        super().train(mode)
+        for module in self.frozen_modules:
+            module.eval()
+        return self
 
     def encode_with_backbone(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Returns (backbone_features, manifold_embeddings) in a single forward pass.
@@ -353,6 +368,8 @@ class AbstractModel(pl.LightningModule):
 
     def _write_metrics_to_file(self, epoch: int) -> None:
         """Write current metrics to a JSON file."""
+        if not self.trainer.is_global_zero:
+            return
         results_dir = self.hparams.evaluation_metrics.get("results_dir", "./results")
         write_results(
             metrics=self.metrics,

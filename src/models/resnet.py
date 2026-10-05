@@ -150,6 +150,7 @@ class HyperbolicResNet(AbstractModel):
         if self.hparams.pretrained_weights_path is not None or mt == "bioclip":
             for param in self.encoder.parameters():
                 param.requires_grad = False
+            self.frozen_modules.append(self.encoder)
 
         # Build projection head layers progressively
         current_dim = backbone_dim
@@ -178,6 +179,7 @@ class HyperbolicResNet(AbstractModel):
             output_dim=self.hparams.latent_dim,
             params_dtype=self.hparams.params_dtype,
         )
+        self.train()  # frozen modules go to eval mode
 
     def training_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
         x_aug_1, x_aug_2 = (batch[view] for view in PRETRAINING_VIEWS)

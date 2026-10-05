@@ -111,7 +111,9 @@ class HyperTreeModel(AbstractModel):
             raise ValueError(f"contrastive_positive_pair must be one of {list(CONTRASTIVE_VIEWS)}, got '{contrastive_positive_pair}'")
 
         # Freeze the encoder if requested: the backbone and, unless train_projection_head is set,
-        # the projection head (a frozen projection head keeps SNN similarities stable across batches)
+        # the projection head (a frozen projection head keeps SNN similarities stable across batches).
+        # Frozen modules are also kept in eval mode, see AbstractModel.train().
+        self.frozen_modules = list(model.frozen_modules)  # e.g. an externally pretrained backbone
         if freeze_encoder:
             for param in self.encoder.parameters():  # type: ignore
                 param.requires_grad_(False)
@@ -119,6 +121,10 @@ class HyperTreeModel(AbstractModel):
                 # encoder = Sequential(backbone, *projection head layers)
                 for param in self.encoder[1:].parameters():  # type: ignore
                     param.requires_grad_(True)
+                self.frozen_modules.append(self.encoder[0])  # type: ignore
+            else:
+                self.frozen_modules.append(self.encoder)  # type: ignore
+        self.train()  # frozen modules go to eval mode
 
         # Acceptance rate of the rejection sampler (re-estimated each training step)
         self.cached_acceptance_rate = 0.2
