@@ -102,6 +102,25 @@ class BYOLTransform:
         return aug1, aug2
 
 
+class ListedImageFolder(datasets.ImageFolder):
+    """
+    ImageFolder that lists each class directory instead of walking it. os.walk stats every entry that is a
+    symlink to check whether it is a directory, which takes minutes for the iNat18 symlink tree on NFS
+    (437k images); listing only reads the directories. Same samples in the same order, as long as the class
+    directories hold image files only.
+    """
+
+    def make_dataset(self, directory, class_to_idx, extensions=None, is_valid_file=None, allow_empty=False):
+        samples = []
+        for target_class in sorted(class_to_idx):
+            class_dir = os.path.join(directory, target_class)
+            for fname in sorted(os.listdir(class_dir)):
+                path = os.path.join(class_dir, fname)
+                if is_valid_file(path) if is_valid_file is not None else datasets.folder.has_file_allowed_extension(path, extensions):
+                    samples.append((path, class_to_idx[target_class]))
+        return samples
+
+
 class MultiViewDataset(torch.utils.data.Dataset):
     """
     A dataset that returns the requested views of an image together with its label,
@@ -200,10 +219,10 @@ class ColorDataModule(pl.LightningDataModule):
                 self.hparams.data_dir, split="val", transform=None
             )
         elif self.hparams.dataset_name == "inat18":
-            base_train = datasets.ImageFolder(
+            base_train = ListedImageFolder(
                 os.path.join(self.hparams.data_dir, "train"), transform=None
             )
-            base_test = datasets.ImageFolder(
+            base_test = ListedImageFolder(
                 os.path.join(self.hparams.data_dir, "val"), transform=None
             )
         elif self.hparams.dataset_name == "tiny_imagenet":
@@ -219,47 +238,23 @@ class ColorDataModule(pl.LightningDataModule):
             )
 
         # --- Normalization ---
-        temp_transform_list = []
-        # Resize images for datasets with variable image sizes so tensors are stackable in the DataLoader.
-        # ImageNet is large and variable-sized so resize to self.hparams.resize if provided,
-        # otherwise default to 224.
-        if self.hparams.dataset_name in ("imagenet", "inat18", "tiny_imagenet"):
-            resize_size = self.hparams.resize if self.hparams.resize else 224
-            temp_transform_list.append(
-                transforms.Resize((resize_size, resize_size), antialias=True)
-            )
-        temp_transform_list.extend(
-            [transforms.ToImage(), transforms.ToDtype(torch.float32, scale=True)]
-        )
-        temp_transform = transforms.Compose(temp_transform_list)
-        # Create a temporary dataset used only to compute per-channel mean/std for normalization.
-        # ImageNet's Dataset expects `split` and does not support `download` or `train` kwargs.
-        if self.hparams.dataset_name == "imagenet":
-            temp_dataset = dataset_class(
-                self.hparams.data_dir, split="train", transform=temp_transform
-            )
-        elif self.hparams.dataset_name == "inat18":
-            temp_dataset = datasets.ImageFolder(
-                os.path.join(self.hparams.data_dir, "train"), transform=temp_transform
-            )
-        elif self.hparams.dataset_name == "tiny_imagenet":
-            from src.datasets.tiny_imagenet import TinyImageNet
-            temp_dataset = TinyImageNet(self.hparams.data_dir, split="train", transform=temp_transform)
-        else:
-            # CIFAR and other torchvision datasets use `train=True` and support download
-            temp_dataset = dataset_class(
-                self.hparams.data_dir,
-                train=True,
-                transform=temp_transform,
-                download=True,
-            )
-
         # Use standard ImageNet normalization stats to avoid slow data loading
         if self.hparams.dataset_name in ("imagenet", "inat18", "tiny_imagenet"):
             normalize_fn = transforms.Normalize(
                 mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
             )
         else:
+            # Per-channel mean/std of the first 1000 training images. CIFAR and other torchvision
+            # datasets use `train=True` and support download.
+            temp_transform = transforms.Compose(
+                [transforms.ToImage(), transforms.ToDtype(torch.float32, scale=True)]
+            )
+            temp_dataset = dataset_class(
+                self.hparams.data_dir,
+                train=True,
+                transform=temp_transform,
+                download=True,
+            )
             temp_loader = DataLoader(
                 temp_dataset, batch_size=1000, num_workers=self.hparams.num_workers
             )

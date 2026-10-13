@@ -177,15 +177,18 @@ def evaluation(
         else:
             warning(f"The LCA-induced tree is not defined for manifold {manifold}; skipping.")
 
-    dp_use_root = metrics.get("dendrogrampurity_use_root", False)
+    # Each purity is reported with the root merge (the final merge of the dendrogram, and for hDP the root
+    # cluster of all classes) counted ("_with_root") and without it ("_no_root"); both come from the same pass.
     for dp_name, dp_distances, dp_linkage in dp_trees:
         if Y_coarse is not None:
-            results[f"hierarchical_dendrogram_purity_{dp_name}"] = hierarchical_dendrogram_purity(
-                dp_distances, Y, Y_coarse, dp_linkage, use_root=dp_use_root,
-                hierarchy_clusters=hierarchy_clusters,
+            hdp = hierarchical_dendrogram_purity(
+                dp_distances, Y, Y_coarse, dp_linkage, hierarchy_clusters=hierarchy_clusters,
             )
+            for root, value in hdp.items():
+                results[f"hierarchical_dendrogram_purity_{dp_name}_{root}"] = value
         # Flat DP: standard purity on fine-grained labels only (no WordNet hierarchy).
-        results[f"dendrogram_purity_{dp_name}"] = dendrogram_purity(dp_distances, Y, dp_linkage, use_root=dp_use_root)
+        for root, value in dendrogram_purity(dp_distances, Y, dp_linkage).items():
+            results[f"dendrogram_purity_{dp_name}_{root}"] = value
 
     # --- Agglomerative clustering ---
     for linkage_name in ("single", "complete", "average", "ward"):
@@ -300,16 +303,18 @@ def dendrogram_purity(
     distance_matrix: torch.Tensor,
     labels: np.ndarray | torch.Tensor,
     linkage_method: str = "average",
-    use_root: bool = False,
-) -> float:
+) -> dict[str, float]:
     """
     Computes the canonical Dendrogram Purity for a hierarchy built from a distance matrix.
 
     DP(T) = (1 / |P*|) * sum_k sum_{xi, xj in C*_k, i!=j} pur(lca(xi, xj), C*_k)
+
+    Returns {"with_root": ..., "no_root": ...}: with or without the pairs whose LCA is the root, i.e.
+    whose clusters are joined only by the final merge.
     """
     num_samples = len(labels)
     if num_samples < 2:
-        return 1.0
+        return {"with_root": 1.0, "no_root": 1.0}
 
     distance_matrix_np = distance_matrix.cpu().numpy()
     labels_np = np.asarray(labels)
@@ -320,18 +325,17 @@ def dendrogram_purity(
     _, class_counts = np.unique(labels_np, return_counts=True)
     num_same_class_pairs = sum(count * (count - 1) // 2 for count in class_counts)
     if num_same_class_pairs == 0:
-        return 1.0
+        return {"with_root": 1.0, "no_root": 1.0}
 
     condensed_distances = squareform(distance_matrix_np, checks=False)
     Z = linkage(condensed_distances, method=linkage_method)
 
-    total_purity_sum = 0.0
+    # Purity sums of all merges but the final one, and of the final (root) merge
+    total_purity_sum, root_merge_purity_sum = 0.0, 0.0
     cluster_label_counts = {i: Counter({labels_np[i]: 1}) for i in range(num_samples)}
 
     num_merges = len(Z)
     for i, merge in enumerate(Z):
-        if not use_root and i == num_merges - 1:
-            break
         node1_id, node2_id = int(merge[0]), int(merge[1])
         new_node_id = num_samples + i
 
@@ -342,18 +346,26 @@ def dendrogram_purity(
 
         lca_node_size = sum(new_node_counts.values())
 
+        merge_purity_sum = 0.0
         for label in set(counts1.keys()) | set(counts2.keys()):
             n1_k = counts1.get(label, 0)
             n2_k = counts2.get(label, 0)
             num_new_pairs = n1_k * n2_k
             if num_new_pairs > 0:
                 purity = new_node_counts.get(label, 0) / lca_node_size
-                total_purity_sum += num_new_pairs * purity
+                merge_purity_sum += num_new_pairs * purity
+        if i == num_merges - 1:
+            root_merge_purity_sum = merge_purity_sum
+        else:
+            total_purity_sum += merge_purity_sum
 
         del cluster_label_counts[node1_id]
         del cluster_label_counts[node2_id]
 
-    return total_purity_sum / num_same_class_pairs
+    return {
+        "with_root": (total_purity_sum + root_merge_purity_sum) / num_same_class_pairs,
+        "no_root": total_purity_sum / num_same_class_pairs,
+    }
 
 
 def build_hierarchy_clusters(parent_child: dict[int, list[int]], leaf_ids: set[int], include_singletons: bool = False) -> list[set[int]]:
@@ -420,9 +432,8 @@ def hierarchical_dendrogram_purity(
     labels_fine: np.ndarray | torch.Tensor,
     labels_coarse: np.ndarray | torch.Tensor,
     linkage_method: str = "average",
-    use_root: bool = False,
     hierarchy_clusters: list[set[int]] | None = None,
-) -> float:
+) -> dict[str, float]:
     """
     Computes the Hierarchical Dendrogram Purity for a hierarchy built from a distance matrix.
 
@@ -432,10 +443,15 @@ def hierarchical_dendrogram_purity(
     Tiny ImageNet, etc.).
 
     Falls back to 2-level (fine + coarse) DP when no hierarchy clusters are given.
+
+    Returns {"with_root": ..., "no_root": ...}. "with_root" counts the final merge of the dendrogram
+    and adds the root cluster of all classes (unless a hierarchy cluster already equals it); "no_root"
+    does neither. The root cluster contains every sample, so it is pure at each merge: it adds its
+    n(n-1)/2 pairs to both the purity sum and the pair count, without a second pass over the merges.
     """
     num_samples = len(labels_fine)
     if num_samples < 2:
-        return 1.0
+        return {"with_root": 1.0, "no_root": 1.0}
 
     distance_matrix_np = distance_matrix.cpu().numpy()
     labels_fine_np = np.asarray(labels_fine)
@@ -445,10 +461,10 @@ def hierarchical_dendrogram_purity(
         raise ValueError("Distance matrix must be square and match number of labels.")
 
     if hierarchy_clusters is not None and len(hierarchy_clusters) > 0:
-        if use_root:
-            root_cluster = set(np.unique(labels_fine_np).tolist())
-            if root_cluster not in [set(c) for c in hierarchy_clusters]:
-                hierarchy_clusters = list(hierarchy_clusters) + [root_cluster]
+        root_cluster = set(np.unique(labels_fine_np).tolist())
+        root_cluster_pairs = 0
+        if root_cluster not in [set(c) for c in hierarchy_clusters]:
+            root_cluster_pairs = num_samples * (num_samples - 1) // 2
 
         _, fine_counts = np.unique(labels_fine_np, return_counts=True)
         fine_label_counts_map = dict(zip(np.unique(labels_fine_np), fine_counts))
@@ -458,19 +474,18 @@ def hierarchical_dendrogram_purity(
             count = sum(fine_label_counts_map.get(l, 0) for l in cluster)
             num_same_class_pairs += count * (count - 1) // 2
 
-        if num_same_class_pairs == 0:
-            return 1.0
+        if num_same_class_pairs + root_cluster_pairs == 0:
+            return {"with_root": 1.0, "no_root": 1.0}
 
         condensed_distances = squareform(distance_matrix_np, checks=False)
         Z = linkage(condensed_distances, method=linkage_method)
 
-        total_purity_sum = 0.0
+        # Purity sums of all merges but the final one, and of the final (root) merge
+        total_purity_sum, root_merge_purity_sum = 0.0, 0.0
         cluster_label_counts = {i: Counter({labels_fine_np[i]: 1}) for i in range(num_samples)}
 
         num_merges = len(Z)
         for i, merge in enumerate(Z):
-            if not use_root and i == num_merges - 1:
-                break
             node1_id, node2_id = int(merge[0]), int(merge[1])
             new_node_id = num_samples + i
 
@@ -480,6 +495,7 @@ def hierarchical_dendrogram_purity(
             cluster_label_counts[new_node_id] = new_node_counts
             lca_node_size = sum(new_node_counts.values())
 
+            merge_purity_sum = 0.0
             for cluster in hierarchy_clusters:
                 n1_k = sum(counts1[l] for l in cluster if l in counts1)
                 n2_k = sum(counts2[l] for l in cluster if l in counts2)
@@ -487,12 +503,20 @@ def hierarchical_dendrogram_purity(
                 if num_new_pairs > 0:
                     count_in_lca = n1_k + n2_k
                     purity = count_in_lca / lca_node_size
-                    total_purity_sum += num_new_pairs * purity
+                    merge_purity_sum += num_new_pairs * purity
+            if i == num_merges - 1:
+                root_merge_purity_sum = merge_purity_sum
+            else:
+                total_purity_sum += merge_purity_sum
 
             del cluster_label_counts[node1_id]
             del cluster_label_counts[node2_id]
 
-        return total_purity_sum / num_same_class_pairs
+        return {
+            "with_root": (total_purity_sum + root_merge_purity_sum + root_cluster_pairs)
+            / (num_same_class_pairs + root_cluster_pairs),
+            "no_root": total_purity_sum / num_same_class_pairs if num_same_class_pairs > 0 else 1.0,
+        }
 
     # Fallback: 2-level (fine + coarse) DP
     if len(labels_fine_np) != len(labels_coarse_np):
@@ -505,18 +529,17 @@ def hierarchical_dendrogram_purity(
     num_same_class_pairs = num_fine_pairs + num_coarse_pairs
 
     if num_same_class_pairs == 0:
-        return 1.0
+        return {"with_root": 1.0, "no_root": 1.0}
 
     condensed_distances = squareform(distance_matrix_np, checks=False)
     Z = linkage(condensed_distances, method=linkage_method)
 
-    def compute_purity_sum_for_labels(labels_np):
-        total_purity_sum = 0.0
+    def compute_purity_sums_for_labels(labels_np):
+        # Purity sums of all merges but the final one, and of the final (root) merge
+        total_purity_sum, root_merge_purity_sum = 0.0, 0.0
         cluster_label_counts = {i: Counter({labels_np[i]: 1}) for i in range(num_samples)}
         num_merges = len(Z)
         for i, merge in enumerate(Z):
-            if not use_root and i == num_merges - 1:
-                break
             node1_id, node2_id = int(merge[0]), int(merge[1])
             new_node_id = num_samples + i
 
@@ -526,21 +549,31 @@ def hierarchical_dendrogram_purity(
             cluster_label_counts[new_node_id] = new_node_counts
             lca_node_size = sum(new_node_counts.values())
 
+            merge_purity_sum = 0.0
             for label in set(counts1.keys()) | set(counts2.keys()):
                 n1_k = counts1.get(label, 0)
                 n2_k = counts2.get(label, 0)
                 num_new_pairs = n1_k * n2_k
                 if num_new_pairs > 0:
                     purity = new_node_counts.get(label, 0) / lca_node_size
-                    total_purity_sum += num_new_pairs * purity
+                    merge_purity_sum += num_new_pairs * purity
+            if i == num_merges - 1:
+                root_merge_purity_sum = merge_purity_sum
+            else:
+                total_purity_sum += merge_purity_sum
 
             del cluster_label_counts[node1_id]
             del cluster_label_counts[node2_id]
-        return total_purity_sum
+        return total_purity_sum, root_merge_purity_sum
 
-    fine_purity_sum = compute_purity_sum_for_labels(labels_fine_np)
-    coarse_purity_sum = compute_purity_sum_for_labels(labels_coarse_np)
-    return (fine_purity_sum + coarse_purity_sum) / num_same_class_pairs
+    fine_purity_sum, fine_root_merge_purity_sum = compute_purity_sums_for_labels(labels_fine_np)
+    coarse_purity_sum, coarse_root_merge_purity_sum = compute_purity_sums_for_labels(labels_coarse_np)
+    no_root_purity_sum = fine_purity_sum + coarse_purity_sum
+    return {
+        "with_root": (no_root_purity_sum + fine_root_merge_purity_sum + coarse_root_merge_purity_sum)
+        / num_same_class_pairs,
+        "no_root": no_root_purity_sum / num_same_class_pairs,
+    }
 
 
 # ---------------------------------------------------------------------------
