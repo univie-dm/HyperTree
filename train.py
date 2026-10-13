@@ -4,6 +4,7 @@ from src.utils.utils import (
     get_pretrain_model,
     get_clustering_model,
     get_model_path,
+    get_run_path,
     get_logger,
 )
 from lightning.pytorch import seed_everything
@@ -51,7 +52,27 @@ def main(cfg: DictConfig) -> None:
             "ignore", ".*is smaller than the logging interval Trainer.*"
         )
         torch.set_default_dtype(get_dtype_from_precision(cfg.architecture.precision))
-        logger = get_logger(cfg)
+
+        # Clustering checkpoints are keyed by the whole config, so that starting the same configuration again
+        # (Slurm requeue after preemption, resubmission after the time limit) resumes from the last checkpoint
+        # and continues its W&B run
+        enable_clustering_ckpt = cfg.clustering.enable_checkpointing
+        clustering_ckpt_dir = f"./data/checkpoints/clustering_{get_run_path(cfg)}"
+        clustering_last_ckpt = os.path.join(clustering_ckpt_dir, "last.ckpt")
+        resume_clustering = enable_clustering_ckpt and os.path.exists(clustering_last_ckpt)
+        wandb_id = None
+        if enable_clustering_ckpt and cfg.wandb.enabled:
+            wandb_id_file = os.path.join(clustering_ckpt_dir, "wandb_id")
+            if resume_clustering and os.path.exists(wandb_id_file):
+                with open(wandb_id_file) as f:
+                    wandb_id = f.read().strip()
+            else:
+                wandb_id = wandb.util.generate_id()
+                if int(os.environ.get("LOCAL_RANK", 0)) == 0:
+                    os.makedirs(clustering_ckpt_dir, exist_ok=True)
+                    with open(wandb_id_file, "w") as f:
+                        f.write(wandb_id)
+        logger = get_logger(cfg, wandb_id)
 
         model_path = f"data/models/{get_model_path(cfg)}.pt"
         pretrain_ckpt_dir = f"./data/checkpoints/pretrain_{get_model_path(cfg)}"
@@ -149,6 +170,13 @@ def main(cfg: DictConfig) -> None:
 
         clustering_model = get_clustering_model(cfg, pretrain_model)
 
+        clustering_callbacks = []
+        if enable_clustering_ckpt:
+            clustering_callbacks.append(ModelCheckpoint(
+                dirpath=clustering_ckpt_dir,
+                save_last="link",
+                every_n_epochs=cfg.clustering.checkpoint_interval,
+            ))
         trainer = pl.Trainer(
             logger=logger,
             max_epochs=cfg.clustering.epochs,
@@ -157,7 +185,8 @@ def main(cfg: DictConfig) -> None:
             strategy="ddp_find_unused_parameters_true" if use_ddp else "auto",
             accumulate_grad_batches=accumulate_grad_batches,
             deterministic=cfg.experiment.get("deterministic", False),
-            enable_checkpointing=False,
+            enable_checkpointing=enable_clustering_ckpt,
+            callbacks=clustering_callbacks,
             default_root_dir=None,
             gradient_clip_algorithm="norm"
             if cfg.experiment.gradient_clip_value is not None
@@ -173,7 +202,11 @@ def main(cfg: DictConfig) -> None:
             f"strategy={type(trainer.strategy).__name__}",
             flush=True,
         )
-        trainer.fit(clustering_model, datamodule)
+        if resume_clustering:
+            print(f"Resuming clustering from checkpoint: {clustering_last_ckpt}", flush=True)
+        # Our own checkpoint, which also holds the (OmegaConf) hyperparameters, so not a weights-only load
+        trainer.fit(clustering_model, datamodule, ckpt_path=clustering_last_ckpt if resume_clustering else None,
+                    weights_only=False)
         wandb.finish()
     except Exception as e:
         wandb.finish(exit_code=-1)

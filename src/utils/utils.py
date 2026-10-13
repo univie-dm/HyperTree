@@ -2,7 +2,7 @@ import omegaconf
 
 from hashlib import md5
 from pytorch_lightning.loggers import WandbLogger, CSVLogger
-from typing import Union
+from typing import Optional, Union
 
 from src.datasets.datamodule import ColorDataModule
 from src.models import HyperTreeModel, HyperbolicResNet
@@ -33,6 +33,16 @@ def get_model_path(cfg: omegaconf.DictConfig):
         "selected_classes": cfg.dataset.selected_classes,
         "dataset_subset": cfg.dataset.subset,
     }
+    return md5(str(attr).encode()).hexdigest()
+
+
+def get_run_path(cfg: omegaconf.DictConfig):
+    # Identifies a whole run (pretraining and clustering) for its clustering checkpoints: every option except
+    # logging and the number of data loader workers
+    attr = omegaconf.OmegaConf.to_container(cfg, resolve=True)
+    for key in ("wandb", "slurm_id"):
+        attr.pop(key, None)
+    attr["experiment"].pop("num_workers", None)
     return md5(str(attr).encode()).hexdigest()
 
 
@@ -132,9 +142,11 @@ def get_clustering_model(cfg: omegaconf.DictConfig, pretrain_model: HyperbolicRe
     return model
 
 
-def get_logger(cfg: omegaconf.DictConfig) -> Union[WandbLogger, CSVLogger]:
+def get_logger(cfg: omegaconf.DictConfig, wandb_id: Optional[str] = None) -> Union[WandbLogger, CSVLogger]:
+    # wandb_id: continue this W&B run (resumed training) instead of starting a new one
     if cfg.wandb.enabled:
         logger = WandbLogger(
+            id=wandb_id,
             project=cfg.wandb.project,
             entity=cfg.wandb.entity,
             save_dir=cfg.wandb.save_dir,
