@@ -359,6 +359,9 @@ class ColorDataModule(pl.LightningDataModule):
             batch_size=self.hparams.batch_size,
             # CRITICAL: shuffle must be False if using a sampler
             shuffle=True if sampler is None else False,
+            # Skip the incomplete last batch: a handful of samples gives degenerate similarities (e.g. iNat18's 9-sample
+            # batch, in which every SNN similarity is equal) and contrastive losses with almost no negatives
+            drop_last=True,
             num_workers=self.hparams.num_workers,
             pin_memory=True,
             persistent_workers=True if self.hparams.num_workers > 0 else False,

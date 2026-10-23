@@ -24,17 +24,22 @@ defaults:
   - override dataset: tiny_imagenet
   - _self_
 
+experiment:
+  batch_size: 512
+
 architecture:
   projection_layer_dims: [512, 256, 128]
   latent_dim: 16
 
 clustering:
-  train_projection_head: True
+  epochs: 600
+  freeze_encoder: False
   hierarchical_loss:
-    start_temperature: 1.0
-    end_temperature: 0.5
-    sampling_eps: 0.01 # ~27,000 triplets per step
     use_backbone_knn_similarities: False
+    weight_interval: 250
+    start_temperature: 0.2
+    end_temperature: 0.1
+    temperature_interval: 250
 
 wandb:
   tags:

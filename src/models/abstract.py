@@ -14,6 +14,102 @@ from src.utils.wordnet_hierarchy import get_wordnet_labels_for_cifar100
 from src.utils.imagenet_hierarchy import get_wordnet_labels_for_imagenet, get_labels_at_hierarchy_level, load_imagenet_hierarchy, setup_tiny_imagenet_hierarchy
 
 
+def evaluate_embeddings(embeddings: torch.Tensor, labels: torch.Tensor, datamodule, manifold, eval_cfg) -> dict:
+    """Evaluation metrics ("test/...") of the given test-set embeddings on the manifold: class hierarchy of the
+    dataset for the hierarchical dendrogram purity, distance statistics and evaluation()."""
+    labels_np = labels.cpu().numpy()
+    metrics: dict[str, Any] = {}
+    dataset_name = datamodule.hparams.dataset_name
+
+    # Native coarse labels (CIFAR-100: 20 superclasses)
+    coarse_labels_array = None
+    native_coarse_labels = datamodule.get_coarse_labels()
+    if native_coarse_labels is not None:
+        coarse_labels_array = np.array([native_coarse_labels[int(label)] for label in labels_np])
+
+    # Build the WordNet / taxonomy hierarchy for hierarchical dendrogram purity
+    hierarchy_clusters = None
+    if eval_cfg.get("use_wordnet_labels", False):
+        try:
+            leaf_ids = set(np.unique(labels_np).tolist())
+            if dataset_name == "cifar100":
+                _, parent_child = get_wordnet_labels_for_cifar100(
+                    labels_np,
+                    hierarchy_file=str(eval_cfg.get("wordnet_hierarchy_path", "./data/cifar100_wordnet_hierarchy.txt")),
+                    download_if_missing=bool(eval_cfg.get("wordnet_download_if_missing", True)),
+                )
+                hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
+                # Keep native 20 superclasses in coarse_labels_array
+
+            elif dataset_name == "imagenet":
+                _, parent_child = get_wordnet_labels_for_imagenet(
+                    labels_np,
+                    hierarchy_file=str(eval_cfg.get("imagenet_hierarchy_path", "./data/imagenet_wordnet_hierarchy.txt")),
+                    setup_if_missing=bool(eval_cfg.get("wordnet_download_if_missing", True)),
+                )
+                hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
+                # Aggregate to ~20 coarse classes
+                coarse_labels_array, _ = get_labels_at_hierarchy_level(
+                    labels_np, parent_child, target_num_classes=20
+                )
+
+            elif dataset_name == "inat18":
+                inat_hierarchy_path = str(eval_cfg.get("inat18_hierarchy_path", "./data/inat18_taxonomy_hierarchy.txt"))
+                if Path(inat_hierarchy_path).exists():
+                    parent_child = load_imagenet_hierarchy(inat_hierarchy_path, exclude_root=True)
+                    hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
+                    # Coarse labels gate the hierarchical dendrogram purity in
+                    # evaluation(); without them, only flat DP is logged.
+                    coarse_labels_array, _ = get_labels_at_hierarchy_level(
+                        labels_np, parent_child, target_num_classes=20
+                    )
+                else:
+                    print(f"iNat18 hierarchy file not found: {inat_hierarchy_path}")
+
+            elif dataset_name == "tiny_imagenet":
+                tiny_hierarchy_path = str(eval_cfg.get("tiny_imagenet_hierarchy_path", "./data/tiny_imagenet_wordnet_hierarchy.txt"))
+                # Build hierarchy if missing
+                if not Path(tiny_hierarchy_path).exists():
+                    setup_tiny_imagenet_hierarchy(datamodule.hparams.data_dir, tiny_hierarchy_path)
+
+                _, parent_child = get_wordnet_labels_for_imagenet(
+                    labels_np,
+                    hierarchy_file=tiny_hierarchy_path,
+                    setup_if_missing=False
+                )
+                hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
+                # Aggregate to ~20 coarse classes
+                coarse_labels_array, _ = get_labels_at_hierarchy_level(
+                    labels.cpu().numpy(), parent_child, target_num_classes=20
+                )
+
+        except Exception as e:
+            print(f"Warning: Failed to load WordNet labels: {e}")
+            print("Falling back to standard coarse labels (if available)")
+
+    # Compute the (non-smoothened) pairwise distances
+    distance_matrix = compute_pairwise_distances(embeddings, manifold, version="default")
+
+    mask = torch.triu(torch.ones_like(distance_matrix), diagonal=1).bool()
+    metrics["test/mean_distance"] = distance_matrix[mask].mean().item()
+    metrics["test/std_distance"] = distance_matrix[mask].std().item()
+    metrics["test/min_distance"] = distance_matrix[mask].min().item()
+    metrics["test/max_distance"] = distance_matrix[mask].max().item()
+
+    evaluation_results = evaluation(
+        X=embeddings,
+        Y=labels,
+        distance_matrix=distance_matrix,
+        manifold=manifold,
+        metrics=eval_cfg,
+        Y_coarse=coarse_labels_array,
+        hierarchy_clusters=hierarchy_clusters,
+    )
+    for key, value in evaluation_results.items():
+        metrics[f"test/{key}"] = value
+    return metrics
+
+
 class AbstractModel(pl.LightningModule):
     def __init__(
         self,
@@ -242,9 +338,9 @@ class AbstractModel(pl.LightningModule):
         elif self.hparams.lr_scheduler_params["type"] == "ReduceLROnPlateau":
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer,
-                mode=self.hparams.lr_scheduler_params.get("mode", "min"),
-                factor=self.hparams.lr_scheduler_params.get("factor", 0.1),
-                patience=self.hparams.lr_scheduler_params.get("patience", 10),
+                mode="min",  # monitors the training loss
+                factor=self.hparams.lr_scheduler_params["factor"],
+                patience=self.hparams.lr_scheduler_params["patience"],
             )
         else:
             raise ValueError(
@@ -256,115 +352,27 @@ class AbstractModel(pl.LightningModule):
         if not self.trainer.is_global_zero:
             return
         if self.current_epoch % self.hparams.log_interval == 0 and any([i for i in self.hparams.evaluation_metrics.values()]):
-            self.eval()
-            with torch.no_grad():
-                if not hasattr(self, '_cached_test_loader'):
-                    self._cached_test_loader = self.trainer.datamodule.test_dataloader()  # type: ignore
-                test_loader = self._cached_test_loader
+            self.evaluate_test_set(self.trainer.datamodule)  # type: ignore
 
-                embeddings = []
-                labels = []
-                for batch in test_loader:
-                    embeddings.append(self(batch["original"].to(self.device)))
-                    labels.append(batch["label"])
-                all_embeddings = torch.cat(embeddings, dim=0)
-                all_labels = torch.cat(labels, dim=0)
-                labels_np = all_labels.cpu().numpy()
+    def evaluate_test_set(self, datamodule) -> None:
+        """Embed the test split of the datamodule and add the evaluation metrics to self.metrics (no trainer needed)."""
+        self.eval()
+        with torch.no_grad():
+            if not hasattr(self, '_cached_test_loader'):
+                self._cached_test_loader = datamodule.test_dataloader()
+            test_loader = self._cached_test_loader
 
-                datamodule = self.trainer.datamodule  # type: ignore
-                dataset_name = datamodule.hparams.dataset_name
-                eval_cfg = self.hparams.evaluation_metrics
-
-                # Native coarse labels (CIFAR-100: 20 superclasses)
-                coarse_labels_array = None
-                native_coarse_labels = datamodule.get_coarse_labels()
-                if native_coarse_labels is not None:
-                    coarse_labels_array = np.array([native_coarse_labels[int(label)] for label in labels_np])
-
-                # Build the WordNet / taxonomy hierarchy for hierarchical dendrogram purity
-                hierarchy_clusters = None
-                if eval_cfg.get("use_wordnet_labels", False):
-                    try:
-                        leaf_ids = set(np.unique(labels_np).tolist())
-                        if dataset_name == "cifar100":
-                            _, parent_child = get_wordnet_labels_for_cifar100(
-                                labels_np,
-                                hierarchy_file=str(eval_cfg.get("wordnet_hierarchy_path", "./data/cifar100_wordnet_hierarchy.txt")),
-                                download_if_missing=bool(eval_cfg.get("wordnet_download_if_missing", True)),
-                            )
-                            hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
-                            # Keep native 20 superclasses in coarse_labels_array
-
-                        elif dataset_name == "imagenet":
-                            _, parent_child = get_wordnet_labels_for_imagenet(
-                                labels_np,
-                                hierarchy_file=str(eval_cfg.get("imagenet_hierarchy_path", "./data/imagenet_wordnet_hierarchy.txt")),
-                                setup_if_missing=bool(eval_cfg.get("wordnet_download_if_missing", True)),
-                            )
-                            hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
-                            # Aggregate to ~20 coarse classes
-                            coarse_labels_array, _ = get_labels_at_hierarchy_level(
-                                labels_np, parent_child, target_num_classes=20
-                            )
-
-                        elif dataset_name == "inat18":
-                            inat_hierarchy_path = str(eval_cfg.get("inat18_hierarchy_path", "./data/inat18_taxonomy_hierarchy.txt"))
-                            if Path(inat_hierarchy_path).exists():
-                                parent_child = load_imagenet_hierarchy(inat_hierarchy_path, exclude_root=True)
-                                hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
-                                # Coarse labels gate the hierarchical dendrogram purity in
-                                # evaluation(); without them, only flat DP is logged.
-                                coarse_labels_array, _ = get_labels_at_hierarchy_level(
-                                    labels_np, parent_child, target_num_classes=20
-                                )
-                            else:
-                                print(f"iNat18 hierarchy file not found: {inat_hierarchy_path}")
-
-                        elif dataset_name == "tiny_imagenet":
-                            tiny_hierarchy_path = str(eval_cfg.get("tiny_imagenet_hierarchy_path", "./data/tiny_imagenet_wordnet_hierarchy.txt"))
-                            # Build hierarchy if missing
-                            if not Path(tiny_hierarchy_path).exists():
-                                setup_tiny_imagenet_hierarchy(datamodule.hparams.data_dir, tiny_hierarchy_path)
-
-                            _, parent_child = get_wordnet_labels_for_imagenet(
-                                labels_np,
-                                hierarchy_file=tiny_hierarchy_path,
-                                setup_if_missing=False
-                            )
-                            hierarchy_clusters = build_hierarchy_clusters(parent_child, leaf_ids)
-                            # Aggregate to ~20 coarse classes
-                            coarse_labels_array, _ = get_labels_at_hierarchy_level(
-                                all_labels.cpu().numpy(), parent_child, target_num_classes=20
-                            )
-
-                    except Exception as e:
-                        print(f"Warning: Failed to load WordNet labels: {e}")
-                        print("Falling back to standard coarse labels (if available)")
-
-                # Compute the (non-smoothened) pairwise distances
-                distance_matrix = compute_pairwise_distances(all_embeddings, self.manifold, version="default")
-
-                mask = torch.triu(torch.ones_like(distance_matrix), diagonal=1).bool()
-                self.metrics["test/mean_distance"] = distance_matrix[mask].mean().item()
-                self.metrics["test/std_distance"] = distance_matrix[mask].std().item()
-                self.metrics["test/min_distance"] = distance_matrix[mask].min().item()
-                self.metrics["test/max_distance"] = distance_matrix[mask].max().item()
-
-                evaluation_results = evaluation(
-                    X=all_embeddings,
-                    Y=all_labels,
-                    distance_matrix=distance_matrix,
-                    manifold=self.manifold,
-                    metrics=eval_cfg,
-                    Y_coarse=coarse_labels_array,
-                    hierarchy_clusters=hierarchy_clusters,
-                )
-
-                del all_embeddings, all_labels, distance_matrix, embeddings, labels
-
-                for key, value in evaluation_results.items():
-                    self.metrics[f"test/{key}"] = value
-                self.train()
+            embeddings = []
+            labels = []
+            for batch in test_loader:
+                embeddings.append(self(batch["original"].to(self.device)))
+                labels.append(batch["label"])
+            all_embeddings = torch.cat(embeddings, dim=0)
+            all_labels = torch.cat(labels, dim=0)
+            self.metrics.update(evaluate_embeddings(
+                all_embeddings, all_labels, datamodule, self.manifold, self.hparams.evaluation_metrics))
+            del all_embeddings, all_labels, embeddings, labels
+            self.train()
 
     def _write_metrics_to_file(self, epoch: int) -> None:
         """Write current metrics to a JSON file."""

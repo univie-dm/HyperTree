@@ -1,19 +1,4 @@
-# DRAFT: CIFAR-100 recipe of the paper (Appendix, table "Hyperparameters for all main-paper experiments").
-# Only values that differ from config.yaml are listed; everything else in the table equals the defaults
-# (Adam, SimCLR pretraining with tau=0.5 for 800 epochs at lr 3e-3, ResNet-50, Poincaré Ball with c=1,
-# HyperbolicLinearPP, lr 1e-4, weight decay 1e-5, frozen encoder, contrastive weight 0.1, hierarchical
-# weight 1 -> 5 over 250 epochs, soft-LCA temperature 0.2 -> 0.1, delta=0.01).
-#
-#   python train.py --config-name cifar100 experiment.seed=<seed>      (the paper reports three seeds)
-#   Hyperboloid rows: architecture.manifold_name=Hyperboloid
-#
-# Taken from the text rather than the table:
-#   * train_projection_head: the table only says "Encoder: frozen", the text says the projection head and
-#     the hyperbolic layer are trained jointly.
-#   * use_backbone_knn_similarities: False, i.e. w_ij = 1 / (1 + d(z_i, z_j)) (Section 4.1).
-#   * pretraining.contrastive_loss.space is left at 'euclidean' (SimCLR, as in the appendix); Section 4.1
-#     ("pretrain on L_C alone", geodesic) would be 'hyperbolic'.
-# Known difference to the historical run scripts: they used clustering.freeze_encoder=False.
+## CIFAR-100 specific settings
 
 defaults:
   - config
@@ -29,7 +14,14 @@ architecture:
 
 clustering:
   epochs: 300
-  train_projection_head: True
+  freeze_encoder: False
   hierarchical_loss:
-    sampling_eps: 0.01 # ~27,000 triplets per step
     use_backbone_knn_similarities: False
+    weight_interval: 250
+    start_temperature: 0.2
+    end_temperature: 0.1
+    temperature_interval: 250
+
+wandb:
+  tags:
+    - cifar100

@@ -1,13 +1,15 @@
 ## Training parameters
 experiment:
   seed: 1
-  num_workers: 20
-  batch_size: 512
+  num_workers: 16
+  batch_size: 256
   log_interval: 10
   optimizer: 'Adam' # 'Adam', 'SGD'
   gradient_clip_value: 5.0 # None, Float
   training_precision: '32-true' # Lightning autocast, PRETRAINING stage only. '32-true', 'bf16-mixed', '16-mixed'.
                                 # bf16-mixed cuts pretraining memory; manifold ops stay FP32 via _2manifold_dtype.
+  cudnn_benchmark: True  # let cuDNN pick the fastest convolution algorithm per input shape (not bitwise reproducible)
+  deterministic: False  # Lightning Trainer(deterministic=...): deterministic algorithms only (slower)
 
 
 ## Pretraining parameters (SimCLR on the backbone features with two augmented views)
@@ -17,7 +19,8 @@ pretraining:
   learning_rate: 0.003
   weight_decay: 1e-5
   accumulate_gradients: 1  # Gradient accumulation steps (effective_batch = batch_size * accumulate_gradients * num_gpus)
-  enable_checkpointing: False  # Enable for long training runs (e.g., ImageNet)
+  enable_checkpointing: False  # Enable for long training runs (e.g., ImageNet): resumes from data/checkpoints/pretrain_<hash>/
+  checkpoint_interval: 50  # epochs between pretraining checkpoints
   # Contrastive loss parameters
   contrastive_loss:
     temperature: 0.5
@@ -31,39 +34,47 @@ pretraining:
     type: warmup_cosine  # 'warmup_cosine', 'ReduceLROnPlateau'
     interval: 40  # Number of epochs for warmup phase (also T_0 for cosine restart)
     cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
-    patience: 20 # Number of epochs
+    patience: 20 # ReduceLROnPlateau: number of epochs without improvement before the lr is reduced
+    factor: 0.1 # ReduceLROnPlateau: factor the lr is multiplied with
   pretrained_weights_path: null  # Path to an external backbone checkpoint (e.g. FB DINO ResNet50); the backbone is then kept frozen
 
 
 ## Clustering parameters
 clustering:
-  epochs: 600
+  epochs: 50
   learning_rate: 1e-4
   weight_decay: 1e-5
   accumulate_gradients: 1
   freeze_encoder: True  # Freeze the encoder (backbone and projection head) during clustering (recommended with use_backbone_knn_similarities)
-  train_projection_head: False  # Only with freeze_encoder: keep the projection head trainable, so that only the backbone is frozen and the
+  train_projection_head: True  # Only with freeze_encoder: keep the projection head trainable, so that only the backbone is frozen and the
                                 # head is trained jointly with the feature scaling and the hyperbolic layer
+  # Save a checkpoint every checkpoint_interval epochs to data/checkpoints/clustering_<hash of the config>/ and resume
+  # from it when the same configuration is started again (e.g. after a Slurm preemption or time limit), continuing
+  # the W&B run. The checkpoint is kept after the run; delete the directory to rerun the same configuration.
+  # Independently of this, the final model is always saved to data/final_models/<same hash>.pt after the last epoch.
+  enable_checkpointing: False
+  checkpoint_interval: 5
   # Learning rate scheduler
   lr_scheduler:
     type: # 'warmup_cosine'
     interval: 40  # Number of epochs for warmup phase
     cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
-    patience: 20 # Number of epochs
+    patience: 20 # ReduceLROnPlateau: number of epochs without improvement before the lr is reduced
+    factor: 0.1 # ReduceLROnPlateau: factor the lr is multiplied with
   # Hierarchical loss parameters
   hierarchical_loss:
     start_weight: 1.0
     end_weight: 5.0
-    weight_interval: 250 # 0 equals to end_weight all times
-    start_temperature: 0.2
-    end_temperature: 0.1
-    temperature_interval: 250 # 0 equals to end_temperature all times
+    weight_interval: 50 # 0 equals to end_weight all times
+    start_temperature: 1.0
+    end_temperature: 0.5
+    temperature_interval: 50 # 0 equals to end_temperature all times
     # Images the hierarchical loss is computed on: 'original' (un-augmented) or 'augmented' (first
     # augmented view). Only the views that are needed are prepared by the dataloader and encoded
     # (once per step). The pairwise distances of the contrastive loss are reused for the similarities /
     # triplet sampling whenever this view is part of the contrastive positive pair: always for
     # 'augmented', for 'original' only with 'orig_aug'.
-    view: 'original' # 'original', 'augmented'
+    view: 'augmented' # 'original', 'augmented'
     lca_version: 'rectified' # 'rectified', 'unrectified' (LCA on the full geodesic instead of the geodesic segment)
     # Importance sampling of triplets: sample size m >= (1/2 + 2/3 eps) * ln(2 / delta) / eps^2.
     # Batches with fewer triplets than m are evaluated exactly.
@@ -109,7 +120,8 @@ evaluation_metrics:
   dendrogram_purity_average: False
   dendrogram_purity_ward: True
   dendrogram_purity_lca: True
-  dendrogrampurity_use_root: True  # if True, the root node (final dendrogram merge) is included in the purity sum
+  # Every purity is logged twice: "_with_root" counts the root merge (the final merge of the dendrogram and, for the
+  # hierarchical purity, the root cluster of all classes), "_no_root" does not. Both come from the same computation.
   # NMI of agglomerative clustering
   agglomerative_clustering_single: False
   agglomerative_clustering_complete: True

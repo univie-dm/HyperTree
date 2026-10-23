@@ -292,6 +292,9 @@ class HyperTreeModel(AbstractModel):
         """Compute the normalized hierarchical loss, estimated via importance sampling of triplets."""
         n = embeddings.size(0)
         num_all_triplets = n * (n - 1) * (n - 2) // 6
+        # The triplet costs (with the LCA softmax) and their bounds must be computed in the same precision: otherwise
+        # their difference does not vanish for triplets without spread but leaves rounding noise
+        similarities = similarities.to(embeddings.dtype)
 
         # Compute the minimum required sample size for importance sampling
         eps = self.hparams.sampling_eps
@@ -305,7 +308,13 @@ class HyperTreeModel(AbstractModel):
                 embeddings, similarities, triplets, hierarchical_loss_temperature
             )
             triplet_cost_min = triplet_cost_min_stack.sum()
-            normalized_cost = (triplet_cost_stack.sum() - triplet_cost_min) / (triplet_cost_max_stack.sum() - triplet_cost_min).clamp(min=1e-15)
+            triplet_cost_range = triplet_cost_max_stack.sum() - triplet_cost_min
+            # No triplet has any spread (e.g. all similarities equal): the loss carries no information
+            normalized_cost = torch.where(
+                triplet_cost_range > 1e-15,
+                (triplet_cost_stack.sum() - triplet_cost_min) / triplet_cost_range.clamp(min=1e-15),
+                torch.zeros_like(triplet_cost_range),
+            )
         else:
             # Approximate the loss with importance sampling
             triplets = self.sample_triplets(similarities, importance_sample_size)

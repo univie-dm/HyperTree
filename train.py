@@ -8,7 +8,7 @@ from src.utils.utils import (
     get_logger,
 )
 from lightning.pytorch import seed_everything
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from threadpoolctl import threadpool_limits
 import hydra
 import os
@@ -45,7 +45,7 @@ def main(cfg: DictConfig) -> None:
         # already on by default in torch 2.9 via cudnn.conv.fp32_precision='tf32';
         # matmul TF32 is set above. Don't mix the legacy allow_tf32 API with the
         # new one — torch 2.9 errors out.)
-        if cfg.experiment.get("cudnn_benchmark", True):
+        if cfg.experiment.cudnn_benchmark:
             torch.backends.cudnn.benchmark = True
 
         warnings.filterwarnings(
@@ -60,10 +60,19 @@ def main(cfg: DictConfig) -> None:
         clustering_ckpt_dir = f"./data/checkpoints/clustering_{get_run_path(cfg)}"
         clustering_last_ckpt = os.path.join(clustering_ckpt_dir, "last.ckpt")
         resume_clustering = enable_clustering_ckpt and os.path.exists(clustering_last_ckpt)
+
+        model_path = f"data/models/{get_model_path(cfg)}.pt"
+        pretrain_ckpt_dir = f"./data/checkpoints/pretrain_{get_model_path(cfg)}"
+        pretrain_last_ckpt = os.path.join(pretrain_ckpt_dir, "last.ckpt")
+        enable_pretrain_ckpt = cfg.pretraining.enable_checkpointing
+        run_pretraining = not os.path.exists(model_path) or cfg.pretraining.overwrite
+        resume_pretraining = run_pretraining and enable_pretrain_ckpt and os.path.exists(pretrain_last_ckpt)
+
+        # A run that resumes from a checkpoint (of either stage) continues its W&B run
         wandb_id = None
         if enable_clustering_ckpt and cfg.wandb.enabled:
             wandb_id_file = os.path.join(clustering_ckpt_dir, "wandb_id")
-            if resume_clustering and os.path.exists(wandb_id_file):
+            if (resume_clustering or resume_pretraining) and os.path.exists(wandb_id_file):
                 with open(wandb_id_file) as f:
                     wandb_id = f.read().strip()
             else:
@@ -74,16 +83,13 @@ def main(cfg: DictConfig) -> None:
                         f.write(wandb_id)
         logger = get_logger(cfg, wandb_id)
 
-        model_path = f"data/models/{get_model_path(cfg)}.pt"
-        pretrain_ckpt_dir = f"./data/checkpoints/pretrain_{get_model_path(cfg)}"
-        enable_pretrain_ckpt = cfg.pretraining.enable_checkpointing
         checkpoint_callback = None
         if enable_pretrain_ckpt:
             os.makedirs(pretrain_ckpt_dir, exist_ok=True)
             checkpoint_callback = ModelCheckpoint(
                 dirpath=pretrain_ckpt_dir,
                 save_last=True,
-                every_n_epochs=10,
+                every_n_epochs=cfg.pretraining.checkpoint_interval,
             )
 
         pretrain_accum = max(1, cfg.pretraining.accumulate_gradients)
@@ -113,7 +119,7 @@ def main(cfg: DictConfig) -> None:
             devices=n_devices,
             strategy="ddp_find_unused_parameters_true" if use_ddp else "auto",
             precision=pretrain_precision,
-            deterministic=cfg.experiment.get("deterministic", False),
+            deterministic=cfg.experiment.deterministic,
             enable_checkpointing=enable_pretrain_ckpt,
             default_root_dir=None,
             accumulate_grad_batches=pretrain_accum,
@@ -135,16 +141,15 @@ def main(cfg: DictConfig) -> None:
         datamodule = get_datamodule(cfg, stage="pretrain")
         pretrain_model = get_pretrain_model(cfg)
 
-        if not os.path.exists(model_path) or cfg.pretraining.overwrite:
+        if run_pretraining:
             if is_rank0: print("Starting pretraining", flush=True)
             ckpt_path = None
-            if enable_pretrain_ckpt:
-                last_ckpt = os.path.join(pretrain_ckpt_dir, "last.ckpt")
-                if os.path.exists(last_ckpt):
-                    print(f"Resuming pretraining from checkpoint: {last_ckpt}", flush=True)
-                    ckpt_path = last_ckpt
+            if resume_pretraining:
+                print(f"Resuming pretraining from checkpoint: {pretrain_last_ckpt}", flush=True)
+                ckpt_path = pretrain_last_ckpt
             try:
-                trainer.fit(pretrain_model, datamodule, ckpt_path=ckpt_path)
+                # Our own checkpoint, which also holds the (OmegaConf) hyperparameters, so not a weights-only load
+                trainer.fit(pretrain_model, datamodule, ckpt_path=ckpt_path, weights_only=False)
             except KeyError as e:
                 if "_schedulers" in str(e) and ckpt_path is not None:
                     print("LR scheduler mismatch in checkpoint, loading weights only and restarting training", flush=True)
@@ -184,7 +189,7 @@ def main(cfg: DictConfig) -> None:
             devices=n_devices,
             strategy="ddp_find_unused_parameters_true" if use_ddp else "auto",
             accumulate_grad_batches=accumulate_grad_batches,
-            deterministic=cfg.experiment.get("deterministic", False),
+            deterministic=cfg.experiment.deterministic,
             enable_checkpointing=enable_clustering_ckpt,
             callbacks=clustering_callbacks,
             default_root_dir=None,
@@ -207,6 +212,15 @@ def main(cfg: DictConfig) -> None:
         # Our own checkpoint, which also holds the (OmegaConf) hyperparameters, so not a weights-only load
         trainer.fit(clustering_model, datamodule, ckpt_path=clustering_last_ckpt if resume_clustering else None,
                     weights_only=False)
+
+        # Final model after the last clustering epoch, named by the same config hash as the clustering checkpoints.
+        # Load with get_clustering_model(cfg, get_pretrain_model(cfg)).load_state_dict(ckpt["state_dict"])
+        if trainer.is_global_zero:
+            final_model_path = f"./data/final_models/{get_run_path(cfg)}.pt"
+            os.makedirs(os.path.dirname(final_model_path), exist_ok=True)
+            torch.save({"state_dict": clustering_model.state_dict(),
+                        "config": OmegaConf.to_container(cfg, resolve=True)}, final_model_path)
+            print(f"Saved final model to {final_model_path}", flush=True)
         wandb.finish()
     except Exception as e:
         wandb.finish(exit_code=-1)
