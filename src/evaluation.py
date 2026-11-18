@@ -5,14 +5,13 @@ import torch
 import numpy as np
 
 from typing import Union, Optional
-from scipy.cluster.hierarchy import linkage
+from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import squareform
-from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import normalized_mutual_info_score
 from collections import Counter
 from pathlib import Path
 
-from src.hyperbolic_math.src.manifolds import Euclidean, PoincareBall, Hyperboloid, Manifold
+from src.hyperbolic_math.src.manifolds import PoincareBall, Hyperboloid, Manifold
 from src.utils.lca import compute_pairwise_lca_depths
 
 
@@ -162,10 +161,20 @@ def evaluation(
         warning(f"Distance matrix contains negative values (min={distance_matrix.min():.4f}). Clipping to zero.")
         distance_matrix = distance_matrix.clamp(min=0)
 
+    # --- Agglomerative trees ---
+    # Dendrogram purity and NMI decode the same scipy linkage tree of each criterion over the geodesic distances
+    # (Ward included, applied to the geodesic distances as they are), so every tree is built once.
+    condensed_distances = squareform(distance_matrix.cpu().numpy(), checks=False)
+    geodesic_trees: dict[str, np.ndarray] = {}
+
+    def geodesic_tree(linkage_name: str) -> np.ndarray:
+        if linkage_name not in geodesic_trees:
+            geodesic_trees[linkage_name] = linkage(condensed_distances, method=linkage_name)
+        return geodesic_trees[linkage_name]
+
     # --- Dendrogram purity ---
-    # Each tree is decoded by agglomerating (name, dissimilarities, linkage criterion).
     dp_trees = [
-        (dp_linkage, distance_matrix, dp_linkage)
+        (dp_linkage, geodesic_tree(dp_linkage))
         for dp_linkage in ("single", "complete", "average", "ward")
         if metrics.get(f"dendrogram_purity_{dp_linkage}", False)
     ]
@@ -173,29 +182,27 @@ def evaluation(
         if isinstance(manifold, (PoincareBall, Hyperboloid)):
             # LCA-induced tree: single linkage on the LCA dissimilarities, no linkage
             # criterion is applied to the embeddings themselves.
-            dp_trees.append(("lca", lca_tree_distances(X, manifold), "single"))
+            lca_distances = squareform(lca_tree_distances(X, manifold).cpu().numpy(), checks=False)
+            dp_trees.append(("lca", linkage(lca_distances, method="single")))
         else:
             warning(f"The LCA-induced tree is not defined for manifold {manifold}; skipping.")
 
     # Each purity is reported with the root merge (the final merge of the dendrogram, and for hDP the root
     # cluster of all classes) counted ("_with_root") and without it ("_no_root"); both come from the same pass.
-    for dp_name, dp_distances, dp_linkage in dp_trees:
+    for dp_name, Z in dp_trees:
         if Y_coarse is not None:
-            hdp = hierarchical_dendrogram_purity(
-                dp_distances, Y, Y_coarse, dp_linkage, hierarchy_clusters=hierarchy_clusters,
-            )
+            hdp = hierarchical_dendrogram_purity(Z, Y, Y_coarse, hierarchy_clusters=hierarchy_clusters)
             for root, value in hdp.items():
                 results[f"hierarchical_dendrogram_purity_{dp_name}_{root}"] = value
         # Flat DP: standard purity on fine-grained labels only (no WordNet hierarchy).
-        for root, value in dendrogram_purity(dp_distances, Y, dp_linkage).items():
+        for root, value in dendrogram_purity(Z, Y).items():
             results[f"dendrogram_purity_{dp_name}_{root}"] = value
 
-    # --- Agglomerative clustering ---
+    # --- Agglomerative clustering NMI ---
     for linkage_name in ("single", "complete", "average", "ward"):
         if metrics.get(f"agglomerative_clustering_{linkage_name}", False):
-            nmi = agglomerative_clustering_nmi(linkage_name, distance_matrix, X, Y, manifold)
-            if nmi is not None:
-                results[f"agglomerative_clustering_{linkage_name}_nmi"] = nmi
+            results[f"agglomerative_clustering_{linkage_name}_nmi"] = agglomerative_clustering_nmi(
+                geodesic_tree(linkage_name), Y)
 
     # --- Nearest neighbors accuracy and Recall@K ---
     do_knn = metrics.get("nearest_neighbors_accuracy", False)
@@ -217,40 +224,12 @@ def evaluation(
 # Agglomerative clustering
 # ---------------------------------------------------------------------------
 
-def agglomerative_clustering_nmi(
-    linkage_name: str,
-    distance_matrix: torch.Tensor,
-    X: torch.Tensor,
-    Y: Union[np.ndarray, torch.Tensor],
-    manifold: Manifold,
-) -> float | None:
-    """NMI between the labels and an agglomerative clustering with as many clusters as classes."""
-    Y_np = Y.cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
-    n_clusters = len(np.unique(Y_np))
-
-    if linkage_name == "ward":
-        # Ward requires Euclidean input, not precomputed distances.
-        # Use log-map tangent vectors as Euclidean proxy.
-        if isinstance(manifold, Euclidean):
-            X_euc = X.detach().cpu().float().numpy()
-        elif isinstance(manifold, Hyperboloid):
-            poincare = PoincareBall(c=manifold.c.detach().clone(), dtype=manifold.dtype)
-            pts_poincare = manifold.to_poincare(X.to(manifold.dtype))
-            X_euc = poincare.logmap_0(pts_poincare).detach().cpu().float().numpy()
-        elif isinstance(manifold, PoincareBall):
-            X_euc = manifold.logmap_0(X.to(manifold.dtype)).detach().cpu().float().numpy()
-        else:
-            warning(f"Ward linkage not supported for manifold {manifold}; skipping.")
-            return None
-        clust = AgglomerativeClustering(n_clusters=n_clusters, linkage="ward")
-        pred_labels = clust.fit_predict(X_euc)
-    else:
-        clust = AgglomerativeClustering(
-            n_clusters=n_clusters, metric="precomputed", linkage=linkage_name,
-        )
-        pred_labels = clust.fit_predict(distance_matrix.cpu().numpy())
-
-    return normalized_mutual_info_score(Y_np, pred_labels)
+def agglomerative_clustering_nmi(Z: np.ndarray, labels: Union[np.ndarray, torch.Tensor]) -> float:
+    """NMI between the labels and the flat clustering obtained by cutting the dendrogram Z (scipy linkage matrix)
+    into as many clusters as there are classes. With tied merge heights the cut can yield fewer clusters."""
+    labels_np = labels.cpu().numpy() if isinstance(labels, torch.Tensor) else np.asarray(labels)
+    pred_labels = fcluster(Z, t=len(np.unique(labels_np)), criterion="maxclust")
+    return float(normalized_mutual_info_score(labels_np, pred_labels))
 
 
 # ---------------------------------------------------------------------------
@@ -269,8 +248,16 @@ def nearest_neighbor_labels(
 
 
 def nearest_neighbors_accuracy(neighbor_labels: np.ndarray, labels: np.ndarray, k: int = 1) -> float:
-    """Average fraction of the k nearest neighbors that share the label of the query."""
-    return float((neighbor_labels[:, :k] == labels[:, None]).mean())
+    """k-NN accuracy: fraction of queries whose most frequent label among their k nearest neighbors is their own
+    label. Ties are broken in favor of the tied label with the nearest neighbor."""
+    if k == 1:
+        predictions = neighbor_labels[:, 0]
+    else:
+        predictions = np.empty(len(labels), dtype=neighbor_labels.dtype)
+        for i, row in enumerate(neighbor_labels[:, :k]):
+            values, first_position, counts = np.unique(row, return_index=True, return_counts=True)
+            predictions[i] = values[np.lexsort((first_position, -counts))[0]]
+    return float((predictions == labels).mean())
 
 
 def recall_at_k(neighbor_labels: np.ndarray, labels: np.ndarray, k: int = 1) -> float:
@@ -299,13 +286,9 @@ def lca_tree_distances(X: torch.Tensor, manifold: Manifold) -> torch.Tensor:
     return lca_distance
 
 
-def dendrogram_purity(
-    distance_matrix: torch.Tensor,
-    labels: np.ndarray | torch.Tensor,
-    linkage_method: str = "average",
-) -> dict[str, float]:
+def dendrogram_purity(Z: np.ndarray, labels: np.ndarray | torch.Tensor) -> dict[str, float]:
     """
-    Computes the canonical Dendrogram Purity for a hierarchy built from a distance matrix.
+    Computes the canonical Dendrogram Purity of the dendrogram Z (scipy linkage matrix over the labelled points).
 
     DP(T) = (1 / |P*|) * sum_k sum_{xi, xj in C*_k, i!=j} pur(lca(xi, xj), C*_k)
 
@@ -316,19 +299,14 @@ def dendrogram_purity(
     if num_samples < 2:
         return {"with_root": 1.0, "no_root": 1.0}
 
-    distance_matrix_np = distance_matrix.cpu().numpy()
     labels_np = np.asarray(labels)
-
-    if distance_matrix_np.shape != (num_samples, num_samples):
-        raise ValueError("Distance matrix must be square and match number of labels.")
+    if len(Z) != num_samples - 1:
+        raise ValueError("The dendrogram must have one merge less than there are labels.")
 
     _, class_counts = np.unique(labels_np, return_counts=True)
     num_same_class_pairs = sum(count * (count - 1) // 2 for count in class_counts)
     if num_same_class_pairs == 0:
         return {"with_root": 1.0, "no_root": 1.0}
-
-    condensed_distances = squareform(distance_matrix_np, checks=False)
-    Z = linkage(condensed_distances, method=linkage_method)
 
     # Purity sums of all merges but the final one, and of the final (root) merge
     total_purity_sum, root_merge_purity_sum = 0.0, 0.0
@@ -428,14 +406,13 @@ def build_hierarchy_clusters(parent_child: dict[int, list[int]], leaf_ids: set[i
 
 
 def hierarchical_dendrogram_purity(
-    distance_matrix: torch.Tensor,
+    Z: np.ndarray,
     labels_fine: np.ndarray | torch.Tensor,
     labels_coarse: np.ndarray | torch.Tensor,
-    linkage_method: str = "average",
     hierarchy_clusters: list[set[int]] | None = None,
 ) -> dict[str, float]:
     """
-    Computes the Hierarchical Dendrogram Purity for a hierarchy built from a distance matrix.
+    Computes the Hierarchical Dendrogram Purity of the dendrogram Z (scipy linkage matrix over the labelled points).
 
     When ``hierarchy_clusters`` is provided (recommended), the full multi-level
     WordNet hierarchy is used.  Each cluster is a set of leaf class IDs that
@@ -453,12 +430,11 @@ def hierarchical_dendrogram_purity(
     if num_samples < 2:
         return {"with_root": 1.0, "no_root": 1.0}
 
-    distance_matrix_np = distance_matrix.cpu().numpy()
     labels_fine_np = np.asarray(labels_fine)
     labels_coarse_np = np.asarray(labels_coarse)
 
-    if distance_matrix_np.shape != (num_samples, num_samples):
-        raise ValueError("Distance matrix must be square and match number of labels.")
+    if len(Z) != num_samples - 1:
+        raise ValueError("The dendrogram must have one merge less than there are labels.")
 
     if hierarchy_clusters is not None and len(hierarchy_clusters) > 0:
         root_cluster = set(np.unique(labels_fine_np).tolist())
@@ -476,9 +452,6 @@ def hierarchical_dendrogram_purity(
 
         if num_same_class_pairs + root_cluster_pairs == 0:
             return {"with_root": 1.0, "no_root": 1.0}
-
-        condensed_distances = squareform(distance_matrix_np, checks=False)
-        Z = linkage(condensed_distances, method=linkage_method)
 
         # Purity sums of all merges but the final one, and of the final (root) merge
         total_purity_sum, root_merge_purity_sum = 0.0, 0.0
@@ -531,9 +504,6 @@ def hierarchical_dendrogram_purity(
     if num_same_class_pairs == 0:
         return {"with_root": 1.0, "no_root": 1.0}
 
-    condensed_distances = squareform(distance_matrix_np, checks=False)
-    Z = linkage(condensed_distances, method=linkage_method)
-
     def compute_purity_sums_for_labels(labels_np):
         # Purity sums of all merges but the final one, and of the final (root) merge
         total_purity_sum, root_merge_purity_sum = 0.0, 0.0
@@ -581,9 +551,10 @@ def hierarchical_dendrogram_purity(
 # ---------------------------------------------------------------------------
 
 def stratified_sample(
-    labels: Union[np.ndarray, torch.Tensor], sample_size: int
+    labels: Union[np.ndarray, torch.Tensor], sample_size: int, seed: int = 0
 ) -> np.ndarray:
-    """Sample equal number of points from each class (stratified sampling)."""
+    """Sample equal number of points from each class (stratified sampling). The sample only depends on the labels
+    and the seed, so that every evaluation of a run, and every run, uses the same points."""
     if isinstance(labels, torch.Tensor):
         labels_np = labels.cpu().numpy()
     else:
@@ -594,13 +565,14 @@ def stratified_sample(
     samples_per_class = sample_size // n_classes
     remaining_samples = sample_size % n_classes
 
+    rng = np.random.RandomState(seed)
     sampled_indices = []
     for i, cls in enumerate(unique_classes):
         class_indices = np.where(labels_np == cls)[0]
         n_samples_this_class = samples_per_class + (1 if i < remaining_samples else 0)
         n_samples_this_class = min(n_samples_this_class, len(class_indices))
         if n_samples_this_class > 0:
-            sampled = np.random.choice(class_indices, n_samples_this_class, replace=False)
+            sampled = rng.choice(class_indices, n_samples_this_class, replace=False)
             sampled_indices.extend(sampled)
 
     return np.array(sampled_indices)

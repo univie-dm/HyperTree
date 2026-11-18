@@ -4,10 +4,12 @@ from src.utils.utils import (
     get_pretrain_model,
     get_clustering_model,
     get_model_path,
+    pretrained_model_file,
+    load_pretrained_model,
     get_run_path,
     get_logger,
 )
-from lightning.pytorch import seed_everything
+from pytorch_lightning import seed_everything
 from omegaconf import DictConfig, OmegaConf
 from threadpoolctl import threadpool_limits
 import hydra
@@ -22,8 +24,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")
-@threadpool_limits.wrap(limits=45, user_api="openmp")
-@threadpool_limits.wrap(limits=1, user_api="blas")
+@threadpool_limits.wrap(limits=1, user_api="blas")  # avoid oversubscribing the CPUs next to the data loader workers
 def main(cfg: DictConfig) -> None:
     try:
         print(cfg)
@@ -57,12 +58,12 @@ def main(cfg: DictConfig) -> None:
         # (Slurm requeue after preemption, resubmission after the time limit) resumes from the last checkpoint
         # and continues its W&B run
         enable_clustering_ckpt = cfg.clustering.enable_checkpointing
-        clustering_ckpt_dir = f"./data/checkpoints/clustering_{get_run_path(cfg)}"
+        clustering_ckpt_dir = os.path.join(cfg.paths.checkpoints_dir, f"clustering_{get_run_path(cfg)}")
         clustering_last_ckpt = os.path.join(clustering_ckpt_dir, "last.ckpt")
         resume_clustering = enable_clustering_ckpt and os.path.exists(clustering_last_ckpt)
 
-        model_path = f"data/models/{get_model_path(cfg)}.pt"
-        pretrain_ckpt_dir = f"./data/checkpoints/pretrain_{get_model_path(cfg)}"
+        model_path = pretrained_model_file(cfg)
+        pretrain_ckpt_dir = os.path.join(cfg.paths.checkpoints_dir, f"pretrain_{get_model_path(cfg)}")
         pretrain_last_ckpt = os.path.join(pretrain_ckpt_dir, "last.ckpt")
         enable_pretrain_ckpt = cfg.pretraining.enable_checkpointing
         run_pretraining = not os.path.exists(model_path) or cfg.pretraining.overwrite
@@ -115,7 +116,7 @@ def main(cfg: DictConfig) -> None:
         trainer = pl.Trainer(
             logger=logger,
             max_epochs=cfg.pretraining.epochs,
-            accelerator="gpu",
+            accelerator="gpu" if gpu_count > 0 else "cpu",
             devices=n_devices,
             strategy="ddp_find_unused_parameters_true" if use_ddp else "auto",
             precision=pretrain_precision,
@@ -147,21 +148,13 @@ def main(cfg: DictConfig) -> None:
             if resume_pretraining:
                 print(f"Resuming pretraining from checkpoint: {pretrain_last_ckpt}", flush=True)
                 ckpt_path = pretrain_last_ckpt
-            try:
-                # Our own checkpoint, which also holds the (OmegaConf) hyperparameters, so not a weights-only load
-                trainer.fit(pretrain_model, datamodule, ckpt_path=ckpt_path, weights_only=False)
-            except KeyError as e:
-                if "_schedulers" in str(e) and ckpt_path is not None:
-                    print("LR scheduler mismatch in checkpoint, loading weights only and restarting training", flush=True)
-                    ckpt = torch.load(ckpt_path, weights_only=False)
-                    pretrain_model.load_state_dict(ckpt["state_dict"])
-                    trainer.fit(pretrain_model, datamodule)
-                else:
-                    raise
+            # Our own checkpoint, which also holds the (OmegaConf) hyperparameters, so not a weights-only load
+            trainer.fit(pretrain_model, datamodule, ckpt_path=ckpt_path, weights_only=False)
+            os.makedirs(os.path.dirname(model_path), exist_ok=True)
             torch.save(pretrain_model.state_dict(), model_path)
         else:
             if is_rank0: print(f"Loading pretrained model from {model_path}", flush=True)
-            pretrain_model.load_state_dict(torch.load(model_path, weights_only=False))
+            load_pretrained_model(cfg, pretrain_model)
 
         print("Finished pretraining", flush=True)
         if cfg.experiment.seed >= 0:
@@ -216,7 +209,7 @@ def main(cfg: DictConfig) -> None:
         # Final model after the last clustering epoch, named by the same config hash as the clustering checkpoints.
         # Load with get_clustering_model(cfg, get_pretrain_model(cfg)).load_state_dict(ckpt["state_dict"])
         if trainer.is_global_zero:
-            final_model_path = f"./data/final_models/{get_run_path(cfg)}.pt"
+            final_model_path = os.path.join(cfg.paths.final_models_dir, f"{get_run_path(cfg)}.pt")
             os.makedirs(os.path.dirname(final_model_path), exist_ok=True)
             torch.save({"state_dict": clustering_model.state_dict(),
                         "config": OmegaConf.to_container(cfg, resolve=True)}, final_model_path)

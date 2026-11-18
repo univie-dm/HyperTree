@@ -1,5 +1,5 @@
 name: 'inat18'
 subset: 'train'
-data_dir: 'data/inat18'
+data_dir: 'data/inat18'  # official iNat2018 release: train2018.json, val2018.json, train_val2018/
 resize: 224
 selected_classes:

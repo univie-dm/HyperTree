@@ -1,33 +1,26 @@
 import math
-import os
-import time
 import torch
 import torch.nn.functional as F
 
-from lightning.pytorch.utilities import grad_norm
+from pytorch_lightning.utilities import grad_norm
 
 from src.models.abstract import AbstractModel
 from src.models.utils import get_dtype_from_precision
 from src.hyperbolic_math.src.utils.helpers import compute_pairwise_distances
 from src.utils.lca import compute_lca_depth
 
-# An image has three views: the un-augmented original and two augmented views.
-# Views forming the positive pair of the contrastive loss
-CONTRASTIVE_VIEWS = {"aug_aug": ("aug_1", "aug_2"), "orig_aug": ("original", "aug_1")}
-# View the hierarchical loss is computed on
-HIERARCHICAL_VIEWS = {"original": "original", "augmented": "aug_1"}
+# An image has three views: the un-augmented original (evaluation) and two augmented views (training).
+# The positive pair of the contrastive loss are the two augmented views, the hierarchical loss is computed on the first.
+CONTRASTIVE_VIEWS = ("aug_1", "aug_2")
+HIERARCHICAL_VIEW = "aug_1"
 
 
-def get_training_views(
-    hierarchical_loss_view: str, contrastive_positive_pair: str, use_contrastive_loss: bool
-) -> tuple[str, tuple[str, ...]]:
+def get_training_views(use_contrastive_loss: bool) -> tuple[str, tuple[str, ...]]:
     """Returns the view of the hierarchical loss and the views of the contrastive loss (none if it is not used).
 
     These are the views a training step consumes, i.e. the ones the dataloader has to provide.
     """
-    hierarchical_view = HIERARCHICAL_VIEWS[hierarchical_loss_view]
-    contrastive_views = CONTRASTIVE_VIEWS[contrastive_positive_pair] if use_contrastive_loss else ()
-    return hierarchical_view, contrastive_views
+    return HIERARCHICAL_VIEW, CONTRASTIVE_VIEWS if use_contrastive_loss else ()
 
 
 class HyperTreeModel(AbstractModel):
@@ -37,7 +30,6 @@ class HyperTreeModel(AbstractModel):
         # Optimizer
         learning_rate: float = 1e-3,
         weight_decay: float = 0.0,
-        lr_scheduler_params: dict | None = None,
         # Evaluation & Logging
         stage: str = "clustering",
         global_epoch: int = 0,
@@ -50,7 +42,6 @@ class HyperTreeModel(AbstractModel):
         hierarchical_loss_start_temperature: float = 0.2,
         hierarchical_loss_end_temperature: float = 0.1,
         hierarchical_loss_temperature_interval: int = 250,
-        hierarchical_loss_view: str = "original",
         lca_version: str = "rectified",
         sampling_eps: float = 1e-3,
         sampling_delta: float = 1e-2,
@@ -61,7 +52,6 @@ class HyperTreeModel(AbstractModel):
         contrastive_loss_enabled: bool = False,
         contrastive_temperature: float = 0.5,
         contrastive_weight: float = 1.0,
-        contrastive_positive_pair: str = "aug_aug",
         # Encoder
         freeze_encoder: bool = False,
         train_projection_head: bool = False,
@@ -81,7 +71,7 @@ class HyperTreeModel(AbstractModel):
             optimizer_name=model.hparams.optimizer_name,
             learning_rate=learning_rate,
             weight_decay=weight_decay,
-            lr_scheduler_params=lr_scheduler_params,
+            lr_scheduler_params=None,  # constant learning rate
             # Evaluation & Logging
             stage=stage,
             global_epoch=global_epoch,
@@ -105,10 +95,6 @@ class HyperTreeModel(AbstractModel):
             raise ValueError("hierarchical_loss_weight_interval must be non-negative.")
         if hierarchical_loss_start_weight > hierarchical_loss_end_weight:
             raise ValueError("hierarchical_loss_start_weight must be less than or equal to hierarchical_loss_end_weight.")
-        if hierarchical_loss_view not in HIERARCHICAL_VIEWS:
-            raise ValueError(f"hierarchical_loss_view must be one of {list(HIERARCHICAL_VIEWS)}, got '{hierarchical_loss_view}'")
-        if contrastive_positive_pair not in CONTRASTIVE_VIEWS:
-            raise ValueError(f"contrastive_positive_pair must be one of {list(CONTRASTIVE_VIEWS)}, got '{contrastive_positive_pair}'")
 
         # Freeze the encoder if requested: the backbone and, unless train_projection_head is set,
         # the projection head (a frozen projection head keeps SNN similarities stable across batches).
@@ -196,11 +182,6 @@ class HyperTreeModel(AbstractModel):
         self.metrics.setdefault("sampling/similarities_max_min_delta", []).append(max_min_delta)
 
         accepted_triplets: list[torch.Tensor] = []
-        _prof = os.environ.get("HYP_PROFILE_SAMPLER")
-        if _prof:
-            if device.type == "cuda":
-                torch.cuda.synchronize()
-            _t_sampler = time.perf_counter()
         total_num_accepted = 0
         total_num_sampled = 0
 
@@ -240,11 +221,6 @@ class HyperTreeModel(AbstractModel):
             total_num_accepted += num_accepted
             total_num_sampled += num_candidates
 
-        if _prof:
-            if device.type == "cuda":
-                torch.cuda.synchronize()
-            self.metrics.setdefault("profile/sampler_ms", []).append(
-                (time.perf_counter() - _t_sampler) * 1000.0)
         # Update the acceptance rate cache for the next training step
         self.cached_acceptance_rate = max(total_num_accepted / total_num_sampled, 0.01)
         self.metrics.setdefault("sampling/acceptance_rate", []).append(self.cached_acceptance_rate)
@@ -331,29 +307,11 @@ class HyperTreeModel(AbstractModel):
         self.metrics.setdefault("sampling/evaluated_triplets", []).append(triplets.shape[0])
         return normalized_cost
 
-    def on_train_batch_start(self, batch, batch_idx):  # noqa: D102
-        if os.environ.get("HYP_PROFILE_SAMPLER"):
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            self._prof_step_t0 = time.perf_counter()
-
-    def on_train_batch_end(self, outputs, batch, batch_idx):  # noqa: D102
-        if os.environ.get("HYP_PROFILE_SAMPLER") and hasattr(self, "_prof_step_t0"):
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            _step_ms = (time.perf_counter() - self._prof_step_t0) * 1000.0
-            self.metrics.setdefault("profile/step_ms", []).append(_step_ms)
-            _s = self.metrics.get("profile/sampler_ms", [])
-            if _s:
-                print(f"PROF sampler_ms={_s[-1]:.3f} step_ms={_step_ms:.3f}", flush=True)
-
     def training_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
         params_dtype = get_dtype_from_precision(self.hparams.params_dtype)
 
         use_contrastive_loss = self.hparams.contrastive_weight > 0.0 and self.hparams.contrastive_loss_enabled
-        hierarchical_view, contrastive_views = get_training_views(
-            self.hparams.hierarchical_loss_view, self.hparams.contrastive_positive_pair, use_contrastive_loss
-        )
+        hierarchical_view, contrastive_views = get_training_views(use_contrastive_loss)
 
         # Encode every required view exactly once: view -> (backbone features, manifold embeddings)
         encoded = {
@@ -433,10 +391,6 @@ class HyperTreeModel(AbstractModel):
         self.metrics.setdefault("latent_space/norm_max", []).append(manifold_z.norm(p=2, dim=-1).max().detach().item())
         self.metrics.setdefault("latent_space/norm_mean", []).append(manifold_z.norm(p=2, dim=-1).mean().detach().item())
         self.metrics.setdefault("latent_space/norm_std", []).append(manifold_z.norm(p=2, dim=-1).std().detach().item())
-
-        if self.hparams.hyperbolic_encoding in ["HyperbolicLinearHyperboloidFHCNN", "HyperbolicLinearHyperboloidFHNN"]:
-            scale = self.hyperbolic_encoding_layer[1].scale  # type: ignore
-            self.metrics.setdefault("hyperbolic_encoding_layer/scale", []).append(scale.detach().item())
 
         for key, value in grad_norm(self, norm_type=2).items():
             if key == "grad_2.0_norm_total":

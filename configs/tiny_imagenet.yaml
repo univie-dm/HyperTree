@@ -1,23 +1,10 @@
-# DRAFT: TinyImageNet recipe of the paper (Appendix, table "Hyperparameters for all main-paper experiments").
-# Only values that differ from config.yaml are listed; everything else in the table equals the defaults
-# (Adam, batch size 512, SimCLR pretraining with tau=0.5 for 800 epochs at lr 3e-3, ResNet-50, Poincaré Ball
-# with c=1, HyperbolicLinearPP, 600 joint epochs at lr 1e-4, weight decay 1e-5, frozen encoder, contrastive
-# weight 0.1, hierarchical weight 1 -> 5 over 250 epochs, delta=0.01).
+# TinyImageNet recipe of the paper (Appendix, table "Hyperparameters for all main-paper experiments"): ResNet-50
+# pretrained from scratch with SimCLR for 800 epochs, then 300 epochs of joint training of the whole model.
 #
-#   python train.py --config-name tiny_imagenet experiment.seed=<seed>      (the paper reports three seeds)
-#   Hyperboloid rows: architecture.manifold_name=Hyperboloid (main table: architecture.latent_dim=128)
+#   python train.py --config-name tiny_imagenet experiment.seed=<seed>      (the paper reports seeds 1, 2, 3)
+#   Hyperboloid rows of the main tables: architecture.manifold_name=Hyperboloid
 #
-# Taken from the text rather than the table:
-#   * train_projection_head: the table only says "Encoder: frozen", the text says the projection head and
-#     the hyperbolic layer are trained jointly.
-#   * use_backbone_knn_similarities: False, i.e. w_ij = 1 / (1 + d(z_i, z_j)) (Section 4.1).
-#   * pretraining.contrastive_loss.space is left at 'euclidean' (SimCLR, as in the appendix); Section 4.1
-#     ("pretrain on L_C alone", geodesic) would be 'hyperbolic'.
-#   * temperature_interval is not stated; the default (250, same as the weight) is kept.
-# Known differences to the historical run scripts (old_slurm/ in git history, base tiny_imagenet_simclr.yaml):
-#   projection_layer_dims [512, 512], hierarchical weight 0 -> 5 over 150 epochs, temperature_interval 150,
-#   sampling_eps 0.001, warmup_cosine lr schedule in the clustering stage, projection head frozen,
-#   evaluation_metrics.dendrogrampurity_use_root=False.
+# Only the dataset-specific values are set here; everything else comes from config.yaml.
 
 defaults:
   - config
@@ -27,19 +14,24 @@ defaults:
 experiment:
   batch_size: 512
 
+pretraining:
+  epochs: 800
+  pretrained_weights: null
+
 architecture:
-  projection_layer_dims: [512, 256, 128]
+  model_type: 'resnet50'
+  projection_layer_dims: [1024, 512, 256]
   latent_dim: 16
 
 clustering:
-  epochs: 600
+  epochs: 300
   freeze_encoder: False
   hierarchical_loss:
-    use_backbone_knn_similarities: False
     weight_interval: 250
-    start_temperature: 0.2
-    end_temperature: 0.1
     temperature_interval: 250
+
+evaluation_metrics:
+  test_sample_size: 0
 
 wandb:
   tags:

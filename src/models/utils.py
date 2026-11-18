@@ -6,8 +6,6 @@ from typing import Dict, Union
 from src.hyperbolic_math.src.manifolds import Manifold, Euclidean, Hyperboloid, PoincareBall
 from src.hyperbolic_math.src.nn_layers import (
     HyperbolicLinearPoincarePP,
-    HyperbolicLinearHyperboloidFHNN,
-    HyperbolicLinearHyperboloidFHCNN,
     HyperbolicLinearHyperboloidPP,
 )
 
@@ -49,31 +47,6 @@ def get_hyperbolic_encoding_layer_by_name(
     if isinstance(manifold, Euclidean):
         layer = nn.Linear(input_dim, output_dim)
     # Hyperboloid layers
-    elif layer_name == "HyperbolicLinearHyperboloidFHNN" and isinstance(manifold, Hyperboloid):
-        layer = nn.Sequential(
-            HyperboloidEncoder2TangentInput(manifold=manifold),
-            HyperbolicLinearHyperboloidFHNN(
-                manifold=manifold,
-                input_dim=input_dim + 1,
-                output_dim=output_dim + 1,
-                params_dtype=params_dtype,
-                input_space="tangent",
-                learnable_scale=True,
-            ),
-        )
-    elif layer_name == "HyperbolicLinearHyperboloidFHCNN" and isinstance(manifold, Hyperboloid):
-        layer = nn.Sequential(
-            HyperboloidEncoder2TangentInput(manifold=manifold),
-            HyperbolicLinearHyperboloidFHCNN(
-                manifold=manifold,
-                input_dim=input_dim + 1,
-                output_dim=output_dim + 1,
-                params_dtype=params_dtype,
-                input_space="tangent",
-                learnable_scale=True,
-                normalize=True,
-            ),
-        )
     elif layer_name == "HyperbolicLinearPP" and isinstance(manifold, Hyperboloid):
         layer = nn.Sequential(
             HyperboloidEncoder2TangentInput(manifold=manifold),
@@ -100,7 +73,6 @@ def get_hyperbolic_encoding_layer_by_name(
     else:
         raise ValueError(
             f"Unknown hyperbolic layer name: {layer_name}. "
-            "Available options are: 'HyperbolicLinearHyperboloidFHNN', "
-            "'HyperbolicLinearHyperboloidFHCNN', 'HyperbolicLinearPP'."
+            "Available options are: 'HyperbolicLinearPP'."
         )
     return layer

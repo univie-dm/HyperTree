@@ -1,5 +1,4 @@
 import argparse
-import os
 import torch
 import pytorch_lightning as pl
 from torchvision import datasets
@@ -102,25 +101,6 @@ class BYOLTransform:
         return aug1, aug2
 
 
-class ListedImageFolder(datasets.ImageFolder):
-    """
-    ImageFolder that lists each class directory instead of walking it. os.walk stats every entry that is a
-    symlink to check whether it is a directory, which takes minutes for the iNat18 symlink tree on NFS
-    (437k images); listing only reads the directories. Same samples in the same order, as long as the class
-    directories hold image files only.
-    """
-
-    def make_dataset(self, directory, class_to_idx, extensions=None, is_valid_file=None, allow_empty=False):
-        samples = []
-        for target_class in sorted(class_to_idx):
-            class_dir = os.path.join(directory, target_class)
-            for fname in sorted(os.listdir(class_dir)):
-                path = os.path.join(class_dir, fname)
-                if is_valid_file(path) if is_valid_file is not None else datasets.folder.has_file_allowed_extension(path, extensions):
-                    samples.append((path, class_to_idx[target_class]))
-        return samples
-
-
 class MultiViewDataset(torch.utils.data.Dataset):
     """
     A dataset that returns the requested views of an image together with its label,
@@ -219,12 +199,9 @@ class ColorDataModule(pl.LightningDataModule):
                 self.hparams.data_dir, split="val", transform=None
             )
         elif self.hparams.dataset_name == "inat18":
-            base_train = ListedImageFolder(
-                os.path.join(self.hparams.data_dir, "train"), transform=None
-            )
-            base_test = ListedImageFolder(
-                os.path.join(self.hparams.data_dir, "val"), transform=None
-            )
+            from src.datasets.inat18 import INat2018
+            base_train = INat2018(self.hparams.data_dir, split="train", transform=None)
+            base_test = INat2018(self.hparams.data_dir, split="val", transform=None)
         elif self.hparams.dataset_name == "tiny_imagenet":
             from src.datasets.tiny_imagenet import TinyImageNet
             base_train = TinyImageNet(self.hparams.data_dir, split="train", transform=None)

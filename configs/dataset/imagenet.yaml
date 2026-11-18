@@ -1,5 +1,5 @@
 name: 'imagenet'
 subset: 'all'
-data_dir: 'data/imagenet'
+data_dir: 'data/imagenet'  # torchvision ImageNet: the ILSVRC2012 devkit, train and val archives (extracted on first use)
 resize: 224  # Standard ImageNet size
 selected_classes:
