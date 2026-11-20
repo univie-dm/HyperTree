@@ -1,0 +1,38 @@
+# TinyImageNet recipe of the paper (Appendix, table "Hyperparameters for all main-paper experiments"): ResNet-50
+# pretrained from scratch with SimCLR for 800 epochs, then 300 epochs of joint training of the whole model.
+#
+#   python train.py --config-name tiny_imagenet experiment.seed=<seed>      (the paper reports seeds 1, 2, 3)
+#   Hyperboloid rows of the main tables: architecture.manifold_name=Hyperboloid
+#
+# Only the dataset-specific values are set here; everything else comes from config.yaml.
+
+defaults:
+  - config
+  - override dataset: tiny_imagenet
+  - _self_
+
+experiment:
+  batch_size: 512
+
+pretraining:
+  epochs: 800
+  pretrained_weights: null
+
+architecture:
+  model_type: 'resnet50'
+  projection_layer_dims: [1024, 512, 256]
+  latent_dim: 16
+
+clustering:
+  epochs: 300
+  freeze_encoder: False
+  hierarchical_loss:
+    weight_interval: 250
+    temperature_interval: 250
+
+evaluation_metrics:
+  test_sample_size: 0
+
+wandb:
+  tags:
+    - tiny_imagenet

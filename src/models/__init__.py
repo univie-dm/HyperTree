@@ -1,11 +1,7 @@
-from .feedforward import HyperbolicAE
-from .hyphc import HyperbolicHCModel
+from .hypertree import HyperTreeModel
 from .resnet import HyperbolicResNet
-from .dino import DINOHyperbolicResNet
 
 __all__ = [
-    "HyperbolicAE",
-    "HyperbolicHCModel",
+    "HyperTreeModel",
     "HyperbolicResNet",
-    "DINOHyperbolicResNet",
 ]

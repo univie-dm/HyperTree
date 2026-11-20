@@ -1,181 +1,147 @@
+# Shared settings of the paper recipes. The dataset configs (cifar100, tiny_imagenet, imagenet, inat18) load this
+# file and set the dataset-specific values (batch size, backbone and pretraining, projection head, embedding
+# dimension, joint-training schedule, frozen backbone, evaluation subsample). Loaded on its own, it runs CIFAR-100
+# with the CIFAR-100 recipe (configs/cifar100.yaml).
+
 ## Training parameters
 experiment:
   seed: 1
-  num_workers: 20
-  batch_size: 512
+  num_workers: 16
+  batch_size: 1024
   log_interval: 10
   optimizer: 'Adam' # 'Adam', 'SGD'
   gradient_clip_value: 5.0 # None, Float
-  training_precision: '32-true' # Lightning autocast, PRETRAINING stage only. '32-true', 'bf16-mixed', '16-mixed'.
-                                # bf16-mixed cuts pretraining memory; manifold ops stay FP32 via _2manifold_dtype.
+  training_precision: '32-true' # Lightning precision of the pretraining stage only: '32-true', 'bf16-mixed', '16-mixed'
+  cudnn_benchmark: True  # let cuDNN pick the fastest convolution algorithm per input shape (not bitwise reproducible)
+  deterministic: False  # Lightning Trainer(deterministic=...): deterministic algorithms only (slower)
 
 
-## Pretraining parameters
+## Pretraining parameters (SimCLR on the projection-head features of two augmented views)
 pretraining:
-  method: contrastive  # 'contrastive' or 'dino'
-  augmentation: null    # null, 'byol', 'dino'
-  epochs: 800
+  epochs: 800 # 0 skips pretraining (e.g. together with pretrained_weights)
   overwrite: False
   learning_rate: 0.003
   weight_decay: 1e-5
   accumulate_gradients: 1  # Gradient accumulation steps (effective_batch = batch_size * accumulate_gradients * num_gpus)
-  enable_checkpointing: False  # Enable for long training runs (e.g., ImageNet)
-  # Reconstruction loss parameters
-  reconstruction_loss:
-    weight: 0.0
+  enable_checkpointing: True  # resume an interrupted pretraining from <paths.checkpoints_dir>/pretrain_<hash>/
+  checkpoint_interval: 50  # epochs between pretraining checkpoints
   # Contrastive loss parameters
   contrastive_loss:
-    enabled: True
-    weight: 1.0
     temperature: 0.5
+    # 'euclidean': SimCLR, cosine similarity of the projection-head features (before the hyperbolic layer);
+    #              feature scaling and the hyperbolic layer stay untrained until the clustering stage.
+    # 'hyperbolic': negative geodesic distance of the manifold embeddings (after the hyperbolic layer),
+    #              i.e. the contrastive loss of the clustering stage; trains the whole model.
+    space: 'euclidean' # 'euclidean', 'hyperbolic'
   # Learning rate scheduler
   lr_scheduler:
     type: warmup_cosine  # 'warmup_cosine', 'ReduceLROnPlateau'
     interval: 40  # Number of epochs for warmup phase (also T_0 for cosine restart)
     cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
-    patience: 20 # Number of epochs
-  load_supervised_weights: False
-  supervised: False
-  pretrained_weights_path: null  # Path to external checkpoint (e.g., FB DINO ResNet50)
-  # DINO multi-crop settings (used when method=dino)
-  n_local_crops: 6
-  local_crop_size: 96
-  dino_global_scale: [0.4, 1.0]
-  dino_local_scale: [0.05, 0.4]
-  # DINO-specific settings (used when method=dino)
-  dino:
-    out_dim: 65536
-    hidden_dim: 2048
-    bottleneck_dim: 256
-    teacher_momentum_start: 0.996
-    teacher_momentum_end: 1.0
-    teacher_temperature: 0.04
-    student_temperature: 0.1
-    center_momentum: 0.9
-    warmup_teacher_temp: 0.04
-    warmup_teacher_temp_epochs: 30
+    patience: 20 # ReduceLROnPlateau: number of epochs without improvement before the lr is reduced
+    factor: 0.1 # ReduceLROnPlateau: factor the lr is multiplied with
+  # External backbone checkpoint, a local path or a URL (downloaded to paths.models_dir on first use), e.g. the
+  # DINO ResNet-50 of the ImageNet-1k recipe. The backbone is then kept frozen.
+  pretrained_weights: null
 
 
 ## Clustering parameters
 clustering:
-  epochs: 600
-  learning_rate: 1e-4
+  epochs: 300
+  learning_rate: 1e-4  # constant
   weight_decay: 1e-5
-  enable_checkpointing: False  # Enable for long training runs
   accumulate_gradients: 1
-  freeze_encoder: True  # Freeze backbone encoder during clustering (recommended with use_backbone_knn_similarities)
-  # Learning rate scheduler
-  lr_scheduler:
-    type: # 'warmup_cosine'
-    interval: 40  # Number of epochs for warmup phase
-    cosine_min_factor: 0.01  # Minimum learning rate factor for cosine annealing
-    patience: 20 # Number of epochs
-  # Hyperbolic loss parameters
-  hyperbolic_loss:
+  freeze_encoder: False  # Freeze the encoder (backbone and projection head) during clustering (recommended with use_backbone_knn_similarities)
+  train_projection_head: True  # Only with freeze_encoder: keep the projection head trainable, so that only the backbone is frozen and the
+                                # head is trained jointly with the feature scaling and the hyperbolic layer
+  # Save a checkpoint every checkpoint_interval epochs to <paths.checkpoints_dir>/clustering_<hash of the config>/ and
+  # resume from it when the same configuration is started again (e.g. after a Slurm preemption or time limit),
+  # continuing the W&B run. The checkpoint is kept after the run; delete the directory to rerun the same configuration.
+  # Independently of this, the final model is always saved to <paths.final_models_dir>/<same hash>.pt.
+  enable_checkpointing: True
+  checkpoint_interval: 5
+  # Hierarchical loss parameters (computed on the first augmented view of each image)
+  hierarchical_loss:
     start_weight: 1.0
     end_weight: 5.0
     weight_interval: 250 # 0 equals to end_weight all times
     start_temperature: 0.2
     end_temperature: 0.1
     temperature_interval: 250 # 0 equals to end_temperature all times
-    lca_version: 'ours' # 'ours', 'chami', 'coneheads'
-    coneheads_radius: 0.05 # umbral shadow-cone aperture radius (only used when lca_version='coneheads')
-    loss_version: 'normalized' # 'wang', 'normalized', 'chami' (chami & wang requires use_importance_sampling=False)
-    sampling_strategy: 'importance' # None/'None', 'uniform', 'importance', 'power_weighted'
-    sampling_eps: 0.001 # accuracy of sampling
+    lca_version: 'rectified' # 'rectified', 'unrectified' (LCA on the full geodesic instead of the geodesic segment)
+    # Importance sampling of triplets: sample size m >= (1/2 + 2/3 eps) * ln(2 / delta) / eps^2.
+    # Batches with fewer triplets than m are evaluated exactly.
+    sampling_eps: 0.01 # accuracy of sampling
     sampling_delta: 0.01 # confidence of sampling
-    sampling_alpha: 0.2 # interpolation factor between uniform-importance sampling
-    uniform_sample_size: 10000
-    log_approximation_diff: False # log the approximation quality when using sampling
     # Backbone kNN SNN similarities: replace hyperbolic-distance similarities with Jaccard SNN
     # in backbone feature space (higher-dim, richer semantic signal). Pair with freeze_encoder: true.
-    use_backbone_knn_similarities: True
+    # The features are taken after the projection head, so with train_projection_head they change during training.
+    use_backbone_knn_similarities: False
     snn_k: 10 # number of nearest neighbors for SNN computation
-    similarity_pruning: # similarity pruning is only enabled for the full cost computation (not importance sampling)
-      version: null # 'percentile_pruning', 'knn_pruning', 'threshold_pruning', None (disables similarity pruning)
-      threshold: 0.01
-      quantile: 0.2
-      nearest_neighbors: 10
-  # Contrastive loss parameters
-  # For end-to-end unsupervised: enable this and set pretraining.epochs=0, freeze_encoder=False,
-  # hyperbolic_loss.start_weight=0.0, end_weight=1.0, weight_interval=<warmup_epochs>.
-  # Contrastive loss uses (aug_1, aug_2) as the positive pair (two-view SimCLR on hyperbolic embeddings).
+  # Contrastive loss parameters (positive pair: the two augmented views of each image)
+  # enabled: False trains with the hierarchical loss only (hierarchical_loss.start_weight/end_weight 0: contrastive only)
   contrastive_loss:
     enabled: True
     temperature: 0.5
     weight: 0.1
-  # Reconstruction loss parameters
-  reconstruction_loss:
-    weight: 0.0
-  # Regularizer parameters (regularization to the origin)
-  regularizer:
-    enabled: False
-    weight: 0.05
 
 
 ## Model architecture
 architecture:
-  model_type: 'resnet50' # 'feedforward', 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152'
-  feature_scaling: True
-  feedforward_hidden_dims: [512, 256, 128] # only used if model_type is 'feedforward'
-  projection_layer_dims: [1024, 512] # contrastive projection head layers after encoder
-  latent_dim: 32 # Hyperboloid automatically uses latent_dim+1 (latent_dim refers to the dimension of the hyperbolic manifold)
+  model_type: 'resnet50' # 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152', 'bioclip' (frozen, requires open_clip_torch)
+  projection_layer_dims: [1024, 512, 256, 128] # contrastive projection head layers after encoder
+  latent_dim: 16 # embedding manifold dimension (Hyperboloid implements latent_dim+1)
   precision: 'float32' # 'float32', 'float64'
   manifold_precision: 'float64' # 'float32', 'float64'
   manifold_name: 'PoincareBall' # 'Euclidean', 'Hyperboloid', 'PoincareBall'
-  curvature_magnitude: 1.0
-  hyperbolic_encoding: 'HyperbolicLinearPP' # 'EuclideanLinear_Exp'
-                                            #  Hyperboloid: 'HyperbolicLinearHyperboloidFHNN', 'HyperbolicLinearHyperboloidFHCNN', 'HyperbolicLinearPP'
-                                            #  Poincare: 'HyperbolicLinearPP'
-  hyperbolic_decoding: 'Log_EuclideanLinear' # 'Log_EuclideanLinear'
-                                             # Hyperboloid: 'HyperbolicLinearHyperboloidFHNN_Log', 'HyperbolicLinearHyperboloidFHCNN_Log', 'HyperbolicLinearPP_Log'
-                                             # Poincare: 'HyperbolicLinearPP_Log'
+  curvature_magnitude: 1.0 # sectional curvature magnitude of the hyperbolic manifold
+  hyperbolic_encoding: 'HyperbolicLinearPP' # HNN++ fully connected layer (Poincare ball and Hyperboloid)
   activation_function: 'swish' # 'swish', 'relu'
-  hyperbolic_clamping: 1.0
-  hyperbolic_smoothing: 50.0
-  hyperboloid_layer_learnable_scale: True # only used in Hyperboloid layers
-  FHCNN_normalize: True # only used if hyperbolic_encoding is 'HyperbolicLinearHyperboloidFHCNN'
+  feature_scaling: True # bound the norms of the Euclidean features before the hyperbolic layer
 
 
 ## Evaluation Metrics to be used and logged
 evaluation_metrics:
-  delta_hyperbolicity: False
-  dendrogram_purity_single: False
+  # (Hierarchical) dendrogram purity per tree decoder: linkage on the geodesic distances, or the
+  # LCA-induced tree (single linkage on the rectified-LCA depths, hyperbolic manifolds only)
+  dendrogram_purity_single: True
   dendrogram_purity_complete: True
-  dendrogram_purity_average: False
+  dendrogram_purity_average: True
   dendrogram_purity_ward: True
-  dendrogrampurity_use_root: True  # if True, the root node (final dendrogram merge) is included in the purity sum
+  dendrogram_purity_lca: True
+  # Every purity is logged twice: "_with_root" counts the root merge (the final merge of the dendrogram and, for the
+  # hierarchical purity, the root cluster of all classes), "_no_root" does not. Both come from the same computation.
+  # NMI against the fine labels of the flat clustering obtained by cutting the dendrogram of each linkage over the
+  # geodesic distances (the same tree as for the dendrogram purity) into as many clusters as there are classes
   agglomerative_clustering_single: False
-  agglomerative_clustering_complete: True
+  agglomerative_clustering_complete: False
   agglomerative_clustering_average: False
   agglomerative_clustering_ward: True
   nearest_neighbors_accuracy: True
   recall_at_k: True
-  spectral_clustering: True
-  visualization: True
-  kmeans: False
-  best_partition_complete: True
-  best_partition_average: False
-  best_partition_ward: True
-  best_partition_max_k: null  # null = auto (3x true class count); set integer to override
-  dasgupta_cost: False
-  hrc_sibling_triplet: True       # M_b (Tan et al. 2024) — leaf-only sibling triplet accuracy
-  hrc_origin_depth: True          # M_o (Tan et al. 2024) — Spearman(depth, ‖x‖) over class centroids
-  hrc_num_triplets: 200000        # Monte-Carlo budget for hrc_sibling_triplet
-  visualization_sample_size: 5000
-  test_sample_size: 0 # if 0 all datapoints are used
-  # WordNet hierarchy for hierarchical evaluation (CIFAR-100 and ImageNet)
-  use_wordnet_labels: True  # Use WordNet hierarchy for hierarchical DP evaluation
+  test_sample_size: 0 # class-stratified subsample of the test split (the same in every evaluation); 0 = all points
+  results_dir: './results' # metrics of every evaluation are also written here as JSON
+  # Class hierarchies for hierarchical evaluation (WordNet for CIFAR-100 / TinyImageNet / ImageNet, taxonomy for iNat18)
+  use_wordnet_labels: True  # Use the class hierarchy for hierarchical DP evaluation
   wordnet_hierarchy_path: './data/cifar100_wordnet_hierarchy.txt'  # CIFAR-100 hierarchy file
+  tiny_imagenet_hierarchy_path: './data/tiny_imagenet_wordnet_hierarchy.txt'  # TinyImageNet hierarchy file (built from the dataset folder)
   imagenet_hierarchy_path: './data/imagenet_wordnet_hierarchy.txt'  # ImageNet hierarchy file (auto-downloaded from cvjena/semantic-embeddings)
+  inat18_hierarchy_path: './data/inat18_taxonomy_hierarchy.txt'  # iNat18 taxonomy file
   wordnet_download_if_missing: True  # Automatically download/setup hierarchy files if not found
+
+
+## Output locations (relative to the working directory). They do not enter the cache and checkpoint hashes.
+paths:
+  models_dir: ./data/models  # models at the end of pretraining (cache keyed by the pretraining settings), downloaded backbones
+  checkpoints_dir: ./data/checkpoints  # pretraining and clustering checkpoints
+  final_models_dir: ./data/final_models  # model and config after the last clustering epoch
 
 
 ## Logging
 wandb:
   enabled: True
-  project: 'hyper_clustering'
-  entity: 'kevin-sidak-team'
+  project: 'hypertree'
+  entity: null  # W&B team or user; null = your default entity
   save_dir: './logs'
   tags:
     - cifar100

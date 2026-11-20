@@ -1,10 +1,5 @@
 name: 'imagenet'
 subset: 'all'
-data_dir: 'data/imagenet'
+data_dir: 'data/imagenet'  # torchvision ImageNet: the ILSVRC2012 devkit, train and val archives (extracted on first use)
 resize: 224  # Standard ImageNet size
-channels: 3
 selected_classes:
-
-# Enable checkpointing for ImageNet due to long training times
-pretraining:
-  enable_checkpointing: True

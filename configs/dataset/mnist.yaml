@@ -1,6 +1,0 @@
-name: 'mnist'
-subset: 'all'
-data_dir: './data'
-resize: 28
-channels: 1
-selected_classes: #[0,2,6,7]  # Optional: specify which classes to use

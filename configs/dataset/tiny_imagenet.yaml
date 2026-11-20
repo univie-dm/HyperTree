@@ -1,6 +1,5 @@
 name: 'tiny_imagenet'
 subset: 'train'
-data_dir: 'data/tiny-imagenet-200'
+data_dir: 'data/tiny-imagenet-200'  # extracted tiny-imagenet-200.zip (http://cs231n.stanford.edu/tiny-imagenet-200.zip)
 resize: 64
-channels: 3
 selected_classes:

@@ -1,0 +1,42 @@
+# iNaturalist-2018 recipe of the paper (Appendix, table "Hyperparameters for all main-paper experiments"): the BioCLIP
+# image encoder (hf-hub:imageomics/bioclip, requires open_clip_torch; downloaded to the Hugging Face cache on first
+# use) as a frozen backbone, no pretraining stage, 50 epochs of joint training of the projection head, feature
+# scaling and hyperbolic layer.
+#
+#   python train.py --config-name inat18 experiment.seed=<seed>      (the paper reports seeds 1, 2, 3)
+#   Hyperboloid rows of the main tables: architecture.manifold_name=Hyperboloid
+#
+# The metrics are computed on the whole validation split (24,426 images, 8,142 classes).
+# Only the dataset-specific values are set here; everything else comes from config.yaml.
+
+defaults:
+  - config
+  - override dataset: inat18
+  - _self_
+
+experiment:
+  batch_size: 256
+
+pretraining:
+  epochs: 0
+  enable_checkpointing: False
+  pretrained_weights: null
+
+architecture:
+  model_type: 'bioclip'
+  projection_layer_dims: [256]
+  latent_dim: 128
+
+clustering:
+  epochs: 50
+  freeze_encoder: True
+  hierarchical_loss:
+    weight_interval: 50
+    temperature_interval: 50
+
+evaluation_metrics:
+  test_sample_size: 0
+
+wandb:
+  tags:
+    - inat18

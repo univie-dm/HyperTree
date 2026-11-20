@@ -1,6 +1,0 @@
-name: 'stl10'
-subset: 'all'
-data_dir: './data'
-resize: 96
-channels: 3
-selected_classes:

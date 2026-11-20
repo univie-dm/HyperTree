@@ -4,10 +4,13 @@ from src.utils.utils import (
     get_pretrain_model,
     get_clustering_model,
     get_model_path,
+    pretrained_model_file,
+    load_pretrained_model,
+    get_run_path,
     get_logger,
 )
-from lightning.pytorch import seed_everything
-from omegaconf import DictConfig
+from pytorch_lightning import seed_everything
+from omegaconf import DictConfig, OmegaConf
 from threadpoolctl import threadpool_limits
 import hydra
 import os
@@ -17,54 +20,11 @@ from pytorch_lightning.plugins.environments import LightningEnvironment
 import wandb
 import warnings
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import Callback, ModelCheckpoint
-
-
-class CollapseKillCallback(Callback):
-    """Stop training when the monitored test metric stays at/below a threshold.
-
-    Reads from `pl_module.last_test_metrics` (populated by the model's
-    on_train_epoch_end via _stash_test_metrics). Only checks after warmup
-    epochs so the HypHC schedule has time to ramp.
-    """
-
-    def __init__(self, monitor: str, threshold: float, warmup_epochs: int = 0, mode: str = "max"):
-        super().__init__()
-        self.monitor = monitor
-        self.threshold = float(threshold)
-        self.warmup_epochs = int(warmup_epochs)
-        if mode not in ("min", "max"):
-            raise ValueError(f"mode must be 'min' or 'max', got {mode}")
-        self.mode = mode
-
-    def on_train_epoch_end(self, trainer, pl_module):
-        if trainer.current_epoch < self.warmup_epochs:
-            return
-        last = getattr(pl_module, "last_test_metrics", None) or {}
-        val = last.get(self.monitor)
-        if val is None:
-            return
-        if isinstance(val, list):
-            val = sum(val) / len(val) if val else None
-        if val is None:
-            return
-        bad = (val <= self.threshold) if self.mode == "max" else (val >= self.threshold)
-        if bad:
-            print(
-                f"[CollapseKill] epoch={trainer.current_epoch} {self.monitor}={val:.6g} "
-                f"crossed threshold {self.threshold} (mode={self.mode}); stopping run.",
-                flush=True,
-            )
-            trainer.should_stop = True
-
-from icecream import install  # type: ignore
-
-install()
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")
-@threadpool_limits.wrap(limits=45, user_api="openmp")
-@threadpool_limits.wrap(limits=1, user_api="blas")
+@threadpool_limits.wrap(limits=1, user_api="blas")  # avoid oversubscribing the CPUs next to the data loader workers
 def main(cfg: DictConfig) -> None:
     try:
         print(cfg)
@@ -81,37 +41,59 @@ def main(cfg: DictConfig) -> None:
         else:
             raise ValueError(f"Precision {cfg.architecture.precision} not supported")
 
-        # cuDNN benchmark mode — biggest lever for conv-heavy multi-crop training.
-        # Lets cuDNN auto-tune the fastest conv algorithm for each unique input
-        # shape, critical for DINO's mixed 224+96 multi-crop sizes. Off by default
-        # in PyTorch. (Conv TF32 is already on by default in torch 2.9 via
-        # cudnn.conv.fp32_precision='tf32'; matmul TF32 is set above. Don't mix
-        # the legacy allow_tf32 API with the new one — torch 2.9 errors out.)
-        if cfg.experiment.get("cudnn_benchmark", True):
+        # cuDNN benchmark mode: lets cuDNN auto-tune the fastest conv algorithm
+        # for each unique input shape. Off by default in PyTorch. (Conv TF32 is
+        # already on by default in torch 2.9 via cudnn.conv.fp32_precision='tf32';
+        # matmul TF32 is set above. Don't mix the legacy allow_tf32 API with the
+        # new one — torch 2.9 errors out.)
+        if cfg.experiment.cudnn_benchmark:
             torch.backends.cudnn.benchmark = True
-
-        if (cfg.pretraining.load_supervised_weights or cfg.pretraining.supervised) and \
-           cfg.architecture.model_type not in ["resnet18", "resnet34", "resnet50", "resnet101", "resnet152"]:
-            raise ValueError("Supervised and supervised weights can only be loaded for ResNet models")
 
         warnings.filterwarnings(
             "ignore", ".*is smaller than the logging interval Trainer.*"
         )
         torch.set_default_dtype(get_dtype_from_precision(cfg.architecture.precision))
-        logger = get_logger(cfg)
 
-        pretrain_ckpt_dir = f"./data/checkpoints/pretrain_{get_model_path(cfg)}"
-        enable_pretrain_ckpt = cfg.pretraining.get("enable_checkpointing", False)
+        # Clustering checkpoints are keyed by the whole config, so that starting the same configuration again
+        # (Slurm requeue after preemption, resubmission after the time limit) resumes from the last checkpoint
+        # and continues its W&B run
+        enable_clustering_ckpt = cfg.clustering.enable_checkpointing
+        clustering_ckpt_dir = os.path.join(cfg.paths.checkpoints_dir, f"clustering_{get_run_path(cfg)}")
+        clustering_last_ckpt = os.path.join(clustering_ckpt_dir, "last.ckpt")
+        resume_clustering = enable_clustering_ckpt and os.path.exists(clustering_last_ckpt)
+
+        model_path = pretrained_model_file(cfg)
+        pretrain_ckpt_dir = os.path.join(cfg.paths.checkpoints_dir, f"pretrain_{get_model_path(cfg)}")
+        pretrain_last_ckpt = os.path.join(pretrain_ckpt_dir, "last.ckpt")
+        enable_pretrain_ckpt = cfg.pretraining.enable_checkpointing
+        run_pretraining = not os.path.exists(model_path) or cfg.pretraining.overwrite
+        resume_pretraining = run_pretraining and enable_pretrain_ckpt and os.path.exists(pretrain_last_ckpt)
+
+        # A run that resumes from a checkpoint (of either stage) continues its W&B run
+        wandb_id = None
+        if enable_clustering_ckpt and cfg.wandb.enabled:
+            wandb_id_file = os.path.join(clustering_ckpt_dir, "wandb_id")
+            if (resume_clustering or resume_pretraining) and os.path.exists(wandb_id_file):
+                with open(wandb_id_file) as f:
+                    wandb_id = f.read().strip()
+            else:
+                wandb_id = wandb.util.generate_id()
+                if int(os.environ.get("LOCAL_RANK", 0)) == 0:
+                    os.makedirs(clustering_ckpt_dir, exist_ok=True)
+                    with open(wandb_id_file, "w") as f:
+                        f.write(wandb_id)
+        logger = get_logger(cfg, wandb_id)
+
         checkpoint_callback = None
         if enable_pretrain_ckpt:
             os.makedirs(pretrain_ckpt_dir, exist_ok=True)
             checkpoint_callback = ModelCheckpoint(
                 dirpath=pretrain_ckpt_dir,
                 save_last=True,
-                every_n_epochs=10,
+                every_n_epochs=cfg.pretraining.checkpoint_interval,
             )
 
-        pretrain_accum = max(1, cfg.pretraining.get("accumulate_gradients", 1))
+        pretrain_accum = max(1, cfg.pretraining.accumulate_gradients)
         gpu_count = torch.cuda.device_count()
         # When SLURM allocates multiple GPUs to a single task (ntasks-per-node=1),
         # Lightning's SLURM auto-detection conflicts with devices>1.
@@ -128,19 +110,17 @@ def main(cfg: DictConfig) -> None:
 
 
         # Optional Lightning autocast precision for the pretraining stage only.
-        # Default = "32-true" (Lightning's own default). bf16-mixed gives a big
-        # H100 tensor-core speedup on conv-heavy DINO multi-crop. Hyperbolic ops
-        # are protected because PoincareBall._2manifold_dtype casts inputs back
-        # to its declared FP32 dtype inside expmap/logmap (poincare.py:338).
-        pretrain_precision = cfg.experiment.get("training_precision", "32-true")
+        # Default = "32-true" (Lightning's own default). bf16-mixed cuts memory
+        # and gives a big tensor-core speedup on the conv-heavy backbone.
+        pretrain_precision = cfg.experiment.training_precision
         trainer = pl.Trainer(
             logger=logger,
             max_epochs=cfg.pretraining.epochs,
-            accelerator="gpu",
+            accelerator="gpu" if gpu_count > 0 else "cpu",
             devices=n_devices,
             strategy="ddp_find_unused_parameters_true" if use_ddp else "auto",
             precision=pretrain_precision,
-            deterministic=cfg.experiment.get("deterministic", False),
+            deterministic=cfg.experiment.deterministic,
             enable_checkpointing=enable_pretrain_ckpt,
             default_root_dir=None,
             accumulate_grad_batches=pretrain_accum,
@@ -159,77 +139,42 @@ def main(cfg: DictConfig) -> None:
             f"strategy={type(trainer.strategy).__name__}",
             flush=True,
         )
-        datamodule, input_dim, _ = get_datamodule(cfg, stage="pretrain")
-        pretrain_model = get_pretrain_model(cfg, input_dim)
+        datamodule = get_datamodule(cfg, stage="pretrain")
+        pretrain_model = get_pretrain_model(cfg)
 
-        # Cross-dataset transfer: load pretrained weights from an explicit path (skips pretraining)
-        pretrained_model_path = cfg.pretraining.get("pretrained_model_path", None)
-        if pretrained_model_path is not None:
-            if is_rank0: print(f"Loading pretrained weights from: {pretrained_model_path}", flush=True)
-            saved = torch.load(pretrained_model_path, weights_only=False)
-            if isinstance(saved, dict):
-                pretrain_model.load_state_dict(saved)
-            else:
-                pretrain_model = saved
-        elif (not os.path.exists(f"data/models/{get_model_path(cfg)}.pt")
-            or cfg.pretraining.overwrite):
+        if run_pretraining:
             if is_rank0: print("Starting pretraining", flush=True)
             ckpt_path = None
-            if enable_pretrain_ckpt:
-                last_ckpt = os.path.join(pretrain_ckpt_dir, "last.ckpt")
-                if os.path.exists(last_ckpt):
-                    print(f"Resuming pretraining from checkpoint: {last_ckpt}", flush=True)
-                    ckpt_path = last_ckpt
-            try:
-                trainer.fit(pretrain_model, datamodule, ckpt_path=ckpt_path)
-            except KeyError as e:
-                if "_schedulers" in str(e) and ckpt_path is not None:
-                    print(f"LR scheduler mismatch in checkpoint, loading weights only and restarting training", flush=True)
-                    ckpt = torch.load(ckpt_path, weights_only=False)
-                    pretrain_model.load_state_dict(ckpt["state_dict"])
-                    trainer.fit(pretrain_model, datamodule)
-                else:
-                    raise
-            torch.save(pretrain_model.state_dict(), f"data/models/{get_model_path(cfg)}.pt")
+            if resume_pretraining:
+                print(f"Resuming pretraining from checkpoint: {pretrain_last_ckpt}", flush=True)
+                ckpt_path = pretrain_last_ckpt
+            # Our own checkpoint, which also holds the (OmegaConf) hyperparameters, so not a weights-only load
+            trainer.fit(pretrain_model, datamodule, ckpt_path=ckpt_path, weights_only=False)
+            os.makedirs(os.path.dirname(model_path), exist_ok=True)
+            torch.save(pretrain_model.state_dict(), model_path)
         else:
-            saved = torch.load(f"data/models/{get_model_path(cfg)}.pt", weights_only=False)
-            if isinstance(saved, dict):
-                pretrain_model.load_state_dict(saved)
-            else:
-                pretrain_model = saved
+            if is_rank0: print(f"Loading pretrained model from {model_path}", flush=True)
+            load_pretrained_model(cfg, pretrain_model)
 
         print("Finished pretraining", flush=True)
         if cfg.experiment.seed >= 0:
             seed_everything(cfg.experiment.seed)
         print("Starting clustering", flush=True)
-        datamodule, input_dim, _ = get_datamodule(cfg, stage="clustering")
+        datamodule = get_datamodule(cfg, stage="clustering")
 
         accumulate_grad_batches = max(
             1,
             min(cfg.clustering.accumulate_gradients, len(datamodule.train_dataloader())))
 
-        # Determine checkpoint directory for clustering
-        clustering_checkpoint_dir = None
-        if cfg.clustering.get("enable_checkpointing", False):
-            clustering_checkpoint_dir = f"./data/checkpoints/clustering_{cfg.dataset.name}_{get_model_path(cfg)}"
-            os.makedirs(clustering_checkpoint_dir, exist_ok=True)
-            print(f"Checkpointing enabled for clustering. Checkpoints will be saved to: {clustering_checkpoint_dir}",
-                  flush=True)
-
         clustering_model = get_clustering_model(cfg, pretrain_model)
 
         clustering_callbacks = []
-        early_stop_cfg = cfg.clustering.get("early_stop", None)
-        if early_stop_cfg is not None and early_stop_cfg.get("enabled", False):
-            clustering_callbacks.append(
-                CollapseKillCallback(
-                    monitor=early_stop_cfg.get("monitor", "test/1_nearest_neighbors_accuracy"),
-                    threshold=early_stop_cfg.get("threshold", 0.0),
-                    warmup_epochs=early_stop_cfg.get("warmup_epochs", 0),
-                    mode=early_stop_cfg.get("mode", "max"),
-                )
-            )
-
+        if enable_clustering_ckpt:
+            clustering_callbacks.append(ModelCheckpoint(
+                dirpath=clustering_ckpt_dir,
+                save_last="link",
+                every_n_epochs=cfg.clustering.checkpoint_interval,
+            ))
         trainer = pl.Trainer(
             logger=logger,
             max_epochs=cfg.clustering.epochs,
@@ -237,8 +182,9 @@ def main(cfg: DictConfig) -> None:
             devices=n_devices,
             strategy="ddp_find_unused_parameters_true" if use_ddp else "auto",
             accumulate_grad_batches=accumulate_grad_batches,
-            deterministic=cfg.experiment.get("deterministic", False),
-            enable_checkpointing=False,
+            deterministic=cfg.experiment.deterministic,
+            enable_checkpointing=enable_clustering_ckpt,
+            callbacks=clustering_callbacks,
             default_root_dir=None,
             gradient_clip_algorithm="norm"
             if cfg.experiment.gradient_clip_value is not None
@@ -247,7 +193,6 @@ def main(cfg: DictConfig) -> None:
             if cfg.experiment.gradient_clip_value is not None
             else 1.0,
             plugins=[LightningEnvironment()] if is_slurm else [],
-            callbacks=clustering_callbacks if clustering_callbacks else None,
         )
         print(
             f"[DDP] clustering stage: world_size={trainer.world_size} "
@@ -255,7 +200,20 @@ def main(cfg: DictConfig) -> None:
             f"strategy={type(trainer.strategy).__name__}",
             flush=True,
         )
-        trainer.fit(clustering_model, datamodule)
+        if resume_clustering:
+            print(f"Resuming clustering from checkpoint: {clustering_last_ckpt}", flush=True)
+        # Our own checkpoint, which also holds the (OmegaConf) hyperparameters, so not a weights-only load
+        trainer.fit(clustering_model, datamodule, ckpt_path=clustering_last_ckpt if resume_clustering else None,
+                    weights_only=False)
+
+        # Final model after the last clustering epoch, named by the same config hash as the clustering checkpoints.
+        # Load with get_clustering_model(cfg, get_pretrain_model(cfg)).load_state_dict(ckpt["state_dict"])
+        if trainer.is_global_zero:
+            final_model_path = os.path.join(cfg.paths.final_models_dir, f"{get_run_path(cfg)}.pt")
+            os.makedirs(os.path.dirname(final_model_path), exist_ok=True)
+            torch.save({"state_dict": clustering_model.state_dict(),
+                        "config": OmegaConf.to_container(cfg, resolve=True)}, final_model_path)
+            print(f"Saved final model to {final_model_path}", flush=True)
         wandb.finish()
     except Exception as e:
         wandb.finish(exit_code=-1)

@@ -6,7 +6,6 @@ Handles the non-standard folder structure:
 - val: val/images/*.JPEG + val/val_annotations.txt
 """
 
-import os
 from pathlib import Path
 from typing import Callable, Optional
 
